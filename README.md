@@ -86,6 +86,7 @@ SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 인증 두 갈래: 운영자 화면은 `Authorization: Bearer <로그인 토큰>`,
 작업자는 `Bearer <WORKER_TOKEN>` + `X-Worker-Name`. 오류 형식은
 `{ "error": "메시지" }` + HTTP 상태 코드다.
+요청·응답 스키마와 에러 코드별 의미는 [부록 B](APPENDIX.md)를 따른다.
 
 | 메서드·경로 | 인증 | 설명 |
 |---|---|---|
