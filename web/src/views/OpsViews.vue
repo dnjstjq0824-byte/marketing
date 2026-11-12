@@ -5,20 +5,21 @@
     <p v-if="error" class="error">{{ error }}</p>
     <div class="card">
       <h3>지표 기록</h3>
-      <div class="formrow">
+      <div class="form-grid">
         <label>콘텐츠 ID <input v-model="metric.contentId" placeholder="(선택)" /></label>
         <label>채널 <input v-model="metric.channel" placeholder="예: instagram" /></label>
         <label>노출 <input v-model="metric.exposures" type="number" min="0" /></label>
         <label>유입 <input v-model="metric.inflows" type="number" min="0" /></label>
         <label>주문 <input v-model="metric.orders" type="number" min="0" /></label>
         <label>문의 <input v-model="metric.inquiries" type="number" min="0" /></label>
-        <button @click="saveMetric">기록</button>
+        <div class="full"><button @click="saveMetric">기록</button></div>
       </div>
     </div>
     <div class="card">
-      <h3>수집 기록</h3>
-      <table v-if="metrics.length">
-        <thead><tr><th>ID</th><th>콘텐츠</th><th>채널</th><th>노출</th><th>유입</th><th>주문</th><th>문의</th><th>판정</th><th>판정 흐름</th></tr></thead>
+      <div class="sect-head"><h3>수집 기록</h3><span class="count">{{ metrics.length }}건</span></div>
+      <div v-if="metrics.length" class="table-wrap">
+      <table>
+        <thead><tr><th>ID</th><th>콘텐츠</th><th>채널</th><th>노출</th><th>유입</th><th>주문</th><th>문의</th><th>판정</th><th>판정 흐름</th><th></th></tr></thead>
         <tbody>
           <tr v-for="m in metrics" :key="m.id">
             <td>{{ m.id }}</td>
@@ -34,10 +35,12 @@
               <label class="check"><input type="checkbox" :checked="m.checkSession" @change="setCheck(m, 'checkSession', $event)" /> ②수집경로·세션</label>
               <label class="check"><input type="checkbox" :checked="m.checkDisplay" @change="setCheck(m, 'checkDisplay', $event)" /> ③채널표시</label>
             </td>
+            <td><button class="ghost" @click="deleteMetric(m.id)">삭제</button></td>
           </tr>
         </tbody>
       </table>
-      <p v-else class="muted">기록이 없습니다.</p>
+      </div>
+      <p v-else class="empty">기록이 없습니다.</p>
       <p class="muted small">판정 흐름: ① 발행 URL 실재 → ② 수집 경로·세션 상태 → ③ 채널 표시 여부 순서로 확인합니다.</p>
     </div>
   </section>
@@ -47,7 +50,7 @@
     <p class="muted">아래는 결정 대기 항목입니다. 확정값으로 채우지 않고 대기 표시로 둡니다.</p>
     <div class="card">
       <h3>모순 6건 (대기)</h3>
-      <ol>
+      <ol class="declist">
         <li>블로그 채널 — 종전 결정(로그인 세션 직접 포스팅) vs 약관·API 종료</li>
         <li>Instagram 게시 한도 100 vs 50</li>
         <li>TikTok Intended Use vs SOMUN 1차 사용 형태</li>
@@ -58,7 +61,7 @@
     </div>
     <div class="card">
       <h3>미확인 15건 (대기)</h3>
-      <ol>
+      <ol class="declist">
         <li>쿠팡 파트너스 약관 원문</li>
         <li>Instagram 한도·해시태그 확정값</li>
         <li>Threads 단독 약관 문구</li>
@@ -78,7 +81,7 @@
     </div>
     <div class="card">
       <h3>PO 결정 필요 3건 (대기)</h3>
-      <ol>
+      <ol class="declist">
         <li>모순-1 처리 방향</li>
         <li>모순-3 확인 선행 여부</li>
         <li>파일럿 발행에 쓸 SNS 계정</li>
@@ -95,21 +98,27 @@
         <span class="muted">상주 연결: 대기 (트랜치 2 범위)</span>
         <button class="ghost" @click="loadJobs">새로고침</button>
       </div>
-      <table v-if="jobs.length">
-        <thead><tr><th>ID</th><th>종류</th><th>상품</th><th>상태</th><th>작업자</th><th>사유</th><th>생성</th></tr></thead>
-        <tbody>
-          <tr v-for="j in jobs" :key="j.id">
-            <td>{{ j.id }}</td>
-            <td>{{ j.type }}</td>
-            <td>{{ j.refId }}</td>
-            <td>{{ j.status }}</td>
-            <td>{{ j.workerName || '—' }}</td>
-            <td>{{ j.error || '—' }}</td>
-            <td>{{ shortDate(j.createdAt) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else class="muted">작업이 없습니다.</p>
+      <div v-if="jobs.length" class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>종류</th><th>상품</th><th>상태</th><th>작업자</th><th>사유</th><th>생성</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="j in jobs" :key="j.id">
+              <td>{{ j.id }}</td>
+              <td>{{ j.type }}</td>
+              <td>{{ j.refId }}</td>
+              <td><span :class="'pill p-' + j.status">{{ j.status }}</span></td>
+              <td>{{ j.workerName || '—' }}</td>
+              <td>{{ j.error || '—' }}</td>
+              <td>{{ shortDate(j.createdAt) }}</td>
+              <td>
+                <button v-if="j.status === 'pending' || j.status === 'claimed'" class="ghost" @click="cancelJob(j.id)">취소</button>
+                <button class="ghost" @click="deleteJob(j.id)">삭제</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="empty">작업이 없습니다.</p>
       <p class="muted small">실패한 작업은 자동 재등록되지 않습니다. 원인을 확인한 뒤 상품을 다시 투입하세요.</p>
     </div>
   </section>
@@ -119,10 +128,14 @@
     <p class="muted">DB·업로드 백업과 실행 자리 안내입니다. 앞단은 Cloudflare 전제, 실행 자리는 로컬입니다.</p>
     <p v-if="error" class="error">{{ error }}</p>
     <div class="card">
-      <h3>정기 백업</h3>
+      <div class="sect-head"><h3>정기 백업</h3><span class="count">{{ backups.length }}세대 보관</span></div>
       <p>대상: DB 파일 + 업로드 폴더. 서버 기동 시 BACKUP_INTERVAL_MIN 간격으로 자동 실행됩니다.</p>
       <button @click="backupNow">지금 백업 실행</button>
       <p v-if="backupMsg" class="ok">{{ backupMsg }}</p>
+      <ul v-if="backups.length" class="speclist">
+        <li v-for="b in backups" :key="b"><span class="k">백업</span><span>{{ b }}</span></li>
+      </ul>
+      <p v-else class="empty">아직 백업이 없습니다.</p>
     </div>
     <div class="card">
       <h3>구성 메모</h3>
@@ -162,6 +175,7 @@ const metrics = ref([])
 const metric = ref({ contentId: '', channel: '', exposures: '', inflows: '', orders: '', inquiries: '' })
 const jobs = ref([])
 const backupMsg = ref('')
+const backups = ref([])
 
 function num(v) {
   return v === null || v === undefined ? '—' : v
@@ -184,6 +198,9 @@ async function load() {
       metrics.value = data.metrics || []
     } else if (props.view === 'resident') {
       await loadJobs()
+    } else if (props.view === 'system') {
+      const data = await apiFetch('/api/system/backups')
+      backups.value = data.backups || []
     }
   } catch (e) {
     error.value = e.message
@@ -193,6 +210,36 @@ async function load() {
 async function loadJobs() {
   const data = await apiFetch('/api/jobs')
   jobs.value = data.jobs || []
+}
+
+async function deleteMetric(id) {
+  error.value = ''
+  try {
+    await apiFetch(`/api/metrics/${id}`, { method: 'DELETE' })
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function cancelJob(id) {
+  error.value = ''
+  try {
+    await apiFetch(`/api/jobs/${id}/cancel`, { method: 'POST', body: JSON.stringify({}) })
+    await loadJobs()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function deleteJob(id) {
+  error.value = ''
+  try {
+    await apiFetch(`/api/jobs/${id}`, { method: 'DELETE' })
+    await loadJobs()
+  } catch (e) {
+    error.value = e.message
+  }
 }
 
 async function saveMetric() {
@@ -233,6 +280,8 @@ async function backupNow() {
   try {
     const res = await apiFetch('/api/system/backup', { method: 'POST' })
     backupMsg.value = `백업 완료: ${res.dest}`
+    const data = await apiFetch('/api/system/backups')
+    backups.value = data.backups || []
   } catch (e) {
     error.value = e.message
   }

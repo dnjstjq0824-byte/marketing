@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite"
@@ -99,6 +100,58 @@ func (s *Store) CreateUser(username, passwordHash, role string) (*User, error) {
 	return &User{ID: id, Username: username, PasswordHash: passwordHash, Role: role, CreatedAt: now, UpdatedAt: now}, nil
 }
 
+// ListUsers returns all operators oldest-first.
+func (s *Store) ListUsers() ([]*User, error) {
+	rows, err := s.db.Query(`SELECT id,username,password_hash,role,created_at,updated_at
+		FROM users ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*User{}
+	for rows.Next() {
+		u := &User{}
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// UpdateUserPassword replaces one user's password hash.
+func (s *Store) UpdateUserPassword(id int64, hash string) error {
+	res, err := s.db.Exec(`UPDATE users SET password_hash=?, updated_at=? WHERE id=?`, hash, nowUTC(), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteUser removes one operator.
+func (s *Store) DeleteUser(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM users WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CountUsers returns the operator count.
+func (s *Store) CountUsers() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
+	return n, err
+}
+
 // GetUserByUsername finds a user by login name.
 func (s *Store) GetUserByUsername(username string) (*User, error) {
 	u := &User{}
@@ -116,21 +169,31 @@ func (s *Store) GetUserByUsername(username string) (*User, error) {
 // ---------------------------------------------------------------------------
 
 // Product is an input product. ExitType A = partner mall link, B = affiliate link.
+// Business groups products so one engine serves every business line.
 type Product struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
 	SourceURL string `json:"sourceUrl"`
 	ExitType  string `json:"exitType"`
 	Priority  int    `json:"priority"`
+	Business  string `json:"business"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
 }
 
+const productCols = `id,name,source_url,exit_type,priority,business,created_at,updated_at`
+
+func scanProduct(row interface{ Scan(...any) error }) (*Product, error) {
+	p := &Product{}
+	err := row.Scan(&p.ID, &p.Name, &p.SourceURL, &p.ExitType, &p.Priority, &p.Business, &p.CreatedAt, &p.UpdatedAt)
+	return p, err
+}
+
 // CreateProduct inserts a product row.
-func (s *Store) CreateProduct(sourceURL, exitType string, priority int) (*Product, error) {
+func (s *Store) CreateProduct(sourceURL, exitType string, priority int, business string) (*Product, error) {
 	now := nowUTC()
-	res, err := s.db.Exec(`INSERT INTO products(name,source_url,exit_type,priority,created_at,updated_at)
-		VALUES('',?,?,?,?,?)`, sourceURL, exitType, priority, now, now)
+	res, err := s.db.Exec(`INSERT INTO products(name,source_url,exit_type,priority,business,created_at,updated_at)
+		VALUES('',?,?,?,?,?,?)`, sourceURL, exitType, priority, business, now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -140,28 +203,32 @@ func (s *Store) CreateProduct(sourceURL, exitType string, priority int) (*Produc
 
 // GetProduct loads one product.
 func (s *Store) GetProduct(id int64) (*Product, error) {
-	p := &Product{}
-	err := s.db.QueryRow(`SELECT id,name,source_url,exit_type,priority,created_at,updated_at
-		FROM products WHERE id=?`, id).
-		Scan(&p.ID, &p.Name, &p.SourceURL, &p.ExitType, &p.Priority, &p.CreatedAt, &p.UpdatedAt)
+	p, err := scanProduct(s.db.QueryRow(`SELECT `+productCols+` FROM products WHERE id=?`, id))
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
 	return p, err
 }
 
-// ListProducts returns newest-first products.
-func (s *Store) ListProducts(limit int) ([]*Product, error) {
-	rows, err := s.db.Query(`SELECT id,name,source_url,exit_type,priority,created_at,updated_at
-		FROM products ORDER BY id DESC LIMIT ?`, limit)
+// ListProducts returns newest-first products, optionally filtered by business.
+func (s *Store) ListProducts(limit int, business string) ([]*Product, error) {
+	q := `SELECT ` + productCols + ` FROM products`
+	var args []any
+	if business != "" {
+		q += ` WHERE business=?`
+		args = append(args, business)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []*Product
 	for rows.Next() {
-		p := &Product{}
-		if err := rows.Scan(&p.ID, &p.Name, &p.SourceURL, &p.ExitType, &p.Priority, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		p, err := scanProduct(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -173,6 +240,44 @@ func (s *Store) ListProducts(limit int) ([]*Product, error) {
 func (s *Store) SetProductName(id int64, name string) error {
 	_, err := s.db.Exec(`UPDATE products SET name=?, updated_at=? WHERE id=?`, name, nowUTC(), id)
 	return err
+}
+
+// UpdateProduct rewrites the editable product fields.
+func (s *Store) UpdateProduct(id int64, name, sourceURL, exitType string, priority int, business string) error {
+	res, err := s.db.Exec(`UPDATE products SET name=?, source_url=?, exit_type=?, priority=?, business=?, updated_at=?
+		WHERE id=?`, name, sourceURL, exitType, priority, business, nowUTC(), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteProduct hard-deletes a product and everything under it: jobs (which
+// carry no FK), images, reading, contents, and affiliate links. Publish logs
+// and metrics fall via the contents cascade. Upload files on disk are removed
+// by the caller. Missing ids return ErrNotFound.
+func (s *Store) DeleteProduct(id int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM jobs WHERE ref_id=?`, id); err != nil {
+		return err
+	}
+	res, err := tx.Exec(`DELETE FROM products WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +313,7 @@ func (s *Store) ListImages(productID int64) ([]*ProductImage, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*ProductImage
+	out := []*ProductImage{}
 	for rows.Next() {
 		im := &ProductImage{}
 		if err := rows.Scan(&im.ID, &im.ProductID, &im.Path, &im.Sort, &im.CreatedAt); err != nil {
@@ -217,6 +322,30 @@ func (s *Store) ListImages(productID int64) ([]*ProductImage, error) {
 		out = append(out, im)
 	}
 	return out, rows.Err()
+}
+
+// GetProductImage loads one image by id.
+func (s *Store) GetProductImage(id int64) (*ProductImage, error) {
+	im := &ProductImage{}
+	err := s.db.QueryRow(`SELECT id,product_id,path,sort,created_at FROM product_images
+		WHERE id=?`, id).Scan(&im.ID, &im.ProductID, &im.Path, &im.Sort, &im.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return im, err
+}
+
+// DeleteProductImage removes one image row. The file is unlinked by the caller.
+func (s *Store) DeleteProductImage(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM product_images WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +394,22 @@ func (s *Store) UpsertReading(r *Reading) (*Reading, error) {
 		}
 	}
 	return s.GetReadingByProduct(r.ProductID)
+}
+
+// UpdateReadingByProduct rewrites a product's reading fields (operator fix).
+func (s *Store) UpdateReadingByProduct(r *Reading) error {
+	res, err := s.db.Exec(`UPDATE readings SET product_name=?,price_summary=?,options_text=?,
+		shipping_text=?,detail_core=?,review_summary=?,image_desc=?,unknowns=?,updated_at=?
+		WHERE product_id=?`, r.ProductName, r.PriceSummary, r.OptionsText, r.ShippingText,
+		r.DetailCore, r.ReviewSummary, r.ImageDesc, r.Unknowns, nowUTC(), r.ProductID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // GetReadingByProduct loads a product's reading.
@@ -453,6 +598,19 @@ func (s *Store) ListRecentJobs() ([]*Job, error) {
 	return out, rows.Err()
 }
 
+// DeleteJob hard-deletes one job row.
+func (s *Store) DeleteJob(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM jobs WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ListJobsByRef returns a product's jobs (analyze + generate) oldest-first.
 func (s *Store) ListJobsByRef(refID int64) ([]*Job, error) {
 	rows, err := s.db.Query(`SELECT id,type,ref_id,status,worker_name,payload,result,error,
@@ -461,7 +619,7 @@ func (s *Store) ListJobsByRef(refID int64) ([]*Job, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*Job
+	out := []*Job{}
 	for rows.Next() {
 		j, err := scanJob(rows)
 		if err != nil {
@@ -509,8 +667,7 @@ func scanContent(row interface{ Scan(...any) error }) (*Content, error) {
 	return c, err
 }
 
-const contentCols = `id,product_id,channel,target_platform,channel_group,title,body,disclosure,
-	is_sponsored,is_virtual_persona,ai_label,status,target_account,scheduled_at,reserve_seq,held,hold_reason,created_at,updated_at`
+const contentCols = `id,product_id,channel,target_platform,channel_group,title,body,disclosure,is_sponsored,is_virtual_persona,ai_label,status,target_account,scheduled_at,reserve_seq,held,hold_reason,created_at,updated_at`
 
 func boolInt(b bool) int {
 	if b {
@@ -542,15 +699,23 @@ func (s *Store) GetContent(id int64) (*Content, error) {
 	return c, err
 }
 
-// ListContents filters by status ("" = all), newest-first.
-func (s *Store) ListContents(status string, limit int) ([]*Content, error) {
-	q := `SELECT ` + contentCols + ` FROM contents`
+// ListContents filters by status and business ("" = all), newest-first.
+func (s *Store) ListContents(status, business string, limit int) ([]*Content, error) {
+	q := `SELECT c.` + strings.ReplaceAll(contentCols, ",", ",c.") + ` FROM contents c JOIN products p ON p.id=c.product_id`
+	var conds []string
 	var args []any
 	if status != "" {
-		q += ` WHERE status=?`
+		conds = append(conds, `c.status=?`)
 		args = append(args, status)
 	}
-	q += ` ORDER BY id DESC LIMIT ?`
+	if business != "" {
+		conds = append(conds, `p.business=?`)
+		args = append(args, business)
+	}
+	if len(conds) > 0 {
+		q += ` WHERE ` + strings.Join(conds, " AND ")
+	}
+	q += ` ORDER BY c.id DESC LIMIT ?`
 	args = append(args, limit)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -673,6 +838,20 @@ func (s *Store) SetHoldReason(id int64, reason string) error {
 	return err
 }
 
+// DeleteContent hard-deletes one content item. Its publish logs and metrics
+// fall via FK cascade. Missing ids return ErrNotFound.
+func (s *Store) DeleteContent(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM contents WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Publish logs (duplicate-publish guard structure)
 // ---------------------------------------------------------------------------
@@ -714,6 +893,44 @@ func (s *Store) GetPublishLog(contentID int64, channel, account string) (*Publis
 		return nil, ErrNotFound
 	}
 	return l, err
+}
+
+// GetPublishLogByID loads one record by id.
+func (s *Store) GetPublishLogByID(id int64) (*PublishLog, error) {
+	l := &PublishLog{}
+	err := s.db.QueryRow(`SELECT id,content_id,channel,account,status,executed_at,note,created_at
+		FROM publish_logs WHERE id=?`, id).
+		Scan(&l.ID, &l.ContentID, &l.Channel, &l.Account, &l.Status, &l.ExecutedAt, &l.Note, &l.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return l, err
+}
+
+// UpdatePublishLog rewrites a plan record's status and note.
+func (s *Store) UpdatePublishLog(id int64, status, note string) error {
+	res, err := s.db.Exec(`UPDATE publish_logs SET status=?, note=? WHERE id=?`, status, note, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeletePublishLog removes one plan record.
+func (s *Store) DeletePublishLog(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM publish_logs WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ListPublishLogs returns newest-first records.
@@ -856,6 +1073,19 @@ func (s *Store) GetMetric(id int64) (*Metric, error) {
 	return m, err
 }
 
+// DeleteMetric removes one metric record.
+func (s *Store) DeleteMetric(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM metrics WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ListMetrics returns newest-first records.
 func (s *Store) ListMetrics(limit int) ([]*Metric, error) {
 	rows, err := s.db.Query(`SELECT `+metricCols+` FROM metrics ORDER BY id DESC LIMIT ?`, limit)
@@ -914,7 +1144,7 @@ func (s *Store) ListAffiliateLinks(productID int64) ([]*AffiliateLink, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*AffiliateLink
+	out := []*AffiliateLink{}
 	for rows.Next() {
 		l := &AffiliateLink{}
 		if err := rows.Scan(&l.ID, &l.ProductID, &l.PartnerName, &l.URL, &l.CreatedAt); err != nil {
@@ -925,9 +1155,97 @@ func (s *Store) ListAffiliateLinks(productID int64) ([]*AffiliateLink, error) {
 	return out, rows.Err()
 }
 
+// GetAffiliateLink loads one link by id.
+func (s *Store) GetAffiliateLink(id int64) (*AffiliateLink, error) {
+	l := &AffiliateLink{}
+	err := s.db.QueryRow(`SELECT id,product_id,partner_name,url,created_at FROM affiliate_links
+		WHERE id=?`, id).Scan(&l.ID, &l.ProductID, &l.PartnerName, &l.URL, &l.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return l, err
+}
+
+// UpdateAffiliateLink rewrites one link's partner name and URL.
+func (s *Store) UpdateAffiliateLink(id int64, partner, url string) error {
+	res, err := s.db.Exec(`UPDATE affiliate_links SET partner_name=?, url=? WHERE id=?`, partner, url, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteAffiliateLink hard-deletes one link. Missing ids return ErrNotFound.
+func (s *Store) DeleteAffiliateLink(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM affiliate_links WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard counters
 // ---------------------------------------------------------------------------
+
+// ListScheduledOn returns queued items scheduled on a date prefix (YYYY-MM-DD)
+// in execution order.
+func (s *Store) ListScheduledOn(datePrefix string) ([]*Content, error) {
+	rows, err := s.db.Query(`SELECT `+contentCols+` FROM contents
+		WHERE status='queued' AND scheduled_at LIKE ? ORDER BY scheduled_at ASC, reserve_seq ASC, id ASC`,
+		datePrefix+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Content
+	for rows.Next() {
+		c, err := scanContent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// BusinessCounts is one business line's dashboard summary.
+type BusinessCounts struct {
+	Business string `json:"business"`
+	Products int    `json:"products"`
+	Queued   int    `json:"queued"`
+	Review   int    `json:"review"`
+}
+
+// DashboardByBusiness aggregates counts per business line, ” last.
+func (s *Store) DashboardByBusiness() ([]*BusinessCounts, error) {
+	rows, err := s.db.Query(`SELECT p.business, COUNT(DISTINCT p.id),
+		COALESCE(SUM(CASE WHEN c.status='queued' THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN c.status='review' THEN 1 ELSE 0 END),0)
+		FROM products p LEFT JOIN contents c ON c.product_id=p.id
+		GROUP BY p.business ORDER BY (p.business=''), p.business ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*BusinessCounts{}
+	for rows.Next() {
+		b := &BusinessCounts{}
+		if err := rows.Scan(&b.Business, &b.Products, &b.Queued, &b.Review); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
 
 // Counts is the dashboard summary.
 type Counts struct {

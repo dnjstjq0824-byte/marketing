@@ -14,6 +14,12 @@
           <option value="published">published</option>
         </select>
       </label>
+      <label>사업
+        <select v-model="bizFilter" @change="load">
+          <option value="">전체 사업</option>
+          <option v-for="b in bizOptions" :key="b" :value="b">{{ b || '(미지정)' }}</option>
+        </select>
+      </label>
       <button @click="load">새로고침</button>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
@@ -24,17 +30,21 @@
         <ul class="picklist">
           <li v-for="c in items" :key="c.id">
             <button :class="{ active: selected === c.id }" @click="select(c.id)">
-              #{{ c.id }} [{{ c.channel }}] {{ c.title || '(제목 없음)' }} · {{ c.status }}
+              <span :class="'pill p-' + c.status">{{ c.status }}</span>
+              #{{ c.id }} [{{ c.channel }}] {{ c.title || '(제목 없음)' }}
               <span v-if="c.held" class="badge">보류</span>
             </button>
           </li>
         </ul>
-        <p v-if="!items.length" class="muted">해당 상태의 콘텐츠가 없습니다.</p>
+        <p v-if="!items.length" class="empty">해당 상태의 콘텐츠가 없습니다.</p>
       </div>
 
       <div v-if="detail" class="card grow2">
-        <h3>#{{ detail.id }} {{ detail.title || '(제목 없음)' }}</h3>
-        <p class="muted small">채널 {{ detail.channel }} · 상태 {{ detail.status }} · 상품 #{{ detail.productId }}</p>
+        <div class="sect-head">
+          <h3>#{{ detail.id }} {{ detail.title || '(제목 없음)' }}</h3>
+          <span :class="'pill p-' + detail.status">{{ detail.status }}</span>
+        </div>
+        <p class="muted small">채널 {{ detail.channel }} · 상품 #{{ detail.productId }}<span v-if="detail.isSponsored"> · 제휴</span></p>
 
         <div v-if="detail.disclosure" class="disclosure">
           <strong>대가 표시 (자동 삽입 · 삭제 불가)</strong>
@@ -67,9 +77,22 @@
           <span v-if="detail.status === 'queued'" class="muted small">발행(published)은 트랜치 2에서 열립니다.</span>
         </div>
         <p v-if="msg" class="ok">{{ msg }}</p>
+        <h4>삭제</h4>
+        <button class="ghost" @click="confirmDel = true">이 콘텐츠 삭제</button>
       </div>
       <div v-else class="card grow2">
         <p class="muted">왼쪽에서 콘텐츠를 선택하세요.</p>
+      </div>
+    </div>
+
+    <div v-if="confirmDel" class="modal-back" @click.self="confirmDel = false">
+      <div class="modal">
+        <h3>콘텐츠 #{{ selected }} 삭제</h3>
+        <p>발행 기록·지표가 함께 지워집니다. 되돌릴 수 없습니다.</p>
+        <div class="btnrow">
+          <button @click="doDelete">삭제</button>
+          <button class="ghost" @click="confirmDel = false">취소</button>
+        </div>
       </div>
     </div>
   </section>
@@ -80,12 +103,28 @@ import { onMounted, ref } from 'vue'
 import { apiFetch } from '../stores/auth.js'
 
 const filter = ref('')
+const bizFilter = ref('')
+const bizOptions = ref([])
 const items = ref([])
 const selected = ref(null)
 const detail = ref(null)
 const edit = ref({ title: '', body: '', persona: false })
 const error = ref('')
 const msg = ref('')
+const confirmDel = ref(false)
+
+async function doDelete() {
+  confirmDel.value = false
+  error.value = ''
+  try {
+    await apiFetch(`/api/contents/${selected.value}`, { method: 'DELETE' })
+    selected.value = null
+    detail.value = null
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
 
 const forward = { draft: 'review', review: 'approved', approved: 'queued', queued: 'published' }
 const backward = { review: 'draft', approved: 'review', queued: 'approved' }
@@ -99,9 +138,22 @@ function nextStates(status) {
 
 async function load() {
   error.value = ''
-  const qs = filter.value ? `?status=${filter.value}` : ''
+  const params = new URLSearchParams()
+  if (filter.value) params.set('status', filter.value)
+  if (bizFilter.value) params.set('business', bizFilter.value)
+  const qs = params.toString() ? `?${params.toString()}` : ''
   const data = await apiFetch(`/api/contents${qs}`)
   items.value = data.contents || []
+}
+
+async function loadBizOptions() {
+  try {
+    const data = await apiFetch('/api/products')
+    const set = new Set((data.products || []).map((p) => p.business || ''))
+    bizOptions.value = [...set].sort()
+  } catch {
+    /* options stay as-is */
+  }
 }
 
 async function select(id) {
@@ -141,5 +193,8 @@ async function move(to) {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  await loadBizOptions()
+})
 </script>

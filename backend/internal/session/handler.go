@@ -50,11 +50,16 @@ func (h *Handler) ListAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateRequest struct {
-	SessionState string `json:"sessionState"`
-	Usage        string `json:"usage"`
+	SessionState *string `json:"sessionState"`
+	Usage        *string `json:"usage"`
+	Owner        *string `json:"owner"`
+	Role         *string `json:"role"`
+	Business     *string `json:"business"`
+	PostingMode  *string `json:"postingMode"`
 }
 
-// UpdateAccount handles PATCH /api/session/accounts/{id}.
+// UpdateAccount handles PATCH /api/session/accounts/{id}: session state
+// (with hold/resume side effects) and owner/role/business fields.
 func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -66,19 +71,89 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	a, err := h.svc.SetSessionState(id, strings.TrimSpace(req.SessionState), strings.TrimSpace(req.Usage))
+	var account *Account
+	if req.SessionState != nil {
+		usage := ""
+		if req.Usage != nil {
+			usage = strings.TrimSpace(*req.Usage)
+		}
+		account, err = h.svc.SetSessionState(id, strings.TrimSpace(*req.SessionState), usage)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrNoAccount):
+				writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrBadState):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, "cannot update session")
+			}
+			return
+		}
+	}
+	if req.Owner != nil || req.Role != nil || req.Business != nil {
+		trimmed := func(s *string) *string {
+			if s == nil {
+				return nil
+			}
+			v := strings.TrimSpace(*s)
+			return &v
+		}
+		account, err = h.svc.UpdateAccountFields(id, trimmed(req.Owner), trimmed(req.Role), trimmed(req.Business))
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrNoAccount):
+				writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrBadRole):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, "cannot update account")
+			}
+			return
+		}
+	}
+	if req.PostingMode != nil {
+		account, err = h.svc.SetPostingMode(id, strings.TrimSpace(*req.PostingMode))
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrNoAccount):
+				writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrBadMode):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, "cannot set posting mode")
+			}
+			return
+		}
+	}
+	if account == nil {
+		account, err = h.svc.GetAccount(id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, account)
+}
+
+// Unregister handles DELETE /api/session/accounts/{id}.
+func (h *Handler) Unregister(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid account id")
+		return
+	}
+	if err := h.svc.UnregisterAccount(id); err != nil {
 		switch {
 		case errors.Is(err, ErrNoAccount):
 			writeError(w, http.StatusNotFound, err.Error())
-		case errors.Is(err, ErrBadState):
-			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ErrHeldItems):
+			writeError(w, http.StatusConflict, err.Error())
 		default:
-			writeError(w, http.StatusInternalServerError, "cannot update session")
+			writeError(w, http.StatusInternalServerError, "cannot unregister account")
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, a)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
 }
 
 // CheckNow handles POST /api/session/check (light inspection skeleton).
@@ -138,6 +213,59 @@ func (h *Handler) AddSlot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, sl)
+}
+
+// UpdateSlot handles PATCH /api/session/slots/{id}.
+func (h *Handler) UpdateSlot(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid slot id")
+		return
+	}
+	var req struct {
+		Label     *string `json:"label"`
+		AgentName *string `json:"agentName"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	trimmed := func(s *string) *string {
+		if s == nil {
+			return nil
+		}
+		v := strings.TrimSpace(*s)
+		return &v
+	}
+	sl, err := h.svc.UpdateSlot(id, trimmed(req.Label), trimmed(req.AgentName))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNoSlot):
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, sl)
+}
+
+// DeleteSlot handles DELETE /api/session/slots/{id}.
+func (h *Handler) DeleteSlot(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid slot id")
+		return
+	}
+	if err := h.svc.DeleteSlot(id); err != nil {
+		if errors.Is(err, ErrNoSlot) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot delete slot")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
 }
 
 func pathID(r *http.Request) (int64, error) {

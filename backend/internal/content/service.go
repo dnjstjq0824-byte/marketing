@@ -53,6 +53,11 @@ func (s *Service) Transition(id int64, to, actor string) (*store.Content, error)
 	return s.store.GetContent(id)
 }
 
+// Delete hard-deletes one content item with its publish logs and metrics.
+func (s *Service) Delete(id int64) error {
+	return s.store.DeleteContent(id)
+}
+
 // EditBody updates title/body. Disclosure lives in its own column and is
 // never modified here, so reviewers cannot delete the compensation notice.
 func (s *Service) EditBody(id int64, title, body string) (*store.Content, error) {
@@ -179,6 +184,28 @@ func (s *Service) RecordPublishPlan(contentID int64, channel, account, status, n
 		return nil, err
 	}
 	return s.store.CreatePublishLog(contentID, channel, account, status, note)
+}
+
+// UpdatePublishPlan rewrites a plan record's status and/or note. Status stays
+// within scheduled/held: done/failed outcomes need real execution (tranche 2).
+func (s *Service) UpdatePublishPlan(id int64, status, note *string) (*store.PublishLog, error) {
+	cur, err := s.store.GetPublishLogByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if status != nil {
+		if *status != "scheduled" && *status != "held" {
+			return nil, ErrBadPublishLog
+		}
+		cur.Status = *status
+	}
+	if note != nil {
+		cur.Note = *note
+	}
+	if err := s.store.UpdatePublishLog(id, cur.Status, cur.Note); err != nil {
+		return nil, err
+	}
+	return s.store.GetPublishLogByID(id)
 }
 
 // MetricInput is a reported performance record.

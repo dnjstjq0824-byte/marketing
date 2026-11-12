@@ -12,6 +12,14 @@
           <span>{{ s.agentName || '(빈 슬롯)' }}</span>
         </div>
       </div>
+      <ul class="speclist">
+        <li v-for="s in slots" :key="s.id">
+          <span class="k">칸 {{ s.label }}</span>
+          <input v-model="slotEdits[s.id]" :placeholder="s.agentName || '에이전트명'" />
+          <button class="ghost" @click="saveSlot(s)">저장</button>
+          <button class="ghost" @click="deleteSlot(s.id)">삭제</button>
+        </li>
+      </ul>
       <div class="formrow">
         <label>칸 이름 <input v-model="slotForm.label" placeholder="예: D" /></label>
         <label>에이전트명 <input v-model="slotForm.agentName" placeholder="예: 새 에이전트" /></label>
@@ -48,25 +56,27 @@
         <label class="check"><input v-model="alertOnly" type="checkbox" /> 이상 계정만</label>
         <button class="ghost" @click="load">새로고침</button>
       </div>
-      <table v-if="filtered.length">
-        <thead><tr><th>계정</th><th>역할</th><th>담당 사업</th><th>세션 상태</th><th>사용량</th><th>마지막 작업</th></tr></thead>
-        <tbody>
-          <tr v-for="a in filtered" :key="a.id">
-            <td>{{ a.name }}</td>
-            <td>{{ a.role === 'chief' ? '총괄' : '작업자' }}</td>
-            <td>{{ a.business || '—' }}</td>
-            <td>{{ sessionLabel(a.sessionState) }}</td>
-            <td>{{ a.usage || '—' }}</td>
-            <td>{{ shortDate(a.lastJobAt) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else class="muted">조건에 맞는 계정이 없습니다.</p>
+      <div v-if="filtered.length" class="table-wrap">
+        <table>
+          <thead><tr><th>계정</th><th>역할</th><th>담당 사업</th><th>세션 상태</th><th>사용량</th><th>마지막 작업</th></tr></thead>
+          <tbody>
+            <tr v-for="a in filtered" :key="a.id">
+              <td>{{ a.name }}</td>
+              <td><span :class="'pill p-' + a.role">{{ a.role === 'chief' ? '총괄' : '작업자' }}</span></td>
+              <td>{{ a.business || '—' }}</td>
+              <td><span :class="'pill p-' + (a.sessionState || 'pending')">{{ sessionLabel(a.sessionState) }}</span></td>
+              <td>{{ a.usage || '—' }}</td>
+              <td>{{ shortDate(a.lastJobAt) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="empty">조건에 맞는 계정이 없습니다.</p>
     </div>
 
     <div class="card">
       <h3>계정 등록</h3>
-      <div class="formrow">
+      <div class="form-grid">
         <label>계정명 <input v-model="accForm.name" /></label>
         <label>플랫폼 <input v-model="accForm.platform" placeholder="예: claude-app" /></label>
         <label>주인 <input v-model="accForm.owner" /></label>
@@ -74,7 +84,26 @@
           <select v-model="accForm.role"><option value="chief">총괄</option><option value="worker">작업자</option></select>
         </label>
         <label>담당 사업 <input v-model="accForm.business" /></label>
-        <button @click="addAccount">등록</button>
+        <div class="full"><button @click="addAccount">등록</button></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>계정 정보 수정</h3>
+      <p class="muted small">계정명은 큐 연결 키라 바꿀 수 없습니다. 주인·역할·사업만 수정합니다.</p>
+      <div class="form-grid">
+        <label>계정
+          <select v-model="accEdit.id">
+            <option value="">선택</option>
+            <option v-for="a in accounts" :key="a.id" :value="a.id">{{ a.name }}</option>
+          </select>
+        </label>
+        <label>주인 <input v-model="accEdit.owner" /></label>
+        <label>역할
+          <select v-model="accEdit.role"><option value="chief">총괄</option><option value="worker">작업자</option></select>
+        </label>
+        <label>담당 사업 <input v-model="accEdit.business" /></label>
+        <div class="full"><button @click="saveAccount">저장</button></div>
       </div>
     </div>
   </section>
@@ -88,33 +117,50 @@
         <button @click="checkNow">가벼운 점검 실행</button>
         <span class="muted small">점검은 가볍게 주기로 돌고, 실제 작업이 배정된 세션만 깨웁니다.</span>
       </div>
-      <table v-if="accounts.length">
-        <thead><tr><th>계정</th><th>플랫폼</th><th>세션 상태</th><th>자동 발행</th><th>마지막 확인</th><th>변경</th></tr></thead>
-        <tbody>
-          <tr v-for="a in accounts" :key="a.id">
-            <td>{{ a.name }}</td>
-            <td>{{ a.platform }}</td>
-            <td>{{ sessionLabel(a.sessionState) }}</td>
-            <td>{{ a.sessionState === 'connected' ? '가능 (트랜치 2)' : '불가 · 발행 정지' }}</td>
-            <td>{{ shortDate(a.lastCheckedAt) }}</td>
-            <td>
-              <button class="ghost" @click="setSession(a.id, 'connected')">연결</button>
-              <button class="ghost" @click="setSession(a.id, 'expired')">만료</button>
-              <button class="ghost" @click="setSession(a.id, 'limited')">한도</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else class="muted">등록된 채널 계정이 없습니다. 에이전트 연결 화면에서 등록하세요.</p>
+      <div v-if="accounts.length" class="table-wrap">
+        <table>
+          <thead><tr><th>계정</th><th>플랫폼</th><th>세션 상태</th><th>발행 모드</th><th>자동 발행</th><th>마지막 확인</th><th>변경</th></tr></thead>
+          <tbody>
+            <tr v-for="a in accounts" :key="a.id">
+              <td>{{ a.name }}</td>
+              <td>{{ a.platform }}</td>
+              <td><span :class="'pill p-' + (a.sessionState || 'pending')">{{ sessionLabel(a.sessionState) }}</span></td>
+              <td><span :class="a.postingMode === 'auto' ? 'pill p-approved' : 'pill p-review'">{{ a.postingMode === 'auto' ? '자동' : '수동' }}</span></td>
+              <td>{{ a.sessionState === 'connected' ? '가능 (트랜치 2)' : '불가 · 발행 정지' }}</td>
+              <td>{{ shortDate(a.lastCheckedAt) }}</td>
+              <td>
+                <button class="ghost" @click="setSession(a.id, 'connected')">연결</button>
+                <button class="ghost" @click="setSession(a.id, 'expired')">만료</button>
+                <button class="ghost" @click="setSession(a.id, 'limited')">한도</button>
+                <button class="ghost" @click="toggleMode(a)">모드 전환</button>
+                <button class="ghost" @click="confirmUnreg = a.id">해제</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="empty">등록된 채널 계정이 없습니다. 에이전트 연결 화면에서 등록하세요.</p>
     </div>
     <div class="card">
-      <h3>재로그인 필요 큐</h3>
-      <ul v-if="relogin.length">
+      <div class="sect-head"><h3>재로그인 필요 큐</h3><span class="count">{{ relogin.length }}건</span></div>
+      <ul v-if="relogin.length" class="speclist">
         <li v-for="r in relogin" :key="r.accountId">
-          {{ r.accountName }} ({{ r.owner || '주인 미지정' }}) · 보류 {{ r.heldCount }}건 · {{ sessionLabel(r.sessionState) }}
+          <span class="k">{{ r.accountName }}</span>
+          <span>{{ r.owner || '주인 미지정' }} · 보류 {{ r.heldCount }}건 · <span :class="'pill p-' + r.sessionState">{{ sessionLabel(r.sessionState) }}</span></span>
         </li>
       </ul>
-      <p v-else class="muted">없음</p>
+      <p v-else class="empty">없음</p>
+    </div>
+
+    <div v-if="confirmUnreg !== null" class="modal-back" @click.self="confirmUnreg = null">
+      <div class="modal">
+        <h3>계정 해제</h3>
+        <p>보류 중인 예약이 있으면 해제할 수 없습니다.</p>
+        <div class="btnrow">
+          <button @click="doUnregister">해제</button>
+          <button class="ghost" @click="confirmUnreg = null">취소</button>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -147,6 +193,57 @@ const bizFilter = ref('')
 const alertOnly = ref(false)
 const slotForm = ref({ label: '', agentName: '' })
 const accForm = ref({ name: '', platform: '', owner: '', role: 'worker', business: '' })
+const slotEdits = ref({})
+const accEdit = ref({ id: '', owner: '', role: 'worker', business: '' })
+const confirmUnreg = ref(null)
+
+async function saveSlot(s) {
+  error.value = ''
+  try {
+    const name = slotEdits.value[s.id] !== undefined ? slotEdits.value[s.id] : s.agentName
+    await apiFetch(`/api/session/slots/${s.id}`, { method: 'PATCH', body: JSON.stringify({ agentName: name }) })
+    delete slotEdits.value[s.id]
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function deleteSlot(id) {
+  error.value = ''
+  try {
+    await apiFetch(`/api/session/slots/${id}`, { method: 'DELETE' })
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function saveAccount() {
+  error.value = ''
+  try {
+    await apiFetch(`/api/session/accounts/${accEdit.value.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ owner: accEdit.value.owner, role: accEdit.value.role, business: accEdit.value.business }),
+    })
+    accEdit.value = { id: '', owner: '', role: 'worker', business: '' }
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function doUnregister() {
+  const id = confirmUnreg.value
+  confirmUnreg.value = null
+  error.value = ''
+  try {
+    await apiFetch(`/api/session/accounts/${id}`, { method: 'DELETE' })
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
 
 const ALERT = new Set(['expired', 'limited', 'inactive_hold'])
 
@@ -221,6 +318,17 @@ async function setSession(id, state) {
   error.value = ''
   try {
     await apiFetch(`/api/session/accounts/${id}`, { method: 'PATCH', body: JSON.stringify({ sessionState: state }) })
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function toggleMode(a) {
+  error.value = ''
+  try {
+    const next = a.postingMode === 'auto' ? 'manual' : 'auto'
+    await apiFetch(`/api/session/accounts/${a.id}`, { method: 'PATCH', body: JSON.stringify({ postingMode: next }) })
     await load()
   } catch (e) {
     error.value = e.message

@@ -75,6 +75,57 @@ func (h *Handler) ListForOperator(w http.ResponseWriter, r *http.Request) {
 	h.listJobs(w)
 }
 
+type cancelRequest struct {
+	Reason string `json:"reason"`
+}
+
+// CancelForOperator handles POST /api/jobs/{id}/cancel: a pending/claimed job
+// is marked failed like a worker failure (never requeues). Finished jobs 409.
+func (h *Handler) CancelForOperator(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	var req cancelRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = "cancelled by operator"
+	}
+	job, err := h.svc.store.SetJobFailed(id, reason)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "job not found")
+		case errors.Is(err, store.ErrAlreadyDone):
+			writeError(w, http.StatusConflict, "job already finished")
+		default:
+			writeError(w, http.StatusInternalServerError, "cannot cancel job")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job": toView(job)})
+}
+
+// DeleteForOperator handles DELETE /api/jobs/{id}: purge one job row.
+func (h *Handler) DeleteForOperator(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	if err := h.svc.store.DeleteJob(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot delete job")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
+}
+
 func (h *Handler) listJobs(w http.ResponseWriter) {
 	jobs, err := h.svc.Recent()
 	if err != nil {

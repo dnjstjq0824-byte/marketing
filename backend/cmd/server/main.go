@@ -57,6 +57,8 @@ func run() error {
 
 	stopBackup := startBackupScheduler(st, cfg)
 	defer stopBackup()
+	stopCheck := startCheckScheduler(sessionSvc, cfg)
+	defer stopCheck()
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -99,6 +101,29 @@ func startBackupScheduler(st *store.Store, cfg *config.Config) (stop func()) {
 					continue
 				}
 				log.Printf("backup ok: %s", dest)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// startCheckScheduler runs the light periodic session inspection (§9).
+// It only refreshes last-checked timestamps; waking stays per-assignment.
+func startCheckScheduler(sessionSvc *session.Service, cfg *config.Config) (stop func()) {
+	if cfg.CheckEveryMin <= 0 {
+		return func() {}
+	}
+	ticker := time.NewTicker(time.Duration(cfg.CheckEveryMin) * time.Minute)
+	done := make(chan struct{})
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				n := sessionSvc.CheckNow()
+				log.Printf("session check ok: %d accounts", n)
 			case <-done:
 				return
 			}

@@ -22,9 +22,11 @@ func NewHandler(svc *Service, st *store.Store) *Handler {
 	return &Handler{svc: svc, store: st}
 }
 
-// List handles GET /api/contents?status=.
+// List handles GET /api/contents?status=&business=.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	items, err := h.store.ListContents(strings.TrimSpace(r.URL.Query().Get("status")), 200)
+	items, err := h.store.ListContents(
+		strings.TrimSpace(r.URL.Query().Get("status")),
+		strings.TrimSpace(r.URL.Query().Get("business")), 200)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot list contents")
 		return
@@ -52,6 +54,24 @@ func (h *Handler) Detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, c)
+}
+
+// Delete handles DELETE /api/contents/{id}.
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid content id")
+		return
+	}
+	if err := h.svc.Delete(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "content not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot delete content")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
 }
 
 type updateRequest struct {
@@ -210,6 +230,60 @@ func (h *Handler) CreatePublishLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, rec)
 }
 
+type publishLogUpdateRequest struct {
+	Status *string `json:"status"`
+	Note   *string `json:"note"`
+}
+
+// UpdatePublishLog handles PATCH /api/publish-logs/{id}.
+func (h *Handler) UpdatePublishLog(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid log id")
+		return
+	}
+	var req publishLogUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Status != nil {
+		trimmed := strings.TrimSpace(*req.Status)
+		req.Status = &trimmed
+	}
+	rec, err := h.svc.UpdatePublishPlan(id, req.Status, req.Note)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "publish log not found")
+		case errors.Is(err, ErrBadPublishLog):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "cannot update publish log")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+// DeletePublishLog handles DELETE /api/publish-logs/{id}.
+func (h *Handler) DeletePublishLog(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid log id")
+		return
+	}
+	if err := h.store.DeletePublishLog(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "publish log not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot delete publish log")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
+}
+
 // ListPublishLogs handles GET /api/publish-logs.
 func (h *Handler) ListPublishLogs(w http.ResponseWriter, r *http.Request) {
 	items, err := h.store.ListPublishLogs(200)
@@ -270,6 +344,24 @@ type metricCheckRequest struct {
 	CheckSession bool   `json:"checkSession"`
 	CheckDisplay bool   `json:"checkDisplay"`
 	Note         string `json:"note"`
+}
+
+// DeleteMetric handles DELETE /api/metrics/{id}.
+func (h *Handler) DeleteMetric(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid metric id")
+		return
+	}
+	if err := h.store.DeleteMetric(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "metric not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot delete metric")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
 }
 
 // UpdateMetricChecks handles PATCH /api/metrics/{id}: the 3-step judgment flow.

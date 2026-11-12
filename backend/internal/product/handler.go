@@ -39,6 +39,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		in.SourceURL = r.FormValue("sourceUrl")
 		in.ExitType = r.FormValue("exitType")
+		in.Business = r.FormValue("business")
 		if raw := r.FormValue("priority"); raw != "" {
 			p, err := strconv.Atoi(raw)
 			if err != nil {
@@ -69,12 +70,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			SourceURL string `json:"sourceUrl"`
 			ExitType  string `json:"exitType"`
 			Priority  int    `json:"priority"`
+			Business  string `json:"business"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		in = CreateInput{SourceURL: req.SourceURL, ExitType: req.ExitType, Priority: req.Priority}
+		in = CreateInput{SourceURL: req.SourceURL, ExitType: req.ExitType, Priority: req.Priority, Business: req.Business}
 	}
 	res, err := h.svc.Create(in)
 	if err != nil {
@@ -98,9 +100,9 @@ func (h *Handler) saveUpload(fh *multipart.FileHeader) (string, error) {
 	return saveUploadedFile(h.uploadDir, f, fh.Filename)
 }
 
-// List handles GET /api/products.
+// List handles GET /api/products?business=.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	items, err := h.store.ListProducts(200)
+	items, err := h.store.ListProducts(200, strings.TrimSpace(r.URL.Query().Get("business")))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot list products")
 		return
@@ -128,6 +130,194 @@ func (h *Handler) Detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
+}
+
+// Delete handles DELETE /api/products/{id}: hard delete with cascade plus
+// upload file cleanup.
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid product id")
+		return
+	}
+	paths, err := h.svc.Delete(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "product not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot delete product")
+		return
+	}
+	removed := 0
+	for _, p := range paths {
+		if err := os.Remove(filepath.Join(h.uploadDir, filepath.Base(p))); err == nil {
+			removed++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id, "imagesRemoved": removed})
+}
+
+// DeleteAffiliate handles DELETE /api/products/{id}/affiliate-links/{linkId}.
+func (h *Handler) DeleteAffiliate(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid product id")
+		return
+	}
+	linkID, err := pathID(r, "linkId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid link id")
+		return
+	}
+	link, err := h.store.GetAffiliateLink(linkID)
+	if err != nil || link.ProductID != id {
+		writeError(w, http.StatusNotFound, "affiliate link not found")
+		return
+	}
+	if err := h.store.DeleteAffiliateLink(linkID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "affiliate link not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot delete link")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": linkID})
+}
+
+type updateRequest struct {
+	Name      string `json:"name"`
+	SourceURL string `json:"sourceUrl"`
+	ExitType  string `json:"exitType"`
+	Priority  int    `json:"priority"`
+	Business  string `json:"business"`
+}
+
+// Update handles PATCH /api/products/{id}.
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid product id")
+		return
+	}
+	var req updateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	p, err := h.svc.Update(id, UpdateInput{
+		Name: strings.TrimSpace(req.Name), SourceURL: strings.TrimSpace(req.SourceURL),
+		ExitType: req.ExitType, Priority: req.Priority, Business: req.Business,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "product not found")
+		case errors.Is(err, ErrBadExitType), errors.Is(err, ErrBadURL), errors.Is(err, ErrBadPriority):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "cannot update product")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+type readingRequest struct {
+	ProductName   string `json:"productName"`
+	PriceSummary  string `json:"priceSummary"`
+	OptionsText   string `json:"optionsText"`
+	ShippingText  string `json:"shippingText"`
+	DetailCore    string `json:"detailCore"`
+	ReviewSummary string `json:"reviewSummary"`
+	ImageDesc     string `json:"imageDesc"`
+	Unknowns      string `json:"unknowns"`
+}
+
+// UpdateReading handles PATCH /api/products/{id}/reading.
+func (h *Handler) UpdateReading(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid product id")
+		return
+	}
+	var req readingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	rd, err := h.svc.UpdateReading(id, &store.Reading{
+		ProductName: req.ProductName, PriceSummary: req.PriceSummary, OptionsText: req.OptionsText,
+		ShippingText: req.ShippingText, DetailCore: req.DetailCore, ReviewSummary: req.ReviewSummary,
+		ImageDesc: req.ImageDesc, Unknowns: req.Unknowns,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "product or reading not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot update reading")
+		return
+	}
+	writeJSON(w, http.StatusOK, rd)
+}
+
+// DeleteImage handles DELETE /api/products/{id}/images/{imageId}.
+func (h *Handler) DeleteImage(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid product id")
+		return
+	}
+	imageID, err := pathID(r, "imageId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid image id")
+		return
+	}
+	path, err := h.svc.DeleteImage(id, imageID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "image not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot delete image")
+		return
+	}
+	_ = os.Remove(filepath.Join(h.uploadDir, filepath.Base(path)))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": imageID})
+}
+
+// UpdateAffiliate handles PATCH /api/products/{id}/affiliate-links/{linkId}.
+func (h *Handler) UpdateAffiliate(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid product id")
+		return
+	}
+	linkID, err := pathID(r, "linkId")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid link id")
+		return
+	}
+	var req affiliateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	link, err := h.svc.UpdateAffiliate(id, linkID, strings.TrimSpace(req.PartnerName), strings.TrimSpace(req.URL))
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "affiliate link not found")
+		case errors.Is(err, ErrBadURL):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "cannot update link")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"affiliateLink": link})
 }
 
 type affiliateRequest struct {

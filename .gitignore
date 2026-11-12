@@ -4,6 +4,7 @@ web/node_modules/
 backend/somun
 backend/somun.exe
 backend/*.exe
+backend/*.exe~
 backend/*.test
 
 # 로컬 데이터 (DB·업로드·백업)

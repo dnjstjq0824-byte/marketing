@@ -90,7 +90,7 @@ func TestNextBadType(t *testing.T) {
 
 func TestResultDoneTwice400(t *testing.T) {
 	st := openHandlerStore(t)
-	p, _ := st.CreateProduct("https://example.com/x", "A", 0)
+	p, _ := st.CreateProduct("https://example.com/x", "A", 0, "")
 	j, _ := st.CreateJob(JobAnalyze, p.ID, "{}")
 	if _, err := st.ClaimNextJob(JobAnalyze, "w"); err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestResultDoneTwice400(t *testing.T) {
 
 func TestFailRequiresReason(t *testing.T) {
 	st := openHandlerStore(t)
-	p, _ := st.CreateProduct("https://example.com/x", "A", 0)
+	p, _ := st.CreateProduct("https://example.com/x", "A", 0, "")
 	j, _ := st.CreateJob(JobAnalyze, p.ID, "{}")
 	h := testHandler(st)
 	req := httptest.NewRequest("POST", "/api/worker/jobs/x/fail", strings.NewReader(`{"error":""}`))
@@ -130,7 +130,7 @@ func TestFailRequiresReason(t *testing.T) {
 
 func TestDefaultWorkerName(t *testing.T) {
 	st := openHandlerStore(t)
-	p, _ := st.CreateProduct("https://example.com/x", "A", 0)
+	p, _ := st.CreateProduct("https://example.com/x", "A", 0, "")
 	if _, err := st.CreateJob(JobAnalyze, p.ID, "{}"); err != nil {
 		t.Fatal(err)
 	}

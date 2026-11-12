@@ -40,6 +40,7 @@ type Config struct {
 	AdminPass      string
 	BackupEveryMin int // 0 disables the scheduler; manual backup stays available
 	BackupKeep     int
+	CheckEveryMin  int // light session inspection interval; 0 disables the timer
 }
 
 // Load reads env, applies defaults, validates, and ensures directories.
@@ -70,6 +71,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("BACKUP_KEEP must be a positive integer")
 	}
 	c.BackupKeep = keep
+	checkEvery, err := strconv.Atoi(envOr("CHECK_INTERVAL_MIN", "15"))
+	if err != nil || checkEvery < 0 {
+		return nil, fmt.Errorf("CHECK_INTERVAL_MIN must be a non-negative integer")
+	}
+	c.CheckEveryMin = checkEvery
 
 	if strings.TrimSpace(c.Port) == "" {
 		return nil, fmt.Errorf("PORT must not be empty")
@@ -98,8 +104,8 @@ func (c *Config) Summary() string {
 	if c.WorkerTokenSet {
 		token = "(from env)"
 	}
-	return fmt.Sprintf("port=%s data=%s db=%s backup_every_min=%d backup_keep=%d worker_token=%s admin=%s",
-		c.Port, c.DataDir, c.DBPath, c.BackupEveryMin, c.BackupKeep, token, c.AdminUser)
+	return fmt.Sprintf("port=%s data=%s db=%s backup_every_min=%d backup_keep=%d check_every_min=%d worker_token=%s admin=%s",
+		c.Port, c.DataDir, c.DBPath, c.BackupEveryMin, c.BackupKeep, c.CheckEveryMin, token, c.AdminUser)
 }
 
 func envOr(key, fallback string) string {

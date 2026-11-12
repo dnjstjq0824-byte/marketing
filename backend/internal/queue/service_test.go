@@ -25,7 +25,7 @@ func openTestStore(t *testing.T) *store.Store {
 
 func seedProduct(t *testing.T, st *store.Store, exit string) int64 {
 	t.Helper()
-	p, err := st.CreateProduct("https://example.com/item", exit, 0)
+	p, err := st.CreateProduct("https://example.com/item", exit, 0, "")
 	if err != nil {
 		t.Fatalf("seed product: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestGenerateResultDrafts(t *testing.T) {
 	if kept != 2 || done.Status != StatusDone {
 		t.Fatalf("kept=%d status=%s", kept, done.Status)
 	}
-	drafts, err := st.ListContents("draft", 10)
+	drafts, err := st.ListContents("draft", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}

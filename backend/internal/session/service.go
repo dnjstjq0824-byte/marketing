@@ -44,6 +44,15 @@ var (
 	ErrNoSlotLabel   = errors.New("slot label is required")
 	ErrSlotTaken     = errors.New("slot label already exists")
 	ErrFinalDisposal = errors.New("release/transfer is a PO decision, not implemented")
+	ErrHeldItems     = errors.New("account has held reservations")
+	ErrBadMode       = errors.New("posting mode must be auto or manual")
+)
+
+// Posting modes: auto executes on schedule, manual prepares the queue and a
+// human publishes (field pattern for long-asset accounts).
+const (
+	PostingAuto   = "auto"
+	PostingManual = "manual"
 )
 
 // Account is one agent/channel account with session liveness.
@@ -55,6 +64,7 @@ type Account struct {
 	Role          string `json:"role"`
 	Business      string `json:"business"`
 	SessionState  string `json:"sessionState"`
+	PostingMode   string `json:"postingMode"`
 	LastCheckedAt string `json:"lastCheckedAt"`
 	LastWakeAt    string `json:"lastWakeAt"`
 	Usage         string `json:"usage"`
@@ -121,7 +131,7 @@ func (s *Service) RegisterAccount(name, platform, owner, role, business string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a := &Account{ID: s.nextID, Name: name, Platform: platform, Owner: owner,
-		Role: role, Business: business, SessionState: StatePending}
+		Role: role, Business: business, SessionState: StatePending, PostingMode: PostingManual}
 	s.accounts[s.nextID] = a
 	s.nextID++
 	return copyAccount(a), nil
@@ -217,6 +227,72 @@ func (s *Service) Wake(id int64) (*Account, error) {
 	return copyAccount(a), nil
 }
 
+// UpdateAccountFields edits owner/role/business. The name is the stable key
+// that queued items reference, so it is immutable through this API.
+func (s *Service) UpdateAccountFields(id int64, owner, role, business *string) (*Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.accounts[id]
+	if !ok {
+		return nil, ErrNoAccount
+	}
+	if owner != nil {
+		a.Owner = *owner
+	}
+	if role != nil {
+		if *role != RoleChief && *role != RoleWorker {
+			return nil, ErrBadRole
+		}
+		a.Role = *role
+	}
+	if business != nil {
+		a.Business = *business
+	}
+	return copyAccount(a), nil
+}
+
+// SetPostingMode switches an account between auto and manual posting.
+func (s *Service) SetPostingMode(id int64, mode string) (*Account, error) {
+	if mode != PostingAuto && mode != PostingManual {
+		return nil, ErrBadMode
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.accounts[id]
+	if !ok {
+		return nil, ErrNoAccount
+	}
+	a.PostingMode = mode
+	return copyAccount(a), nil
+}
+
+// UnregisterAccount removes an account. Accounts with held reservations are
+// refused so queued items never lose their owner silently.
+func (s *Service) UnregisterAccount(id int64) error {
+	s.mu.Lock()
+	a, ok := s.accounts[id]
+	if !ok {
+		s.mu.Unlock()
+		return ErrNoAccount
+	}
+	name := a.Name
+	s.mu.Unlock()
+	held, err := s.store.ListHeldByAccount(name)
+	if err != nil {
+		return err
+	}
+	if len(held) > 0 {
+		return fmt.Errorf("%w (%d held)", ErrHeldItems, len(held))
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.accounts[id]; !ok {
+		return ErrNoAccount
+	}
+	delete(s.accounts, id)
+	return nil
+}
+
 // ReloginQueue gathers expired/limited accounts with their held counts.
 func (s *Service) ReloginQueue() []*ReloginItem {
 	s.mu.Lock()
@@ -268,6 +344,43 @@ func (s *Service) AddSlot(label, agentName string) (*Slot, error) {
 	s.nextID++
 	cp := *sl
 	return &cp, nil
+}
+
+// UpdateSlot rewrites a slot's label and/or agent name.
+func (s *Service) UpdateSlot(id int64, label, agentName *string) (*Slot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sl, ok := s.slots[id]
+	if !ok {
+		return nil, ErrNoSlot
+	}
+	if label != nil {
+		if *label == "" {
+			return nil, ErrNoSlotLabel
+		}
+		for otherID, other := range s.slots {
+			if otherID != id && other.Label == *label {
+				return nil, ErrSlotTaken
+			}
+		}
+		sl.Label = *label
+	}
+	if agentName != nil {
+		sl.AgentName = *agentName
+	}
+	cp := *sl
+	return &cp, nil
+}
+
+// DeleteSlot removes one slot.
+func (s *Service) DeleteSlot(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.slots[id]; !ok {
+		return ErrNoSlot
+	}
+	delete(s.slots, id)
+	return nil
 }
 
 func copyAccount(a *Account) *Account {

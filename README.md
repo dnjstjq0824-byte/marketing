@@ -4,9 +4,13 @@
 로컬에서 비용 0원으로 돌린다. 주문·결제는 파트너 몰에서 일어나며 이 시스템은
 주문을 받지 않는다.
 
-트랜치 1 범위: 플랫폼 뼈대·상품·판독·콘텐츠·검수·작업 큐·웹 콘솔 15보기·
-세션/슬롯 골격·모바일 앱 안내 화면. SNS 실등록·실발행, Muse 실연동,
-Flutter 앱은 트랜치 2이며 이 리포에 그 코드는 없다.
+문서: [기획서](PLANNING.md) · [설계서](DESIGN.md) · [상용화 계획](PLAN.md) ·
+본 README(실행·운영).
+
+현재 범위: 트랜치 1(플랫폼 뼈대·상품·판독·콘텐츠·검수·작업 큐·
+웹 콘솔 15보기·세션/슬롯 골격·모바일 앱 안내 화면) + 디자인·CRUD 전수·
+다사업 차원·발행 모드 보강. SNS 실등록·실발행, Muse 실연동, Flutter 앱은
+트랜치 2이며 이 리포에 그 코드는 없다.
 
 ## 스택
 
@@ -20,10 +24,11 @@ Flutter 앱은 트랜치 2이며 이 리포에 그 코드는 없다.
 세 창을 연다(프로젝트 루트 기준).
 
 ```powershell
-# 1. 백엔드 (기본 :8080, dist가 있으면 콘솔까지 서빙)
+# 1. 백엔드 (기본 :8080, dist가 있으면 콘솔까지 서빙). 반드시 루트에서 실행한다.
 cd backend
 go build -o somun.exe ./cmd/server
-.\somun.exe
+cd ..
+.\backend\somun.exe
 ```
 
 ```powershell
@@ -68,14 +73,72 @@ SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 | ADMIN_USER / ADMIN_PASS | admin / changeme123 | 최초 운영자 시드 |
 | BACKUP_INTERVAL_MIN | 60 | 정기 백업 간격(분), 0이면 스케줄러 끔 |
 | BACKUP_KEEP | 7 | 백업 보관 세대 |
+| CHECK_INTERVAL_MIN | 15 | 세션 경량 점검 간격(분), 0이면 타이머 끔 |
+| WEB_DIST_DIR | web/dist | 서빙할 콘솔 빌드 경로 |
 | SERVER_URL | http://localhost:8080 | 작업자 접속 주소 |
 | WORKER_NAME | resident-claude | X-Worker-Name 미지정 시 기록명 |
 | POLL_INTERVAL_SEC | 5 | 작업자 폴링 간격 |
+| WORKER_TIMEOUT_SEC | 30 | 작업자 요청 타임아웃(초) |
+
+## API
+
+인증 두 갈래: 운영자 화면은 `Authorization: Bearer <로그인 토큰>`,
+작업자는 `Bearer <WORKER_TOKEN>` + `X-Worker-Name`. 오류 형식은
+`{ "error": "메시지" }` + HTTP 상태 코드다.
+
+| 메서드·경로 | 인증 | 설명 |
+|---|---|---|
+| GET /api/health | 없음 | 생존 확인 |
+| POST /api/auth/login | 없음 | 운영자 로그인 → 토큰 |
+| GET /api/auth/me | 운영자 | 세션 확인 |
+| POST /api/auth/logout | 운영자 | 세션 파기 |
+| PATCH /api/auth/password | 운영자 | 본인 비밀번호 변경 |
+| GET/POST /api/users | 운영자 | 운영자 목록·추가 |
+| DELETE /api/users/{id} | 운영자 | 운영자 삭제(본인·마지막 제외) |
+| GET/POST /api/products | 운영자 | 상품 목록(?business=)·등록(등록 시 analyze 자동 생성) |
+| GET /api/products/{id} | 운영자 | 상품+이미지+판독+작업+제휴링크 |
+| PATCH /api/products/{id} | 운영자 | 상품 수정 |
+| PATCH /api/products/{id}/reading | 운영자 | 판독 결과 수정 |
+| DELETE /api/products/{id} | 운영자 | 상품 하드 삭제(하위 전체+업로드 파일) |
+| DELETE /api/products/{id}/images/{imageId} | 운영자 | 이미지 1장 삭제 |
+| POST /api/products/{id}/affiliate-links | 운영자 | 제휴 링크 등록 |
+| PATCH /api/products/{id}/affiliate-links/{linkId} | 운영자 | 제휴 링크 수정 |
+| DELETE /api/products/{id}/affiliate-links/{linkId} | 운영자 | 제휴 링크 1건 삭제 |
+| DELETE /api/contents/{id} | 운영자 | 콘텐츠 하드 삭제(기록·지표 포함) |
+| GET /api/contents?status=&business= | 운영자 | 콘텐츠 목록 |
+| GET/PATCH /api/contents/{id} | 운영자 | 조회·본문수정·상태전이·가상인물 표시 |
+| POST /api/contents/{id}/schedule | 운영자 | 발행 예약(과거 시각 거부) |
+| GET /api/publish-queue?group= | 운영자 | 군별 발행 큐(official_api·manual 분리) |
+| GET/POST /api/publish-logs | 운영자 | 발행 기록(중복 삼중항 거부) |
+| PATCH /api/publish-logs/{id} | 운영자 | 기록 상태·메모 수정 |
+| DELETE /api/publish-logs/{id} | 운영자 | 기록 삭제 |
+| GET/POST /api/metrics | 운영자 | 지표 기록·목록(0·누락은 원인 미분류) |
+| PATCH /api/metrics/{id} | 운영자 | 3단계 판정 흐름 체크 |
+| DELETE /api/metrics/{id} | 운영자 | 지표 삭제 |
+| GET /api/jobs | 운영자 | 작업 최근 100건(실패 확인용) |
+| POST /api/jobs/{id}/cancel | 운영자 | 작업 취소(실패 처리, 재등록 없음) |
+| DELETE /api/jobs/{id} | 운영자 | 작업 삭제 |
+| GET /api/dashboard | 운영자 | 집계+오늘 일정+사업별 현황+재로그인 큐 |
+| POST /api/system/backup | 운영자 | 수동 백업 |
+| GET /api/system/backups | 운영자 | 백업 세대 목록(최신순) |
+| GET/POST /api/session/accounts | 운영자 | 세션 계정 목록·등록 |
+| PATCH /api/session/accounts/{id} | 운영자 | 세션 상태(보류·재개)·발행 모드·주인·역할·사업 변경 |
+| POST /api/session/accounts/{id}/wake | 운영자 | 배정 세션 깨우기 |
+| POST /api/session/check | 운영자 | 경량 점검 수동 실행 |
+| GET /api/session/relogin-queue | 운영자 | 재로그인 필요 목록 |
+| DELETE /api/session/accounts/{id} | 운영자 | 계정 해제(보류건 있으면 거부) |
+| GET/POST /api/session/slots | 운영자 | 에이전트 슬롯 목록·추가 |
+| PATCH /api/session/slots/{id} | 운영자 | 슬롯 수정 |
+| DELETE /api/session/slots/{id} | 운영자 | 슬롯 삭제 |
+| GET /api/worker/jobs/next?type= | 작업자 | 대기 작업 원자적 claim |
+| GET /api/worker/jobs | 작업자 | 작업 최근 100건 |
+| POST /api/worker/jobs/{id}/result | 작업자 | 결과 등록(비멱등, 완료건 재등록 400) |
+| POST /api/worker/jobs/{id}/fail | 작업자 | 실패 등록(자동 재등록 없음) |
 
 ## 구조
 
 ```
-backend/cmd/server      서버 기동·백업 스케줄러
+backend/cmd/server      서버 기동·백업/점검 스케줄러
 backend/internal/config 환경변수 로드·검증
 backend/internal/router 전체 라우트
 backend/internal/store  DB 접근층(유일 SQL)·마이그레이션·백업
@@ -83,7 +146,7 @@ backend/internal/auth   운영자 로그인·토큰
 backend/internal/product 상품 투입·출구유형·제휴링크
 backend/internal/queue  작업 큐 (§5 규격)
 backend/internal/content 콘텐츠 전이·검수·발행큐·지표
-backend/internal/session 슬롯·세션 골격·보류·재로그인큐
+backend/internal/session 슬롯·세션·발행모드·보류·재로그인큐
 worker/                 작업자 런타임 + 흐름 검증용 테스트 작업자
 web/src                 콘솔 (라우터 15보기·6그룹)
 ```

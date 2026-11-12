@@ -10,7 +10,7 @@
 
     <!-- Re-login notice takes precedence over the conversation when expired. -->
     <div v-if="session === 'expired'" class="card">
-      <h3>세션이 만료됐습니다</h3>
+      <div class="sect-head"><h3>세션이 만료됐습니다</h3><span class="pill p-expired">만료</span></div>
       <p>대화보다 재로그인이 먼저입니다. 아래 버튼으로 다시 로그인하면 대화가 활성화됩니다.</p>
       <button @click="openModal">Claude 로그인</button>
     </div>
@@ -43,8 +43,10 @@
           <li>의장님 계정으로 로그인합니다.</li>
           <li>완료되면 이 화면으로 돌아와 대화가 활성화됩니다.</li>
         </ol>
-        <button @click="openPopup">공식 로그인 창 열기</button>
-        <button class="ghost" @click="modal = false">닫기</button>
+        <div class="btnrow">
+          <button @click="openPopup">공식 로그인 창 열기</button>
+          <button class="ghost" @click="modal = false">닫기</button>
+        </div>
       </div>
     </div>
 

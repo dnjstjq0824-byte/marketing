@@ -4,42 +4,71 @@
     <p class="muted">링크+이미지로 상품을 등록하면 상품 판독(analyze) 작업이 자동 생성됩니다.</p>
 
     <form class="card" @submit.prevent="submit">
-      <label>상품 링크 (http/https)
-        <input v-model="form.sourceUrl" placeholder="https://…" required />
-      </label>
-      <fieldset>
-        <legend>출구 유형</legend>
-        <label><input v-model="form.exitType" type="radio" value="A" /> A · 파트너 몰 링크</label>
-        <label><input v-model="form.exitType" type="radio" value="B" /> B · 제휴 링크</label>
-        <p class="muted small">기본값은 A입니다. 자체·파트너 상품이 우선입니다.</p>
-      </fieldset>
-      <label>우선순위 (숫자, 클수록 먼저)
-        <input v-model.number="form.priority" type="number" min="0" />
-      </label>
-      <label>이미지 (최대 10장, 장당 10MB)
-        <input ref="fileInput" type="file" accept="image/*" multiple @change="onFiles" />
-      </label>
+      <h3>새 상품 등록</h3>
+      <div class="form-grid">
+        <label class="full">상품 링크 (http/https)
+          <input v-model="form.sourceUrl" placeholder="https://…" required />
+        </label>
+        <label>사업 <input v-model="form.business" placeholder="예: 글로우사인" /></label>
+        <fieldset>
+          <legend>출구 유형</legend>
+          <label><input v-model="form.exitType" type="radio" value="A" /> A · 파트너 몰 링크</label>
+          <label><input v-model="form.exitType" type="radio" value="B" /> B · 제휴 링크</label>
+          <p class="muted small">기본값은 A입니다. 자체·파트너 상품이 우선입니다.</p>
+        </fieldset>
+        <div>
+          <label>우선순위 (숫자, 클수록 먼저)
+            <input v-model.number="form.priority" type="number" min="0" />
+          </label>
+          <label>이미지 (최대 10장, 장당 10MB)
+            <input ref="fileInput" type="file" accept="image/*" multiple @change="onFiles" />
+          </label>
+        </div>
+      </div>
       <p v-if="error" class="error">{{ error }}</p>
       <p v-if="done" class="ok">{{ done }}</p>
       <button type="submit" :disabled="busy">{{ busy ? '등록 중…' : '상품 등록' }}</button>
     </form>
 
     <div class="card">
-      <h3>등록된 상품</h3>
+      <div class="sect-head"><h3>등록된 상품</h3><span class="count">{{ products.length }}건</span></div>
+      <div class="toolbar">
+        <label>사업 필터
+          <select v-model="bizFilter" @change="load">
+            <option value="">전체 사업</option>
+            <option v-for="b in bizOptions" :key="b" :value="b">{{ b || '(미지정)' }}</option>
+          </select>
+        </label>
+      </div>
       <p v-if="loading" class="muted">불러오는 중…</p>
-      <table v-else-if="products.length">
-        <thead><tr><th>ID</th><th>이름</th><th>링크</th><th>출구</th><th>등록</th></tr></thead>
-        <tbody>
-          <tr v-for="p in products" :key="p.id">
-            <td>{{ p.id }}</td>
-            <td>{{ p.name || '(판독 전)' }}</td>
-            <td class="ellipsis"><a :href="p.sourceUrl" target="_blank" rel="noreferrer">{{ p.sourceUrl }}</a></td>
-            <td>{{ p.exitType === 'B' ? 'B · 제휴' : 'A · 파트너' }}</td>
-            <td>{{ shortDate(p.createdAt) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else class="muted">아직 등록된 상품이 없습니다.</p>
+      <div v-else-if="products.length" class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>사업</th><th>이름</th><th>링크</th><th>출구</th><th>등록</th><th>삭제</th></tr></thead>
+          <tbody>
+            <tr v-for="p in products" :key="p.id">
+              <td>{{ p.id }}</td>
+              <td>{{ p.business || '(미지정)' }}</td>
+              <td>{{ p.name || '(판독 전)' }}</td>
+              <td class="ellipsis"><a :href="p.sourceUrl" target="_blank" rel="noreferrer">{{ p.sourceUrl }}</a></td>
+              <td><span :class="p.exitType === 'B' ? 'pill p-review' : 'pill p-approved'">{{ p.exitType === 'B' ? 'B · 제휴' : 'A · 파트너' }}</span></td>
+              <td>{{ shortDate(p.createdAt) }}</td>
+              <td><button class="ghost" @click="confirmDel = p.id">삭제</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="empty">아직 등록된 상품이 없습니다.</p>
+    </div>
+
+    <div v-if="confirmDel !== null" class="modal-back" @click.self="confirmDel = null">
+      <div class="modal">
+        <h3>상품 #{{ confirmDel }} 삭제</h3>
+        <p>판독 결과·이미지·콘텐츠·작업·제휴 링크가 함께 지워집니다. 되돌릴 수 없습니다.</p>
+        <div class="btnrow">
+          <button @click="doDelete">삭제</button>
+          <button class="ghost" @click="confirmDel = null">취소</button>
+        </div>
+      </div>
     </div>
   </section>
 </template>
@@ -48,7 +77,7 @@
 import { onMounted, ref } from 'vue'
 import { apiFetch } from '../stores/auth.js'
 
-const form = ref({ sourceUrl: '', exitType: 'A', priority: 0 })
+const form = ref({ sourceUrl: '', exitType: 'A', priority: 0, business: '' })
 const files = ref([])
 const fileInput = ref(null)
 const error = ref('')
@@ -56,6 +85,9 @@ const done = ref('')
 const busy = ref(false)
 const loading = ref(true)
 const products = ref([])
+const confirmDel = ref(null)
+const bizFilter = ref('')
+const bizOptions = ref([])
 
 function onFiles(e) {
   files.value = Array.from(e.target.files || [])
@@ -68,12 +100,36 @@ function shortDate(iso) {
 async function load() {
   loading.value = true
   try {
-    const data = await apiFetch('/api/products')
+    const qs = bizFilter.value ? `?business=${encodeURIComponent(bizFilter.value)}` : ''
+    const data = await apiFetch(`/api/products${qs}`)
     products.value = data.products || []
   } catch (e) {
     error.value = e.message
   } finally {
     loading.value = false
+  }
+}
+
+async function loadBizOptions() {
+  try {
+    const data = await apiFetch('/api/products')
+    const set = new Set((data.products || []).map((p) => p.business || ''))
+    bizOptions.value = [...set].sort()
+  } catch {
+    /* options stay as-is */
+  }
+}
+
+async function doDelete() {
+  const id = confirmDel.value
+  confirmDel.value = null
+  error.value = ''
+  try {
+    await apiFetch(`/api/products/${id}`, { method: 'DELETE' })
+    await load()
+    await loadBizOptions()
+  } catch (e) {
+    error.value = e.message
   }
 }
 
@@ -86,13 +142,15 @@ async function submit() {
     body.append('sourceUrl', form.value.sourceUrl.trim())
     body.append('exitType', form.value.exitType)
     body.append('priority', String(form.value.priority || 0))
+    body.append('business', (form.value.business || '').trim())
     for (const f of files.value) body.append('images', f)
     const data = await apiFetch('/api/products', { method: 'POST', body })
     done.value = `상품 #${data.product.id} 등록됨 · 판독 작업 #${data.analyzeJob.id} 자동 생성`
-    form.value = { sourceUrl: '', exitType: 'A', priority: 0 }
+    form.value = { sourceUrl: '', exitType: 'A', priority: 0, business: '' }
     files.value = []
     if (fileInput.value) fileInput.value.value = ''
     await load()
+    await loadBizOptions()
   } catch (e) {
     error.value = e.message || '등록 실패'
   } finally {
@@ -100,5 +158,8 @@ async function submit() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  await loadBizOptions()
+})
 </script>

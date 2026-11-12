@@ -12,7 +12,7 @@ import (
 )
 
 // SchemaVersion is the current DDL version recorded in app_meta.
-const SchemaVersion = "1"
+const SchemaVersion = "2"
 
 // schema is the whole Tranche-1 data model: 9 entities (§6).
 // No order/payment/delivery/personal-data tables: this system never takes orders.
@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS products (
 	source_url TEXT NOT NULL DEFAULT '',
 	exit_type TEXT NOT NULL DEFAULT 'A' CHECK (exit_type IN ('A','B')),
 	priority INTEGER NOT NULL DEFAULT 0,
+	business TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -142,10 +143,28 @@ func Migrate(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	if err := migrateToV2(db); err != nil {
+		return err
+	}
 	if _, err := db.Exec(
 		`INSERT INTO app_meta(k,v) VALUES('schema_version',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`,
 		SchemaVersion); err != nil {
 		return fmt.Errorf("migrate version: %w", err)
+	}
+	return nil
+}
+
+// migrateToV2 adds products.business to pre-v2 databases.
+// Existing rows keep their data with business defaulting to ”.
+func migrateToV2(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('products') WHERE name='business'`).Scan(&n); err != nil {
+		return fmt.Errorf("migrate v2 check: %w", err)
+	}
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE products ADD COLUMN business TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate v2: %w", err)
+		}
 	}
 	return nil
 }
@@ -214,6 +233,23 @@ func copyDir(src, dst string) error {
 		}
 		return copyFile(path, target)
 	})
+}
+
+// ListBackups returns backup directory names newest-first. A missing
+// directory yields an empty list, not an error.
+func ListBackups(backupDir string) []string {
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		return []string{}
+	}
+	dirs := []string{}
+	for _, e := range entries {
+		if e.IsDir() {
+			dirs = append(dirs, e.Name())
+		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(dirs)))
+	return dirs
 }
 
 func pruneBackups(backupDir string, keep int) error {
