@@ -1,0 +1,3 @@
+# SOMUN worker runtime is standard-library only (urllib + json + unittest).
+# No third-party packages: zero install cost, zero supply-chain surface.
+# This file exists to document that decision for pip-based environments.
