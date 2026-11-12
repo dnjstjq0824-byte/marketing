@@ -2,7 +2,8 @@
 
 - 상태: 부록. 본문([기획서](PLANNING.md)·[설계서](DESIGN.md)·[상용화 계획](PLAN.md)·[README](README.md))의 상세 근거로 둔다.
 - 문서 지위: 초기 개발 문서(의장 지정 2026-11-12). 환경·상황에 따라 개정한다.
-- 기준: 커밋 b947d65, 스키마 v5, API 58종(공개 2·작업자 4·운영자 52), 화면 15보기.
+- 기준: 커밋 2161e46, 스키마 v5, API 58종(공개 2·작업자 4·운영자 52), 화면 15보기.
+  A~E는 현재 코드, A-15·B-4는 계획(P0·P1), F·G는 검증 절차다.
 - 작성 원칙: 모든 컬럼·enum·에러 코드는 코드에서 확인했다. 코드에 없는 값은 만들지 않고
   `미확인 — 코드 확인 필요`로 남긴다. 예시에는 실계정명·실토큰·개인정보를 쓰지 않으며
   계정은 피클-1 같은 슬롯 라벨 수준으로만 쓴다.
@@ -20,7 +21,7 @@ SQLite. 시각은 전부 RFC3339 UTC 문자열(TEXT), 참·거짓은 INTEGER(0/1
 | id | INTEGER | NO | 자동 | PK AUTOINCREMENT |
 | username | TEXT | NO | — | UNIQUE |
 | password_hash | TEXT | NO | — | bcrypt 해시 |
-| role | TEXT | NO | 'operator' | 값 집행 없음(1인 전제) |
+| role | TEXT | NO | 'operator' | 최초 시드 운영자는 'admin', API 추가는 'operator'. 값 집행 없음(1인 전제) |
 | created_at | TEXT | NO | — | RFC3339 |
 | updated_at | TEXT | NO | — | RFC3339 |
 
@@ -210,7 +211,8 @@ scheduled·held만 허용하고 done·failed는 거부한다.
 - 역행(한 단계씩만): review → draft, approved → review, queued → approved.
 - 건너뛰기·두 단계 역행은 거부(`transition A -> B is not allowed`, 400).
 - queued → published 직접 전이는 API에서 409로 차단한다. published 도달은
-  수동 발행 완료 기록(queued+예약+URL 증거)과 실행기(P1-1)뿐이다.
+  수동 발행 완료 기록(queued+예약+URL 증거)·실행기(P1-1)·publish 작업 결과(P1-2)뿐이다.
+- 플랫폼 경로 예외(구현됨): 자동 모드 예약 시 queued까지 자동 전진, C 승인+목적지 시 queued 직행.
 - 작업자 경로는 상태를 바꾸지 않는다(초안 생성만). 상태 전이는 플랫폼(사람 검수·C 판정)만 한다.
 
 마이그레이션 메모: app_meta 테이블에 schema_version을 기록한다(현재 "5").
@@ -236,7 +238,8 @@ scheduled·held만 허용하고 done·failed는 거부한다.
 | POST /api/auth/login | 아래 | 운영자 로그인 → 토큰 |
 
 요청: `{"username":"admin","password":"..."}`.
-응답 200: `{"token":"...","user":{"id":1,"username":"admin","role":"operator"}}`.
+응답 200: `{"token":"...","user":{"id":1,"username":"admin","role":"admin"}}`
+(최초 시드 운영자는 role `admin`, POST /api/users로 추가한 운영자는 `operator`).
 오류: 400 (본문 파손·필드 누락), 401 (자격증명 불일치).
 
 ### B-2. 작업자 4종 (Bearer WORKER_TOKEN)
@@ -413,8 +416,9 @@ Account 응답형 =
 - PATCH /api/session/accounts/{id} →
   `{"sessionState":"","usage":"","owner":"","role":"","business":"",`
   `"postingMode":"","loginId":"","password":""}` → 200 Account.
-  세션 상태는 5종만(그 외 400). 만료·한도로 바꾸면 해당 계정 queued건 보류,
-  연결로 돌리면 재개(1일 이상 경과건 제외). 발행 모드 auto·manual.
+  세션 상태는 5종만(그 외 400). expired·limited·inactive_hold로 바꾸면 해당 계정 queued건 보류.
+  expired·limited에서 connected로 돌리면 재개(1일 이상 경과건은 사유 갱신 후 보류 유지).
+  inactive_hold에서 connected로 돌리면 자동 재개하지 않는다. 발행 모드 auto·manual.
   자격증명은 둘 다 줄 때만 교체(한쪽만이면 400). 이름 변경 필드 없음(D6).
 - DELETE /api/session/accounts/{id} → 200 `{"ok":true,"deleted":N}`.
   queued 참조가 하나라도 있으면 409. 404.
@@ -536,7 +540,7 @@ Account 응답형 =
 - 2군 분리 표: 공식 발행 API군 / 직접 posting군(API 없음) 각각 ID·사업·제목·계정·예정·보류.
   직접군 부제목은 코드에 `네이버 블로그 · 티스토리 — 처리 방향은 PO 결정 대기`로
   표시된다. PO-1이 세션 포스팅 진행으로 해소됐으므로 이 문구는 화면 문구 오류다.
-  화면 수정은 범위 밖이므로 여기서 기록만 한다.
+  P0-4에서 `네이버 블로그 · 티스토리 — 세션 포스팅(P1-2)`으로 고친다.
 
 ### C-7. 지표 `/metrics` (OpsViews)
 
@@ -571,7 +575,8 @@ Account 응답형 =
 - 재로그인 필요 큐: 계정·주인·보류 건수·세션 pill. 없으면 `없음`.
 - 해제 확인 모달. 보류 중이면 해제 거부(실제로는 queued 참조 전체가 가드 대상).
 - 화면 상단 부제는 코드에 `아이디·비밀번호는 저장하지 않습니다`로 표시된다.
-  D15로 암호화 저장이 확정됐으므로 이 문구는 화면 문구 오류다. 기록만 한다.
+  D15로 암호화 저장이 확정됐으므로 이 문구는 화면 문구 오류다. P0-4에서
+  `로그인 ID·비밀번호는 AES-256으로 암호화 저장되며 다시 표시되지 않습니다`로 고친다.
 
 ### C-10. 자체 채널 `/owned` (ConnectViews)
 
@@ -583,7 +588,8 @@ Account 응답형 =
 - 모순 6건·미확인 15건·PO 결정 3건(원 지시서 §10 목록)을 대기 표시로 나열.
   확정값 입력란 없음. API 호출 없음(정적 표시).
 - PO-3 항목은 `파일럿 발행에 쓸 SNS 계정`으로 표시된다. PO-3 재정의(슬롯 등록+
-  로그인 수행)에 따라 이 문구도 손봐야 한다. 화면 수정은 범위 밖이므로 기록만 한다.
+  로그인 수행)에 따라 문구 오류다. 또한 해소된 항목(PO-1·모순-2·3·6·미확인-14)도 전부 `대기`로
+  표시된다. P0-4에서 해소 항목을 `해소` pill로 구분하고 PO-3 문구를 고친다.
 
 ### C-12. Muse 상주 관리 `/resident` (OpsViews)
 
@@ -660,8 +666,8 @@ HTTP API로 확인하고, 10번은 사람이 브라우저를 눌러 확인한다
    queuePosition 1·2 순서대로.
    실패 시 판정: 과거 허용·순번 위반.
 10. **화면 15개·대화 동선**: §8의 메뉴 15개가 전부 열리고, 대화 화면의
-    로그인 동선(버튼→모달→팝업→활성화)과 재로그인 우선 안내가 상태대로
-    보이는가.
+    로그인 동선(카드 내 단계 전환: 버튼→안내→시연 화면→활성화, C-2)과 재로그인 우선 안내가
+    상태대로 보이는가. 원 지시서의 모달·팝업 표현은 트랜치 1 구현에서 카드 내 단계로 대체됐다.
     확인: 사람이 브라우저에서 15경로를 눌러 열고, 대화 화면에서 로그인 단계
     전환·만료 미리보기·재로그인 우선 안내를 눈으로 확인한다. 자동화 불가 항목.
     실패 시 판정: 화면 미달. 열리지 않는 경로·빠진 동선을 기록한다.
@@ -677,7 +683,11 @@ HTTP API로 확인하고, 10번은 사람이 브라우저를 눌러 확인한다
 | 작업 종류 | jobs.type | analyze·strategy·generate·review 4종 고정 |
 | 판정 | review_decisions.decision | approved·rejected. 입력은 approve 불리언 + 사유 + 목적지 |
 | 실행 판정 | PlanItem.verdict | ready·manual·held·blocked_session·unknown_account·scheduled_future. 읽기 전용 |
-| 슬롯 | slots.label (인메모리) | 에이전트 칸. A·B·C는 예시, 중립 구조 |
+| 슬롯 | slots.label (인메모리) | 에이전트 칸. A·B·C는 예시, 중립 구조. P1-0에서 agents로 대체 |
+| 에이전트 | agents.label (P1-0) | 상주 AI 작업자 1기. 라벨 불변, 토큰으로 인증. 최대 100기 운용 |
+| 레인 | agents.lane (A·B·C·P) | A=analyze·strategy, B=generate, C=review, P=publish(직접군) |
+| 리스 | jobs.lease_until (P1-0) | claim 유효 기한. 하트비트로 연장, 만료 시 D25 규칙 |
+| 어댑터 호스트 | agents.host (P1-0) | 에이전트를 실제로 구동하는 PC. 동시 활성 상한을 가진다 |
 | 역할 | role (chief·worker) | 계정 역할. 운영자 role 컬럼은 미집행(1인 전제) |
 | 발행 모드 | posting_mode (auto·manual) | 계정별, 기본 수동. 실행기는 자동만 |
 
@@ -694,9 +704,139 @@ PO-3 재정의 반영: PO-3는 `파일럿 슬롯 등록 + 로그인 수행`이�
 - 사업별·채널별 KPI 목표치
 - 플랫폼 권장 문구의 확정 문구 채택 여부
 - PO-3 파일럿 슬롯의 실제 등록·로그인 수행(사용자가 직접)
+- 첫 API 채널의 공식 요구사항(계정 유형·앱 설정·미디어 조건) — 개통 시 확인·기록(기본안 instagram)
+- AI 서비스별 사용 한도 — 상수 금지, limited 감지로 처리
+- 계정별 발행 최소 간격 값 — 운영자가 계정마다 입력(D29)
+
+## A-15. 스키마 v6~v8 계획 (P0·P1, 미구현)
+
+규칙은 A장과 같다(시각 RFC3339 UTC TEXT, 불리언 INTEGER, 미확인 수치 컬럼 금지).
+각 버전 상승 전 자동 백업 1세대(D32).
+
+**v6 (P0-3·P0-4)**
+
+- 신설 notifications:
+  `id INTEGER PK AUTOINCREMENT`, `kind TEXT NOT NULL CHECK IN ('job_failed','job_stuck','lease_expired',
+  'session_expired','session_limited','publish_failed','backup_failed','overdue_hold','review_human')`,
+  `severity TEXT NOT NULL DEFAULT 'warn' CHECK IN ('info','warn','error')`,
+  `ref_type TEXT NOT NULL DEFAULT ''`(job·content·account·agent·system), `ref_id INTEGER NOT NULL DEFAULT 0`,
+  `dedup_key TEXT NOT NULL`(kind:ref_type:ref_id), `message TEXT NOT NULL`,
+  `created_at TEXT NOT NULL`, `read_at TEXT NOT NULL DEFAULT ''`.
+  인덱스: UNIQUE(dedup_key) WHERE read_at='' (부분 인덱스), (read_at, id).
+- contents 추가: `revision_of INTEGER NOT NULL DEFAULT 0`(직전 원본, 0=최초),
+  `revision_root_id INTEGER NOT NULL DEFAULT 0`(사슬 최초 ID). 기존 행은 마이그레이션에서
+  revision_root_id=id로 채운다. 인덱스 (revision_root_id).
+
+**v7 (P1-0)**
+
+- 신설 agents:
+  `id PK`, `label TEXT NOT NULL UNIQUE`(불변), `lane TEXT NOT NULL CHECK IN ('A','B','C','P')`,
+  `host TEXT NOT NULL DEFAULT ''`, `businesses TEXT NOT NULL DEFAULT ''`(쉼표 목록, 빈값=전체, NOCASE 비교),
+  `platforms TEXT NOT NULL DEFAULT ''`, `capacity INTEGER NOT NULL DEFAULT 1`(1 이상),
+  `enabled INTEGER NOT NULL DEFAULT 1`, `token_hash TEXT NOT NULL UNIQUE`(SHA-256 hex),
+  `token_prefix TEXT NOT NULL`(앞 8자), `account_id INTEGER NULL REFERENCES channel_accounts(id) ON DELETE SET NULL`,
+  `last_seen_at TEXT NOT NULL DEFAULT ''`, `created_at`, `updated_at`.
+- jobs 재구축: type CHECK에 'publish' 추가. 추가 컬럼 `agent_id INTEGER NOT NULL DEFAULT 0`(비-FK, 이력 보존),
+  `business TEXT NOT NULL DEFAULT ''`, `priority INTEGER NOT NULL DEFAULT 0`, `attempts INTEGER NOT NULL DEFAULT 0`,
+  `lease_until TEXT NOT NULL DEFAULT ''`. 기존 행은 상품에서 business·priority를 채운다.
+  인덱스: (status, type, priority DESC, id), (type, ref_id), (agent_id, status), (status, lease_until).
+- channel_accounts 추가: `kind TEXT NOT NULL DEFAULT 'channel' CHECK IN ('channel','agent_service')`,
+  `platform_user_id TEXT NOT NULL DEFAULT ''`(로그인 후 사후 기록, PO-3).
+
+**v8 (P1-1)**
+
+- publish_logs 재구축: status CHECK에 'publishing' 추가. 추가 컬럼 `external_url TEXT NOT NULL DEFAULT ''`,
+  `external_id TEXT NOT NULL DEFAULT ''`, `error TEXT NOT NULL DEFAULT ''`. UNIQUE 삼중항 유지.
+  API 생성·수정은 계속 scheduled·held만 허용한다(publishing·done·failed는 실행 경로 전용).
+- channel_accounts 추가: `enc_api_token TEXT NOT NULL DEFAULT ''`(AES-256-GCM),
+  `min_interval_min INTEGER NULL`(운영자 입력, NULL이면 auto 전환 거부).
+
+## B-4. API 추가 계획 (P0·P1, 미구현)
+
+| 단계 | 메서드·경로 | 인증 | 요청 → 응답 |
+|---|---|---|---|
+| P0-3 | GET /api/notifications?unread=1&limit=&offset= | 운영자 | → `{"items":[Notification],"unread":N}` |
+| P0-3 | POST /api/notifications/{id}/read | 운영자 | → `{"ok":true}`. 404 |
+| P0-3 | POST /api/notifications/read-all | 운영자 | → `{"ok":true,"updated":N}` |
+| P1-0 | GET /api/agents?lane=&enabled=&business=&host=&q=&limit=&offset= | 운영자 | → `{"items":[Agent],"total":N}` |
+| P1-0 | POST /api/agents | 운영자 | `{label,lane,host,businesses,platforms,capacity,accountId}` → 201 `{"agent":Agent,"token":"(1회)"}`. 400·409(라벨 중복) |
+| P1-0 | GET /api/agents/{id} | 운영자 | → Agent + 최근 작업 20건 |
+| P1-0 | PATCH /api/agents/{id} | 운영자 | lane·host·businesses·platforms·capacity·enabled·accountId (label 불가) → Agent |
+| P1-0 | DELETE /api/agents/{id} | 운영자 | claimed 작업 있으면 409 |
+| P1-0 | POST /api/agents/{id}/rotate-token | 운영자 | → `{"token":"(1회)"}`. 이전 토큰 즉시 무효 |
+| P1-0 | POST /api/agents/bulk | 운영자 | `{ids:[...], action:"pause"|"resume"|"lane", lane?}` → `{"updated":N}` |
+| P1-0 | GET /api/agents/stats | 운영자 | → `{online,offline,paused,backlogByType:{...},done1h,failed1h,topFailing:[...]}` |
+| P1-0 | POST /api/jobs/{id}/requeue | 운영자 | failed → pending, attempts 0. 그 외 상태 409 |
+| P1-0 | POST /api/worker/heartbeat | 작업자 | `{sessionState?, activeJobs, version}` → `{"ok":true,"enabled":bool}` |
+| P1-0 | POST /api/worker/jobs/{id}/heartbeat | 작업자 | → `{"leaseUntil":"..."}`. 본인 claim 아니면 409 |
+| P1-1 | GET /api/executor/status | 운영자 | → `{enabled,intervalSec,lastTickAt,running:[...],done24h,failed24h}` |
+
+- 삭제(P1-0): GET/POST /api/session/slots, PATCH·DELETE /api/session/slots/{id} (4종, agents로 대체).
+- 변경(P1-0): GET /api/worker/jobs/next에 `wait`(0~LONGPOLL_MAX_SEC) 추가, `type` 생략 가능(레인 타입 전체).
+  에이전트 토큰 사용 시 X-Worker-Name은 무시하고 agents.label을 기록한다.
+  PATCH /api/session/accounts/{id}에 `kind`·`platformUserId`(P1-0), `apiToken`·`minIntervalMin`(P1-1) 추가.
+  `postingMode:"auto"`는 min_interval_min이 없으면 400(P1-1).
+- 라우트 수: 58 → 61(P0) → 68(P1-0) → 69(P1-1).
+- 신규 환경변수: SOMUN_ENV, BIND_ADDR, BACKUP_MIRROR_DIR(P0) · LEASE_SEC(기본 600), LONGPOLL_MAX_SEC(기본 25),
+  DB_READ_CONNS(기본 4)(P1-0) · EXECUTOR_INTERVAL_SEC(기본 0), EXECUTOR_PARALLEL(기본 2), PUBLIC_BASE_URL(P1-1) ·
+  ADAPTER_MAX_ACTIVE(기본 2), ADAPTER_IDLE_CLOSE_MIN(기본 10)(P1-2, 어댑터 호스트).
+
+## F. 브라우저 E2E 체크리스트 (인수 10, 총괄 수동 서명)
+
+준비: 새 DATA_DIR로 서버 기동, 운영자 로그인, 테스트 작업자 실행. 각 항목은 통과·실패·메모를 남긴다.
+
+1. 사이드바 15메뉴가 6그룹으로 보이고 각 메뉴 클릭 시 해당 경로가 열린다(15건).
+2. 로고 클릭 시 대시보드. 새로고침해도 같은 경로가 유지된다(SPA 폴백).
+3. 미로그인 상태 화면 진입 시 401 오류가 안내로 보이고 설정 화면에서 로그인 가능.
+4. 상품 투입: 이미지 2장 등록 → `판독 작업 #M 자동 생성` 표시 → 표에 행 추가.
+5. 상품 판독: 작업자 처리 후 판독 8필드·unknowns 강조·전략 표시. 판독 수정 저장·취소.
+6. 출구 B 상품: 제휴 링크 등록·수정·삭제(확인 모달).
+7. 콘텐츠 검수: 상태 필터·사업 필터 동작. 대가 표시 박스 읽기 전용, 본문 수정 후에도 유지.
+8. 허용 전이 버튼만 노출, queued에서 published 버튼 없음·트랜치 2 안내.
+9. 판정 이력에 판정자·approved/rejected pill·사유 표시.
+10. 발행 큐: 과거 시각 예약 거부 메시지, 같은 계정·시각 2건 직렬 순서 1·2.
+11. 실행 계획 표에 verdict pill 6종 중 해당 값 표시, 새로고침 동작.
+12. 수동 발행 완료 기록: URL 없이 거부, queued+예약 건은 published로 바뀜.
+13. 2군 분리 표가 따로 보이고 직접군 부제 문구가 C-6 수정 문구와 같다(P0-4 이후).
+14. 지표: 0·빈값 기록 시 `원인 미분류`, 체크 3개 즉시 저장.
+15. 에이전트 연결: 계정 등록(자격증명 저장됨 표시, 평문 재표시 없음), 필터·`이상 계정만`.
+16. 채널 계정: 만료 전환 → 재로그인 큐 등재·보류 건수, 연결 전환 → 큐에서 사라짐. 부제 문구 C-9 수정본.
+17. queued 참조가 있는 계정 해제 시 거부 메시지.
+18. 판정·기준: 해소 항목 `해소` 표시, PO-3 문구 수정본(P0-4 이후).
+19. Muse 상주 관리: 작업 취소(pending·claimed만)·삭제 동작.
+20. 시스템 구성: 지금 백업 → 세대 목록 맨 위에 추가. 지금 정리 → 결과 메시지.
+21. 대화: 로그인 단계 전환(버튼→안내→시연→활성화), 만료 미리보기에서 재로그인 안내가 대화보다 먼저.
+22. 연결 상태가 아닌 계정 스레드는 읽기 전용 문구 표시.
+23. 설정: 운영자 추가(8자 미만 거부)·삭제(본인 삭제 버튼 없음)·비밀번호 변경·로그아웃.
+24. 900px 이하 폭에서 레이아웃 깨짐 없음, 가로 스크롤 없음.
+25. PWA: 설치 가능, 오프라인에서 셸이 뜨고 데이터 영역은 오류 안내(낡은 API 데이터 표시 없음, P0-4 이후).
+26. 알림 뱃지: 작업 실패 유발 → 뱃지 증가 → 읽음 처리 → 감소(P0-3 이후).
+
+서명: 일자·커밋·통과 수/전체·실패 항목 메모. 결과는 PLAN 검증 기록에 남긴다.
+
+## G. 부하 시험 명세 (P1-0, 가상 에이전트 100기)
+
+- 도구: `tools/loadtest.py`(표준라이브러리, 스레드). 서버는 새 DATA_DIR, dev 모드.
+- 준비: agents API로 가상 에이전트 100기 등록(레인 A 30·B 40·C 20·P 10, 사업 3종 분산),
+  상품 300건 투입(사업 3종, 우선순위 혼합).
+- 동작: 각 가상 에이전트가 롱폴 claim(wait=25) → 0.5~3초 무작위 처리 → 결과 등록(B-2 스키마) →
+  60초마다 하트비트. 1%는 결과 없이 종료(리스 만료 유도), 2%는 fail 등록.
+- 지속: 1시간. 동시에 운영자 대시보드·목록 API를 초당 2회 호출.
+- 목표(초기, 실측으로 조정):
+  - 중복 claim 0건(작업별 claim 에이전트 1기, 결과 중복 등록 0건).
+  - 빈 큐가 아닐 때 claim p95 ≤ 200ms, 작업 생성 → 대기 중 롱폴 깨어남 p95 ≤ 1초.
+  - 서버 5xx 0건, 로그의 SQLITE_BUSY 0건.
+  - 리스 만료 작업은 1회 재대기 후 처리되고 2회째는 failed + 알림(dedup 적용).
+  - 레인 밖 타입·사업 밖 작업 claim 0건.
+  - 대시보드·목록 p95 ≤ 1초, 서버 메모리 증가가 시험 후반 30분 동안 평탄.
+- 미달 시: 원인 지표(잠금 대기·쿼리 시간)를 기록하고 D26 조정 → 재시험. 그래도 미달이면
+  PostgreSQL 이전 판단 자료로 쓴다(설계서 §2-1).
 
 ## 변경 이력
 
 - 2026-11-12: 초판. DB 12테이블·API 58종·화면 15보기·인수 10개·용어표.
   화면 문구 오류 3건(C-6·C-9·C-11)을 기록만 하고 코드는 손대지 않음.
 - 2026-11-12: 초기 개발 문서로 지정(의장).
+- 2026-11-13: 코드 대조 정정(users.role 시드값 admin, 세션 inactive_hold 규칙, 인수 10 동선 표현).
+  화면 문구 오류를 P0-4 수정 대상으로 전환. A-15 스키마 v6~v8·B-4 API 계획·F E2E 체크리스트·
+  G 부하 시험(에이전트 100기)·용어(에이전트·레인·리스·호스트) 추가.

@@ -47,13 +47,26 @@ python worker.py
 ```
 
 브라우저에서 `http://localhost:8080/` 을 연다. 운영자 로그인은 설정 화면에서
-한다(기본 admin / changeme123, 환경변수로 변경).
+한다(기본 admin / changeme123).
+
+- ADMIN_USER·ADMIN_PASS는 DB에 운영자가 하나도 없을 때 **최초 1회 시드에만** 쓰인다.
+  이미 기동한 적이 있으면 환경변수를 바꿔도 비밀번호는 안 바뀐다. 설정 화면에서 바꾼다.
+- 서버는 현재 모든 인터페이스(`:PORT`)에 바인드한다. 같은 망에 평문으로 열리므로
+  공용망에서 띄우지 않는다. 루프백 바인드·상용 기동 가드는 상용화 계획 P0-2.
+
+## 개발 착수
+
+다음 작업 순서와 티켓별 변경 위치·인수 기준은 [상용화 계획](PLAN.md)의 Steps를 따른다
+(P0-2 ~ P0-6 → P1-0 규모 기반(에이전트 100기) → P1-1 ~ P1-3). 설계 근거는
+[설계서](DESIGN.md) D21~D36, 스키마·API 계획은 [부록](APPENDIX.md) A-15·B-4,
+검증은 부록 F(E2E)·G(부하 시험).
 
 ## 테스트·게이트
 
 ```powershell
 cd backend
 go vet ./...
+gofmt -l .        # 출력이 없어야 한다
 go test ./...
 ```
 
@@ -71,7 +84,7 @@ SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 | PORT | 8080 | 서버 포트 |
 | DATA_DIR | data | DB·업로드·백업 루트 |
 | WORKER_TOKEN | local-worker-token | 작업자 API 토큰(기본값은 로컬 전용) |
-| ADMIN_USER / ADMIN_PASS | admin / changeme123 | 최초 운영자 시드 |
+| ADMIN_USER / ADMIN_PASS | admin / changeme123 | 최초 운영자 시드(운영자 0명일 때만 적용) |
 | BACKUP_INTERVAL_MIN | 60 | 정기 백업 간격(분), 0이면 스케줄러 끔 |
 | BACKUP_KEEP | 7 | 백업 보관 세대 |
 | CHECK_INTERVAL_MIN | 15 | 세션 경량 점검 간격(분), 0이면 타이머 끔 |
@@ -135,7 +148,7 @@ SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 | POST /api/session/check | 운영자 | 경량 점검 수동 실행 |
 | GET /api/session/relogin-queue | 운영자 | 재로그인 필요 목록 |
 | DELETE /api/session/accounts/{id} | 운영자 | 계정 해제(큐 참조 있으면 거부) |
-| GET/POST /api/session/slots | 운영자 | 에이전트 슬롯 목록·추가 |
+| GET/POST /api/session/slots | 운영자 | 에이전트 슬롯 목록·추가(인메모리, P1-0에서 /api/agents로 대체) |
 | PATCH /api/session/slots/{id} | 운영자 | 슬롯 수정 |
 | DELETE /api/session/slots/{id} | 운영자 | 슬롯 삭제 |
 | GET /api/worker/jobs/next?type= | 작업자 | 대기 작업 원자적 claim |
@@ -171,3 +184,8 @@ web/src                 콘솔 (라우터 15보기·6그룹)
 - 게시 한도 상수(Instagram 100/50 등)는 코드에 두지 않는다.
 - 제휴 수수료율 같은 미확인 수치는 모델·화면에 넣지 않는다.
 - data/, web/dist/, node_modules/는 커밋하지 않는다.
+- 세션 상태를 expired·limited·inactive_hold로 바꾸면 그 계정의 queued 건이 보류된다.
+  expired·limited → connected는 자동 재개(1일 이상 경과 건 제외), inactive_hold → connected는
+  자동 재개하지 않으므로 보류 건을 사람이 확인한다.
+- 서비스워커가 현재 `/api/` 응답까지 캐시한다(결함, P0-4에서 수정). 공용 PC에서는
+  사용 후 사이트 데이터를 지운다.
