@@ -8,11 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
 // SchemaVersion is the current DDL version recorded in app_meta.
-const SchemaVersion = "2"
+const SchemaVersion = "5"
 
 // schema is the whole Tranche-1 data model: 9 entities (§6).
 // No order/payment/delivery/personal-data tables: this system never takes orders.
@@ -114,7 +115,7 @@ CREATE TABLE IF NOT EXISTS metrics (
 );
 CREATE TABLE IF NOT EXISTS jobs (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	type TEXT NOT NULL CHECK (type IN ('analyze','generate')),
+	type TEXT NOT NULL CHECK (type IN ('analyze','strategy','generate','review')),
 	ref_id INTEGER NOT NULL,
 	status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','claimed','done','failed')),
 	worker_name TEXT NOT NULL DEFAULT '',
@@ -135,6 +136,43 @@ CREATE TABLE IF NOT EXISTS affiliate_links (
 	created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_affiliate_product ON affiliate_links(product_id);
+CREATE TABLE IF NOT EXISTS channel_accounts (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL UNIQUE,
+	platform TEXT NOT NULL DEFAULT '',
+	owner TEXT NOT NULL DEFAULT '',
+	role TEXT NOT NULL DEFAULT 'worker',
+	business TEXT NOT NULL DEFAULT '',
+	session_state TEXT NOT NULL DEFAULT 'pending',
+	posting_mode TEXT NOT NULL DEFAULT 'manual',
+	enc_id TEXT NOT NULL DEFAULT '',
+	enc_pw TEXT NOT NULL DEFAULT '',
+	last_checked_at TEXT NOT NULL DEFAULT '',
+	last_wake_at TEXT NOT NULL DEFAULT '',
+	usage TEXT NOT NULL DEFAULT '',
+	last_job_at TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS strategies (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	product_id INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+	angle TEXT NOT NULL DEFAULT '',
+	channels TEXT NOT NULL DEFAULT '',
+	key_messages TEXT NOT NULL DEFAULT '',
+	schedule_note TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS review_decisions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	content_id INTEGER NOT NULL REFERENCES contents(id) ON DELETE CASCADE,
+	decider TEXT NOT NULL DEFAULT '',
+	decision TEXT NOT NULL DEFAULT '' CHECK (decision IN ('','approved','rejected')),
+	reason TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_content ON review_decisions(content_id);
 `
 
 // Migrate creates the schema and records the schema version.
@@ -144,6 +182,12 @@ func Migrate(db *sql.DB) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	if err := migrateToV2(db); err != nil {
+		return err
+	}
+	if err := migrateToV4(db); err != nil {
+		return err
+	}
+	if err := migrateToV5(db); err != nil {
 		return err
 	}
 	if _, err := db.Exec(
@@ -169,19 +213,110 @@ func migrateToV2(db *sql.DB) error {
 	return nil
 }
 
+// migrateToV4 widens the jobs type check to include strategy. SQLite cannot
+// alter a CHECK in place, so pre-v4 tables are rebuilt. No FK points at jobs.
+func migrateToV4(db *sql.DB) error {
+	var ddl string
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'`).Scan(&ddl)
+	if err != nil {
+		return fmt.Errorf("migrate v4 inspect: %w", err)
+	}
+	if strings.Contains(ddl, "'strategy'") {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmts := []string{
+		`CREATE TABLE jobs_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			type TEXT NOT NULL CHECK (type IN ('analyze','strategy','generate')),
+			ref_id INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','claimed','done','failed')),
+			worker_name TEXT NOT NULL DEFAULT '',
+			payload TEXT NOT NULL DEFAULT '',
+			result TEXT NOT NULL DEFAULT '',
+			error TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			claimed_at TEXT NOT NULL DEFAULT '',
+			finished_at TEXT NOT NULL DEFAULT ''
+		)`,
+		`INSERT INTO jobs_new SELECT * FROM jobs`,
+		`DROP TABLE jobs`,
+		`ALTER TABLE jobs_new RENAME TO jobs`,
+		`CREATE INDEX idx_jobs_status_type ON jobs(status, type, id)`,
+		`CREATE INDEX idx_jobs_ref ON jobs(type, ref_id)`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("migrate v4: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// migrateToV5 widens the jobs type check to include review (same rebuild
+// pattern as v4; no FK points at jobs).
+func migrateToV5(db *sql.DB) error {
+	var ddl string
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'`).Scan(&ddl)
+	if err != nil {
+		return fmt.Errorf("migrate v5 inspect: %w", err)
+	}
+	if strings.Contains(ddl, "'review'") {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmts := []string{
+		`CREATE TABLE jobs_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			type TEXT NOT NULL CHECK (type IN ('analyze','strategy','generate','review')),
+			ref_id INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','claimed','done','failed')),
+			worker_name TEXT NOT NULL DEFAULT '',
+			payload TEXT NOT NULL DEFAULT '',
+			result TEXT NOT NULL DEFAULT '',
+			error TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			claimed_at TEXT NOT NULL DEFAULT '',
+			finished_at TEXT NOT NULL DEFAULT ''
+		)`,
+		`INSERT INTO jobs_new SELECT * FROM jobs`,
+		`DROP TABLE jobs`,
+		`ALTER TABLE jobs_new RENAME TO jobs`,
+		`CREATE INDEX idx_jobs_status_type ON jobs(status, type, id)`,
+		`CREATE INDEX idx_jobs_ref ON jobs(type, ref_id)`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("migrate v5: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
 
-// BackupNow copies the DB file (+WAL sidecars) and the uploads folder into a
-// timestamped directory under backupDir, then prunes to keep newest `keep`.
-// Returns the created directory path.
-func BackupNow(db *sql.DB, dbPath, uploadDir, backupDir string, keep int) (string, error) {
+// BackupNow copies the DB file (+WAL sidecars), the vault key, and the uploads
+// folder into a timestamped directory under backupDir, then prunes to keep
+// newest `keep`. Returns the created directory path.
+func BackupNow(db *sql.DB, dbPath, uploadDir, backupDir, keyPath string, keep int) (string, error) {
 	// Best effort checkpoint so the file copy is consistent under WAL mode.
 	_, _ = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 	dest := filepath.Join(backupDir, time.Now().Format("20060102-150405"))
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return "", fmt.Errorf("backup mkdir: %w", err)
 	}
-	for _, src := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+	for _, src := range []string{dbPath, dbPath + "-wal", dbPath + "-shm", keyPath} {
+		if src == "" {
+			continue
+		}
 		if _, err := os.Stat(src); err != nil {
 			continue
 		}

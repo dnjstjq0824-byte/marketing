@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func openDeleteStore(t *testing.T) *Store {
@@ -337,6 +338,50 @@ func TestMigrateV2AddsBusiness(t *testing.T) {
 	}
 }
 
+// Pre-v5 databases rebuild jobs with the review type, preserving rows.
+func TestMigrateV5AddsReview(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "v4.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	old := `CREATE TABLE jobs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		type TEXT NOT NULL CHECK (type IN ('analyze','strategy','generate')),
+		ref_id INTEGER NOT NULL,
+		status TEXT NOT NULL DEFAULT 'pending',
+		worker_name TEXT NOT NULL DEFAULT '',
+		payload TEXT NOT NULL DEFAULT '',
+		result TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		claimed_at TEXT NOT NULL DEFAULT '',
+		finished_at TEXT NOT NULL DEFAULT ''
+	);`
+	if _, err := st.DB().Exec(old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO jobs(type,ref_id,status,created_at)
+		VALUES('analyze',1,'pending','t')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(st.DB()); err != nil {
+		t.Fatal(err)
+	}
+	j, err := st.GetJob(1)
+	if err != nil || j.Type != "analyze" {
+		t.Fatalf("preserved job = %+v %v", j, err)
+	}
+	if _, err := st.CreateJob("review", 1, "{}"); err != nil {
+		t.Fatalf("review insert: %v", err)
+	}
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type='index' AND name IN ('idx_jobs_status_type','idx_jobs_ref')`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("indexes = %d err=%v", n, err)
+	}
+}
+
 // Dashboard aggregates per business line.
 func TestDashboardByBusiness(t *testing.T) {
 	st := openDeleteStore(t)
@@ -391,5 +436,208 @@ func TestDeleteAffiliateLink(t *testing.T) {
 	}
 	if err := st.DeleteAffiliateLink(first[0].ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second delete: err=%v", err)
+	}
+}
+
+// D20: business filters and grouping stay together across case variants.
+func TestBusinessCaseInsensitive(t *testing.T) {
+	st := openDeleteStore(t)
+	for i, biz := range []string{"GlowSign", "glowsign"} {
+		if _, err := st.CreateProduct("https://example.com/biz"+string(rune('a'+i)), "B", 0, biz); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.ListProducts(10, "GLOWSIGN")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("ListProducts case-insensitive = %d, %v", len(got), err)
+	}
+	groups, err := st.DashboardByBusiness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Products != 2 {
+		t.Fatalf("DashboardByBusiness groups = %+v", groups)
+	}
+}
+
+// D20: the day window is half-open [from, to); the boundary row stays out.
+func TestScheduledRangeWindow(t *testing.T) {
+	st := openDeleteStore(t)
+	pid := seedFullProduct(t, st)
+	mk := func(at string) {
+		c, err := st.CreateContent(&Content{ProductID: pid, Channel: "blog", Title: "t", Body: "b"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.UpdateContentStatus(c.ID, "queued"); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.ScheduleContent(c.ID, "acc", "blog", "official_api", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("2026-01-02T00:00:00Z") // in window
+	mk("2026-01-03T00:00:00Z") // == to, excluded
+	mk("2026-01-01T23:59:59Z") // before window
+	got, err := st.ListScheduledRange("2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ScheduledAt != "2026-01-02T00:00:00Z" {
+		t.Fatalf("ListScheduledRange = %+v", got)
+	}
+	counts, err := st.DashboardCounts("2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.ScheduledToday != 1 {
+		t.Fatalf("ScheduledToday = %d, want 1", counts.ScheduledToday)
+	}
+}
+
+// D20: the unregister guard counts held and unheld queued items alike.
+func TestCountQueuedByAccount(t *testing.T) {
+	st := openDeleteStore(t)
+	pid := seedFullProduct(t, st)
+	mk := func(account string) {
+		c, err := st.CreateContent(&Content{ProductID: pid, Channel: "blog", Title: "t", Body: "b"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.UpdateContentStatus(c.ID, "queued"); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.ScheduleContent(c.ID, account, "blog", "official_api", "2026-01-02T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("acc-a")
+	mk("acc-a")
+	mk("acc-b")
+	n, err := st.CountQueuedByAccount("acc-a")
+	if err != nil || n != 2 {
+		t.Fatalf("CountQueuedByAccount unheld acc-a = %d, %v", n, err)
+	}
+	if _, err := st.SetHeldByAccount("acc-a", "test hold"); err != nil {
+		t.Fatal(err)
+	}
+	n, err = st.CountQueuedByAccount("acc-a")
+	if err != nil || n != 2 {
+		t.Fatalf("CountQueuedByAccount held acc-a = %d, %v", n, err)
+	}
+}
+
+// D20: only claims older than the threshold surface as stuck.
+func TestListStuckClaimed(t *testing.T) {
+	st := openDeleteStore(t)
+	pid := seedFullProduct(t, st)
+	old, err := st.CreateJob("analyze", pid, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := st.CreateJob("analyze", pid, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Three claims: the seed job, then old, then fresh — all claimed.
+	if _, err := st.ClaimNextJob("analyze", "w"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimNextJob("analyze", "w"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimNextJob("analyze", "w"); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-40 * time.Minute).UTC().Format(time.RFC3339)
+	if _, err := st.db.Exec(`UPDATE jobs SET claimed_at=? WHERE id=?`, past, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	stuck, err := st.ListStuckClaimed(30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stuck) != 1 || stuck[0].ID != old.ID {
+		t.Fatalf("ListStuckClaimed = %+v, want only job %d (fresh %d must stay out)", stuck, old.ID, fresh.ID)
+	}
+}
+
+// D20: retention removes only finished-old jobs and old metrics.
+func TestPurgeExpired(t *testing.T) {
+	st := openDeleteStore(t)
+	pid := seedFullProduct(t, st)
+	oldDone, err := st.CreateJob("analyze", pid, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshDone, err := st.CreateJob("analyze", pid, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := st.CreateJob("analyze", pid, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Claims land oldest-first: the seed job, then our three in order.
+	// Results require a prior claim.
+	if _, err := st.ClaimNextJob("analyze", "w"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimNextJob("analyze", "w"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetJobResult(oldDone.ID, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimNextJob("analyze", "w"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetJobResult(freshDone.ID, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimNextJob("analyze", "w"); err != nil {
+		t.Fatal(err)
+	}
+	// Backdate: old finished row, old metric, and a claimed row that must live.
+	if _, err := st.db.Exec(`UPDATE jobs SET finished_at=? WHERE id=?`,
+		time.Now().UTC().AddDate(0, 0, -100).Format(time.RFC3339), oldDone.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE jobs SET claimed_at=? WHERE id=?`,
+		time.Now().UTC().AddDate(0, 0, -100).Format(time.RFC3339), claimed.ID); err != nil {
+		t.Fatal(err)
+	}
+	c, err := st.CreateContent(&Content{ProductID: pid, Channel: "blog", Title: "t", Body: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := int64(5)
+	mOld, err := st.CreateMetric(&Metric{ContentID: &c.ID, Exposures: &exp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mFresh, err := st.CreateMetric(&Metric{ContentID: &c.ID, Exposures: &exp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE metrics SET created_at=? WHERE id=?`,
+		time.Now().UTC().AddDate(0, 0, -200).Format(time.RFC3339), mOld.ID); err != nil {
+		t.Fatal(err)
+	}
+	jobs, metrics, err := PurgeExpired(st, 90, 180)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 1 || metrics != 1 {
+		t.Fatalf("PurgeExpired = jobs %d metrics %d, want 1/1", jobs, metrics)
+	}
+	if _, err := st.GetJob(freshDone.ID); err != nil {
+		t.Fatalf("fresh done job purged: %v", err)
+	}
+	if _, err := st.GetJob(claimed.ID); err != nil {
+		t.Fatalf("old claimed job purged: %v", err)
+	}
+	if _, err := st.GetMetric(mFresh.ID); err != nil {
+		t.Fatalf("fresh metric purged: %v", err)
 	}
 }

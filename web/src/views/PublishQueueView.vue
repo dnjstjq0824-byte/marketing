@@ -5,7 +5,8 @@
     <p v-if="error" class="error">{{ error }}</p>
 
     <div class="card">
-      <h3>예약 등록 (queued 항목 대상)</h3>
+      <h3>예약 등록</h3>
+      <p class="muted small">queued 항목은 바로 예약됩니다. 그 전 단계는 자동 모드 계정에 한해 큐까지 자동 전진합니다.</p>
       <div class="form-grid">
         <label>콘텐츠 ID <input v-model="sched.id" placeholder="예: 3" /></label>
         <label>계정 <input v-model="sched.account" placeholder="예: somun_official" /></label>
@@ -26,6 +27,37 @@
       </div>
       <p class="muted small">과거 시각은 입력 단계에서 거부됩니다. 같은 계정·같은 시각 예약은 적재 순서대로 직렬 실행됩니다.</p>
       <p v-if="schedMsg" class="ok">{{ schedMsg }}</p>
+    </div>
+
+    <div class="card">
+      <div class="sect-head"><h3>실행 계획 (읽기 전용)</h3><button class="ghost" @click="load">새로고침</button></div>
+      <p class="muted small">큐 항목별 실행 판정입니다. 변경하지 않습니다. 실전송 실행기는 P1 범위입니다.</p>
+      <div v-if="plan.length" class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>제목</th><th>계정</th><th>판정</th><th>사유</th></tr></thead>
+          <tbody>
+            <tr v-for="p in plan" :key="p.contentId">
+              <td>{{ p.contentId }}</td>
+              <td class="ellipsis">{{ p.title || '(제목 없음)' }}</td>
+              <td>{{ p.account || '—' }}</td>
+              <td><span :class="verdictClass(p.verdict)">{{ p.verdict }}</span></td>
+              <td>{{ p.reason }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="empty">큐가 비어 있습니다.</p>
+    </div>
+
+    <div class="card">
+      <h3>발행 완료 기록 (수동)</h3>
+      <p class="muted small">사람이 직접 발행한 뒤 발행된 URL을 증거로 기록합니다. queued+예약된 건만 됩니다.</p>
+      <div class="form-grid">
+        <label>콘텐츠 ID <input v-model="recForm.contentId" placeholder="예: 3" /></label>
+        <label class="full">발행된 URL <input v-model="recForm.url" placeholder="https://…" /></label>
+        <div class="full"><button @click="recordPublish">기록</button></div>
+      </div>
+      <p v-if="recMsg" class="ok">{{ recMsg }}</p>
     </div>
 
     <div class="card">
@@ -144,6 +176,36 @@ const schedMsg = ref('')
 const logForm = ref({ contentId: '', channel: '', account: '', status: 'scheduled', note: '' })
 const editingLog = ref(null)
 const logEdit = ref({ status: 'scheduled', note: '' })
+const plan = ref([])
+const recForm = ref({ contentId: '', url: '' })
+const recMsg = ref('')
+
+function verdictClass(v) {
+  return {
+    ready: 'pill p-approved',
+    manual: 'pill p-review',
+    held: 'pill p-held',
+    blocked_session: 'pill p-expired',
+    unknown_account: 'pill p-failed',
+    scheduled_future: 'pill p-pending',
+  }[v] || 'pill'
+}
+
+async function recordPublish() {
+  error.value = ''
+  recMsg.value = ''
+  try {
+    await apiFetch(`/api/contents/${recForm.value.contentId}/publish-record`, {
+      method: 'POST',
+      body: JSON.stringify({ url: recForm.value.url.trim() }),
+    })
+    recForm.value = { contentId: '', url: '' }
+    recMsg.value = '발행 완료를 기록했습니다.'
+    await load()
+  } catch (e) {
+    error.value = e.message
+  }
+}
 
 function startLogEdit(l) {
   logEdit.value = { status: l.status, note: l.note || '' }
@@ -174,11 +236,12 @@ async function deleteLog(id) {
 async function load() {
   error.value = ''
   try {
-    const [a, b, c, d] = await Promise.all([
+    const [a, b, c, d, e] = await Promise.all([
       apiFetch('/api/publish-queue?group=official_api'),
       apiFetch('/api/publish-queue?group=manual'),
       apiFetch('/api/publish-logs'),
       apiFetch('/api/products'),
+      apiFetch('/api/publish/plan'),
     ])
     official.value = a.items || []
     manual.value = b.items || []
@@ -186,6 +249,7 @@ async function load() {
     const map = {}
     for (const p of d.products || []) map[p.id] = p.business || ''
     prodBiz.value = map
+    plan.value = e.items || []
   } catch (e) {
     error.value = e.message
   }

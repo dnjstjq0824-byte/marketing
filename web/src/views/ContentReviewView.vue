@@ -79,6 +79,14 @@
         <p v-if="msg" class="ok">{{ msg }}</p>
         <h4>삭제</h4>
         <button class="ghost" @click="confirmDel = true">이 콘텐츠 삭제</button>
+        <h4>판정 이력</h4>
+        <ul v-if="reviews.length" class="speclist">
+          <li v-for="r in reviews" :key="r.id">
+            <span class="k">{{ r.decider }}</span>
+            <span><span :class="r.decision === 'approved' ? 'pill p-approved' : 'pill p-failed'">{{ r.decision }}</span> {{ r.reason || '' }}</span>
+          </li>
+        </ul>
+        <p v-else class="muted small">판정 이력이 없습니다.</p>
       </div>
       <div v-else class="card grow2">
         <p class="muted">왼쪽에서 콘텐츠를 선택하세요.</p>
@@ -112,6 +120,7 @@ const edit = ref({ title: '', body: '', persona: false })
 const error = ref('')
 const msg = ref('')
 const confirmDel = ref(false)
+const reviews = ref([])
 
 async function doDelete() {
   confirmDel.value = false
@@ -161,6 +170,12 @@ async function select(id) {
   msg.value = ''
   detail.value = await apiFetch(`/api/contents/${id}`)
   edit.value = { title: detail.value.title || '', body: detail.value.body || '', persona: !!detail.value.isVirtualPersona }
+  try {
+    const data = await apiFetch(`/api/contents/${id}/reviews`)
+    reviews.value = data.reviews || []
+  } catch {
+    reviews.value = []
+  }
 }
 
 async function save() {

@@ -120,6 +120,18 @@ func (s *Service) Update(id int64, in UpdateInput) (*store.Product, error) {
 	return s.store.GetProduct(id)
 }
 
+// UpdateStrategy rewrites a product's strategy (operator fix for worker output).
+func (s *Service) UpdateStrategy(productID int64, st *store.Strategy) (*store.Strategy, error) {
+	if _, err := s.store.GetProduct(productID); err != nil {
+		return nil, err
+	}
+	st.ProductID = productID
+	if err := s.store.UpdateStrategyByProduct(st); err != nil {
+		return nil, err
+	}
+	return s.store.GetStrategyByProduct(productID)
+}
+
 // UpdateReading rewrites a product's reading (operator fix for worker output).
 func (s *Service) UpdateReading(productID int64, r *store.Reading) (*store.Reading, error) {
 	if _, err := s.store.GetProduct(productID); err != nil {
@@ -165,11 +177,12 @@ func (s *Service) UpdateAffiliate(productID, linkID int64, partner, url string) 
 	return s.store.GetAffiliateLink(linkID)
 }
 
-// Detail bundles a product with its images, reading, jobs, and affiliate links.
+// Detail bundles a product with its images, reading, strategy, jobs, and links.
 type Detail struct {
 	Product    *store.Product         `json:"product"`
 	Images     []*store.ProductImage  `json:"images"`
 	Reading    *store.Reading         `json:"reading"`
+	Strategy   *store.Strategy        `json:"strategy"`
 	Jobs       []*store.Job           `json:"jobs"`
 	Affiliates []*store.AffiliateLink `json:"affiliateLinks"`
 }
@@ -188,6 +201,10 @@ func (s *Service) GetDetail(id int64) (*Detail, error) {
 	if err != nil && err != store.ErrNotFound {
 		return nil, err
 	}
+	strategy, err := s.store.GetStrategyByProduct(id)
+	if err != nil && err != store.ErrNotFound {
+		return nil, err
+	}
 	jobs, err := s.store.ListJobsByRef(id)
 	if err != nil {
 		return nil, err
@@ -196,5 +213,5 @@ func (s *Service) GetDetail(id int64) (*Detail, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Detail{Product: p, Images: images, Reading: reading, Jobs: jobs, Affiliates: links}, nil
+	return &Detail{Product: p, Images: images, Reading: reading, Strategy: strategy, Jobs: jobs, Affiliates: links}, nil
 }

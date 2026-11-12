@@ -55,6 +55,7 @@
         <h3>큐 요약</h3>
         <ul class="speclist">
           <li><span class="k">실패한 작업</span><span><strong>{{ counts.jobsFailed }}</strong>건 — 상주 관리 화면에서 확인</span></li>
+          <li><span class="k">지연된 작업</span><span><strong>{{ counts.jobsStuck }}</strong>건 — 30분 넘게 처리 중</span></li>
           <li><span class="k">보류된 발행</span><span><strong>{{ counts.heldTotal }}</strong>건 — 발행 큐에서 확인</span></li>
         </ul>
       </div>
@@ -75,7 +76,7 @@
 import { onMounted, ref } from 'vue'
 import { apiFetch } from '../stores/auth.js'
 
-const counts = ref({ reviewWaiting: 0, jobsPending: 0, jobsClaimed: 0, jobsFailed: 0, queuedTotal: 0, heldTotal: 0, scheduledToday: 0 })
+const counts = ref({ reviewWaiting: 0, jobsPending: 0, jobsClaimed: 0, jobsFailed: 0, jobsStuck: 0, queuedTotal: 0, heldTotal: 0, scheduledToday: 0 })
 const alerts = ref([])
 const relogin = ref([])
 const today = ref([])
@@ -96,6 +97,7 @@ async function load() {
     byBusiness.value = data.byBusiness || []
     const a = []
     if (counts.value.jobsFailed > 0) a.push(`실패한 작업 ${counts.value.jobsFailed}건이 큐 화면에서 확인을 기다립니다.`)
+    if (counts.value.jobsStuck > 0) a.push(`30분 넘게 처리 중인 작업 ${counts.value.jobsStuck}건이 있습니다. 작업자가 멈췄는지 확인하세요.`)
     if (counts.value.heldTotal > 0) a.push(`보류된 발행 ${counts.value.heldTotal}건이 있습니다.`)
     for (const r of relogin.value) a.push(`계정 ${r.accountName}: 세션 ${r.sessionState} — 재로그인 필요`)
     alerts.value = a

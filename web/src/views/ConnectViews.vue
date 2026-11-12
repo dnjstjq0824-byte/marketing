@@ -58,13 +58,14 @@
       </div>
       <div v-if="filtered.length" class="table-wrap">
         <table>
-          <thead><tr><th>계정</th><th>역할</th><th>담당 사업</th><th>세션 상태</th><th>사용량</th><th>마지막 작업</th></tr></thead>
+          <thead><tr><th>계정</th><th>역할</th><th>담당 사업</th><th>세션 상태</th><th>ID·비번</th><th>사용량</th><th>마지막 작업</th></tr></thead>
           <tbody>
             <tr v-for="a in filtered" :key="a.id">
               <td>{{ a.name }}</td>
               <td><span :class="'pill p-' + a.role">{{ a.role === 'chief' ? '총괄' : '작업자' }}</span></td>
               <td>{{ a.business || '—' }}</td>
               <td><span :class="'pill p-' + (a.sessionState || 'pending')">{{ sessionLabel(a.sessionState) }}</span></td>
+              <td>{{ a.hasCredentials ? '저장됨' : '—' }}</td>
               <td>{{ a.usage || '—' }}</td>
               <td>{{ shortDate(a.lastJobAt) }}</td>
             </tr>
@@ -76,6 +77,7 @@
 
     <div class="card">
       <h3>계정 등록</h3>
+      <p class="muted small">ID·비밀번호는 AES-256으로 암호화 저장되며 화면에 다시 보이지 않습니다.</p>
       <div class="form-grid">
         <label>계정명 <input v-model="accForm.name" /></label>
         <label>플랫폼 <input v-model="accForm.platform" placeholder="예: claude-app" /></label>
@@ -84,6 +86,8 @@
           <select v-model="accForm.role"><option value="chief">총괄</option><option value="worker">작업자</option></select>
         </label>
         <label>담당 사업 <input v-model="accForm.business" /></label>
+        <label>로그인 ID <input v-model="accForm.loginId" autocomplete="off" /></label>
+        <label>비밀번호 <input v-model="accForm.password" type="password" autocomplete="new-password" /></label>
         <div class="full"><button @click="addAccount">등록</button></div>
       </div>
     </div>
@@ -103,6 +107,8 @@
           <select v-model="accEdit.role"><option value="chief">총괄</option><option value="worker">작업자</option></select>
         </label>
         <label>담당 사업 <input v-model="accEdit.business" /></label>
+        <label>로그인 ID 변경 <input v-model="accEdit.loginId" autocomplete="off" placeholder="(유지)" /></label>
+        <label>비밀번호 변경 <input v-model="accEdit.password" type="password" autocomplete="new-password" placeholder="(유지)" /></label>
         <div class="full"><button @click="saveAccount">저장</button></div>
       </div>
     </div>
@@ -192,9 +198,9 @@ const roleFilter = ref('')
 const bizFilter = ref('')
 const alertOnly = ref(false)
 const slotForm = ref({ label: '', agentName: '' })
-const accForm = ref({ name: '', platform: '', owner: '', role: 'worker', business: '' })
+const accForm = ref({ name: '', platform: '', owner: '', role: 'worker', business: '', loginId: '', password: '' })
 const slotEdits = ref({})
-const accEdit = ref({ id: '', owner: '', role: 'worker', business: '' })
+const accEdit = ref({ id: '', owner: '', role: 'worker', business: '', loginId: '', password: '' })
 const confirmUnreg = ref(null)
 
 async function saveSlot(s) {
@@ -222,11 +228,13 @@ async function deleteSlot(id) {
 async function saveAccount() {
   error.value = ''
   try {
-    await apiFetch(`/api/session/accounts/${accEdit.value.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ owner: accEdit.value.owner, role: accEdit.value.role, business: accEdit.value.business }),
-    })
-    accEdit.value = { id: '', owner: '', role: 'worker', business: '' }
+    const body = { owner: accEdit.value.owner, role: accEdit.value.role, business: accEdit.value.business }
+    if (accEdit.value.loginId || accEdit.value.password) {
+      body.loginId = accEdit.value.loginId
+      body.password = accEdit.value.password
+    }
+    await apiFetch(`/api/session/accounts/${accEdit.value.id}`, { method: 'PATCH', body: JSON.stringify(body) })
+    accEdit.value = { id: '', owner: '', role: 'worker', business: '', loginId: '', password: '' }
     await load()
   } catch (e) {
     error.value = e.message
@@ -307,7 +315,7 @@ async function addAccount() {
   error.value = ''
   try {
     await apiFetch('/api/session/accounts', { method: 'POST', body: JSON.stringify(accForm.value) })
-    accForm.value = { name: '', platform: '', owner: '', role: 'worker', business: '' }
+    accForm.value = { name: '', platform: '', owner: '', role: 'worker', business: '', loginId: '', password: '' }
     await load()
   } catch (e) {
     error.value = e.message

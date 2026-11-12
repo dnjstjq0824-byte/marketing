@@ -2,7 +2,7 @@
 
 Fake handlers produce spec-shaped results so the queue flow can be verified
 end to end without the real resident agent (tranche 2 scope):
-  product -> analyze -> reading -> generate -> drafts -> human review.
+  product -> analyze -> reading -> strategy -> generate -> drafts -> review (C).
 
 Honesty rules mirrored from the spec:
   * analyze: unconfirmed items stay "" or go into unknowns; never invented.
@@ -52,24 +52,47 @@ def fake_analyze(payload):
     }
 
 
-def fake_generate(payload):
-    """Build one draft per allowed channel from the reading snapshot."""
-    name = payload.get("product_name", "") or "test product"
+def fake_strategy(payload):
+    """Build an honest strategy: angle from the reading, blanks stay blank."""
+    name = payload.get("product_name", "") or ""
     core = payload.get("detail_core", "") or ""
+    return {
+        "angle": ("gift angle for %s" % name) if name else "general gift angle",
+        "channels": ",".join(ALLOWED_CHANNELS),
+        "key_messages": core,
+        "schedule_note": "",
+    }
+
+
+def fake_generate(payload):
+    """Build one draft per allowed channel from the strategy snapshot."""
+    angle = payload.get("angle", "") or "test angle"
     return {
         "contents": [
             {
                 "channel": channel,
-                "title": "[test] %s (%s)" % (name, channel),
-                "body": "test draft for %s. %s" % (name, core),
+                "title": "[test] %s (%s)" % (angle, channel),
+                "body": "test draft for %s." % angle,
             }
             for channel in ALLOWED_CHANNELS
         ]
     }
 
 
+def fake_review(payload):
+    """Approve every listed draft without a target (chief mock)."""
+    return {
+        "decisions": [
+            {"content_id": cid, "approve": True, "reason": "test approve"}
+            for cid in payload.get("content_ids", [])
+        ]
+    }
+
+
 ANALYZE_HANDLER = fake_analyze
+STRATEGY_HANDLER = fake_strategy
 GENERATE_HANDLER = fake_generate
+REVIEW_HANDLER = fake_review
 
 
 class HandlerShapeTest(unittest.TestCase):
@@ -87,11 +110,25 @@ class HandlerShapeTest(unittest.TestCase):
         self.assertIn("unconfirmed", res["unknowns"])
 
     def test_generate_only_allowed_channels(self):
-        res = fake_generate({"product_name": "n", "detail_core": "c"})
+        res = fake_generate({"angle": "a"})
         self.assertTrue(res["contents"])
         for item in res["contents"]:
             self.assertIn(item["channel"], ALLOWED_CHANNELS)
             self.assertTrue(item["body"])
+
+    def test_strategy_shape(self):
+        res = fake_strategy({"product_name": "n", "detail_core": "c"})
+        self.assertEqual(set(res.keys()), {"angle", "channels", "key_messages", "schedule_note"})
+        for value in res.values():
+            self.assertIsInstance(value, str)
+        self.assertTrue(res["angle"])
+
+    def test_review_shape(self):
+        res = fake_review({"product_id": 1, "content_ids": [7, 8]})
+        self.assertEqual(len(res["decisions"]), 2)
+        for item in res["decisions"]:
+            self.assertTrue(item["approve"])
+            self.assertGreater(item["content_id"], 0)
 
 
 class WorkerClientTest(unittest.TestCase):
@@ -114,7 +151,8 @@ def run_once():
     print("test worker %s -> %s" % (client.name, client.server_url), flush=True)
     worker_runtime.run_loop(
         client,
-        {"analyze": ANALYZE_HANDLER, "generate": GENERATE_HANDLER},
+        {"analyze": ANALYZE_HANDLER, "strategy": STRATEGY_HANDLER,
+         "generate": GENERATE_HANDLER, "review": REVIEW_HANDLER},
         once=True,
     )
 

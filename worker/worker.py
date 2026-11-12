@@ -7,6 +7,7 @@ Protocol (§5):
   GET  /api/worker/jobs                              newest 100
 
 Auth: Authorization: Bearer <WORKER_TOKEN>, name via X-Worker-Name.
+Chain: analyze -> strategy -> generate -> review (A, B, then C chief).
 
 This runtime only moves jobs. Job-type handlers are injected, so the flow
 test worker (test_worker.py) and the future resident agent share one loop.
@@ -84,7 +85,7 @@ def run_loop(client, handlers, poll_interval=None, once=False):
     requeue, so the loop simply continues with the next job.
     """
     interval = config.POLL_INTERVAL_SEC if poll_interval is None else poll_interval
-    for job_type in ("analyze", "generate"):
+    for job_type in ("analyze", "strategy", "generate", "review"):
         handler = handlers.get(job_type)
         if handler is None:
             continue
@@ -125,11 +126,12 @@ def run_loop(client, handlers, poll_interval=None, once=False):
 
 
 def main():
-    from test_worker import ANALYZE_HANDLER, GENERATE_HANDLER
+    from test_worker import ANALYZE_HANDLER, GENERATE_HANDLER, REVIEW_HANDLER, STRATEGY_HANDLER
 
     client = WorkerClient()
     print("worker %s -> %s (test handlers)" % (client.name, client.server_url), flush=True)
-    handlers = {"analyze": ANALYZE_HANDLER, "generate": GENERATE_HANDLER}
+    handlers = {"analyze": ANALYZE_HANDLER, "strategy": STRATEGY_HANDLER,
+                "generate": GENERATE_HANDLER, "review": REVIEW_HANDLER}
     try:
         while True:
             run_loop(client, handlers)

@@ -168,6 +168,18 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"job": toView(done)})
+	case JobStrategy:
+		var res StrategyResult
+		if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body: all strategy fields must be strings")
+			return
+		}
+		done, err := h.svc.SubmitStrategy(id, res)
+		if err != nil {
+			h.writeSubmitError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"job": toView(done)})
 	case JobGenerate:
 		var res GenerateResult
 		if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
@@ -180,6 +192,18 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"job": toView(done), "drafts": kept})
+	case JobReview:
+		var res ReviewResult
+		if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		done, err := h.svc.SubmitReview(id, res)
+		if err != nil {
+			h.writeSubmitError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"job": toView(done)})
 	default:
 		writeError(w, http.StatusBadRequest, "unknown job type")
 	}
@@ -191,9 +215,11 @@ func (h *Handler) writeSubmitError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "result already registered for this job")
 	case errors.Is(err, store.ErrNotClaimed):
 		writeError(w, http.StatusConflict, "job must be claimed before result registration")
-	case errors.Is(err, ErrEmptyContents), errors.Is(err, ErrNoValidItems):
+	case errors.Is(err, ErrEmptyContents), errors.Is(err, ErrNoValidItems), errors.Is(err, ErrEmptyAngle),
+		errors.Is(err, ErrEmptyDecisions), errors.Is(err, ErrBadDecision):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrJobNotAnalyze), errors.Is(err, ErrJobNotGenerate):
+	case errors.Is(err, ErrJobNotAnalyze), errors.Is(err, ErrJobNotStrategy), errors.Is(err, ErrJobNotGenerate),
+		errors.Is(err, ErrJobNotReview):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "job not found")

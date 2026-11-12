@@ -138,6 +138,12 @@
       <p v-else class="empty">아직 백업이 없습니다.</p>
     </div>
     <div class="card">
+      <div class="sect-head"><h3>보관 정리</h3></div>
+      <p>완료된 작업 90일, 지표 180일까지 보관합니다. 진행 중·대기 작업은 손대지 않습니다. RETENTION_CHECK_HOURS 간격으로 자동 실행됩니다.</p>
+      <button @click="purgeNow">지금 정리 실행</button>
+      <p v-if="purgeMsg" class="ok">{{ purgeMsg }}</p>
+    </div>
+    <div class="card">
       <h3>구성 메모</h3>
       <ul>
         <li>DB는 SQLite로 시작하며, 접근 코드는 store 한 층에 모여 있습니다.</li>
@@ -181,6 +187,7 @@ const metric = ref({ contentId: '', channel: '', exposures: '', inflows: '', ord
 const jobs = ref([])
 const backupMsg = ref('')
 const backups = ref([])
+const purgeMsg = ref('')
 
 function num(v) {
   return v === null || v === undefined ? '—' : v
@@ -287,6 +294,17 @@ async function backupNow() {
     backupMsg.value = `백업 완료: ${res.dest}`
     const data = await apiFetch('/api/system/backups')
     backups.value = data.backups || []
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function purgeNow() {
+  error.value = ''
+  purgeMsg.value = ''
+  try {
+    const res = await apiFetch('/api/system/purge', { method: 'POST' })
+    purgeMsg.value = `정리 완료: 작업 ${res.jobs}건 · 지표 ${res.metrics}건`
   } catch (e) {
     error.value = e.message
   }

@@ -65,6 +65,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("DELETE /api/products/{id}", op(http.HandlerFunc(productH.Delete)))
 	mux.Handle("PATCH /api/products/{id}", op(http.HandlerFunc(productH.Update)))
 	mux.Handle("PATCH /api/products/{id}/reading", op(http.HandlerFunc(productH.UpdateReading)))
+	mux.Handle("PATCH /api/products/{id}/strategy", op(http.HandlerFunc(productH.UpdateStrategy)))
 	mux.Handle("DELETE /api/products/{id}/images/{imageId}", op(http.HandlerFunc(productH.DeleteImage)))
 	mux.Handle("POST /api/products/{id}/affiliate-links", op(http.HandlerFunc(productH.CreateAffiliate)))
 	mux.Handle("PATCH /api/products/{id}/affiliate-links/{linkId}", op(http.HandlerFunc(productH.UpdateAffiliate)))
@@ -75,6 +76,9 @@ func New(d *Deps) http.Handler {
 	mux.Handle("PATCH /api/contents/{id}", op(http.HandlerFunc(contentH.Update)))
 	mux.Handle("DELETE /api/contents/{id}", op(http.HandlerFunc(contentH.Delete)))
 	mux.Handle("POST /api/contents/{id}/schedule", op(http.HandlerFunc(contentH.Schedule)))
+	mux.Handle("POST /api/contents/{id}/publish-record", op(http.HandlerFunc(contentH.RecordPublish)))
+	mux.Handle("GET /api/contents/{id}/reviews", op(http.HandlerFunc(contentH.ListReviews)))
+	mux.Handle("GET /api/publish/plan", op(http.HandlerFunc(sessionH.PublishPlan)))
 	mux.Handle("GET /api/publish-queue", op(http.HandlerFunc(contentH.PublishQueue)))
 	mux.Handle("GET /api/publish-logs", op(http.HandlerFunc(contentH.ListPublishLogs)))
 	mux.Handle("POST /api/publish-logs", op(http.HandlerFunc(contentH.CreatePublishLog)))
@@ -103,6 +107,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/dashboard", op(http.HandlerFunc(d.dashboard)))
 	mux.Handle("POST /api/system/backup", op(http.HandlerFunc(d.backup)))
 	mux.Handle("GET /api/system/backups", op(http.HandlerFunc(d.backupList)))
+	mux.Handle("POST /api/system/purge", op(http.HandlerFunc(d.purge)))
 
 	// Worker-authenticated (§5).
 	wk := queueH.Auth
@@ -120,13 +125,16 @@ func New(d *Deps) http.Handler {
 }
 
 func (d *Deps) dashboard(w http.ResponseWriter, r *http.Request) {
-	today := time.Now().Format("2006-01-02")
-	counts, err := d.Store.DashboardCounts(today)
+	now := time.Now()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	fromUTC := midnight.UTC().Format(time.RFC3339)
+	toUTC := midnight.Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	counts, err := d.Store.DashboardCounts(fromUTC, toUTC)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot load dashboard")
 		return
 	}
-	items, err := d.Store.ListScheduledOn(today)
+	items, err := d.Store.ListScheduledRange(fromUTC, toUTC)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot load dashboard")
 		return
@@ -144,7 +152,7 @@ func (d *Deps) dashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Deps) backup(w http.ResponseWriter, r *http.Request) {
-	dest, err := store.BackupNow(d.Store.DB(), d.Config.DBPath, d.Config.UploadDir, d.Config.BackupDir, d.Config.BackupKeep)
+	dest, err := store.BackupNow(d.Store.DB(), d.Config.DBPath, d.Config.UploadDir, d.Config.BackupDir, d.Config.VaultKeyPath, d.Config.BackupKeep)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "backup failed: "+err.Error())
 		return
@@ -154,6 +162,15 @@ func (d *Deps) backup(w http.ResponseWriter, r *http.Request) {
 
 func (d *Deps) backupList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"backups": store.ListBackups(d.Config.BackupDir)})
+}
+
+func (d *Deps) purge(w http.ResponseWriter, r *http.Request) {
+	jobs, metrics, err := store.PurgeExpired(d.Store, config.RetentionJobsDays, config.RetentionMetricsDays)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "purge failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "jobs": jobs, "metrics": metrics})
 }
 
 func (d *Deps) spaFallback() http.HandlerFunc {

@@ -7,10 +7,14 @@ import (
 	"somun/internal/store"
 )
 
-// Job types: exactly analyze and generate. Never add publish/check/metric jobs.
+// Job types: analyze, strategy, generate, review.
+// Chain: analyze -> strategy -> generate -> review (A, B, then C chief).
+// Never add publish/check/metric jobs.
 const (
 	JobAnalyze  = "analyze"
+	JobStrategy = "strategy"
 	JobGenerate = "generate"
+	JobReview   = "review"
 )
 
 // Job statuses: pending -> claimed -> done/failed.
@@ -40,6 +44,15 @@ type AnalyzeResult struct {
 	Unknowns      string `json:"unknowns"`
 }
 
+// StrategyResult is the worker's marketing-strategy payload: 4 strings.
+// Angle is required; the rest may stay empty.
+type StrategyResult struct {
+	Angle        string `json:"angle"`
+	Channels     string `json:"channels"`
+	KeyMessages  string `json:"key_messages"`
+	ScheduleNote string `json:"schedule_note"`
+}
+
 // GenerateItem is one requested content draft.
 type GenerateItem struct {
 	Channel        string `json:"channel"`
@@ -51,6 +64,23 @@ type GenerateItem struct {
 // GenerateResult is the worker's content-generation payload.
 type GenerateResult struct {
 	Contents []GenerateItem `json:"contents"`
+}
+
+// ReviewDecisionItem is one chief judgment on a draft. Target fields travel
+// together: account+platform schedule the item when approved; scheduledAt is
+// optional (empty means unscheduled queue entry).
+type ReviewDecisionItem struct {
+	ContentID   int64  `json:"content_id"`
+	Approve     bool   `json:"approve"`
+	Reason      string `json:"reason"`
+	Account     string `json:"account"`
+	Platform    string `json:"platform"`
+	ScheduledAt string `json:"scheduledAt"`
+}
+
+// ReviewResult is the chief worker's review payload.
+type ReviewResult struct {
+	Decisions []ReviewDecisionItem `json:"decisions"`
 }
 
 // AllowedChannels are the only 4 generate channels. Anything else is dropped.

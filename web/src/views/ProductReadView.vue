@@ -70,6 +70,27 @@
             <p v-if="readError" class="error">{{ readError }}</p>
           </template>
           <p v-else class="muted">아직 판독 결과가 없습니다. 작업 큐에서 analyze 작업 상태를 확인하세요.</p>
+          <template v-if="detail.strategy">
+            <div class="sect-head"><h4>마케팅 전략 (A에이전트)</h4><button v-if="!editingStrategy" class="ghost" @click="startStrategyEdit">전략 수정</button></div>
+            <dl v-if="!editingStrategy" class="reading">
+              <div><dt>앵글</dt><dd>{{ detail.strategy.angle || '—' }}</dd></div>
+              <div><dt>채널</dt><dd>{{ detail.strategy.channels || '—' }}</dd></div>
+              <div><dt>핵심 메시지</dt><dd>{{ detail.strategy.keyMessages || '—' }}</dd></div>
+              <div><dt>일정 메모</dt><dd>{{ detail.strategy.scheduleNote || '—' }}</dd></div>
+            </dl>
+            <div v-else class="form-grid">
+              <label class="full">앵글 <input v-model="stratForm.angle" /></label>
+              <label class="full">채널 <input v-model="stratForm.channels" /></label>
+              <label class="full">핵심 메시지 <input v-model="stratForm.keyMessages" /></label>
+              <label class="full">일정 메모 <input v-model="stratForm.scheduleNote" /></label>
+              <div class="full btnrow">
+                <button @click="saveStrategy">전략 저장</button>
+                <button class="ghost" @click="editingStrategy = false">취소</button>
+              </div>
+            </div>
+            <p v-if="stratError" class="error">{{ stratError }}</p>
+          </template>
+          <p v-else class="muted">아직 전략이 없습니다. 작업 큐에서 strategy 작업 상태를 확인하세요.</p>
           <h4>제휴 링크 (출구 B)</h4>
           <ul v-if="detail.affiliateLinks && detail.affiliateLinks.length" class="speclist">
             <li v-for="l in detail.affiliateLinks" :key="l.id">
@@ -136,6 +157,9 @@ const prodError = ref('')
 const editingReading = ref(false)
 const readForm = ref({ productName: '', priceSummary: '', optionsText: '', shippingText: '', detailCore: '', reviewSummary: '', imageDesc: '', unknowns: '' })
 const readError = ref('')
+const editingStrategy = ref(false)
+const stratForm = ref({ angle: '', channels: '', keyMessages: '', scheduleNote: '' })
+const stratError = ref('')
 const editingLink = ref(null)
 const linkEdit = ref({ partnerName: '', url: '' })
 
@@ -177,6 +201,27 @@ async function saveReading() {
     editingReading.value = false
   } catch (e) {
     readError.value = e.message
+  }
+}
+
+function startStrategyEdit() {
+  const s = detail.value.strategy || {}
+  stratForm.value = {
+    angle: s.angle || '', channels: s.channels || '',
+    keyMessages: s.keyMessages || '', scheduleNote: s.scheduleNote || '',
+  }
+  stratError.value = ''
+  editingStrategy.value = true
+}
+
+async function saveStrategy() {
+  stratError.value = ''
+  try {
+    await apiFetch(`/api/products/${selected.value}/strategy`, { method: 'PATCH', body: JSON.stringify(stratForm.value) })
+    detail.value = await apiFetch(`/api/products/${selected.value}`)
+    editingStrategy.value = false
+  } catch (e) {
+    stratError.value = e.message
   }
 }
 
@@ -230,7 +275,9 @@ async function select(id) {
   affError.value = ''
   prodError.value = ''
   readError.value = ''
+  stratError.value = ''
   editingReading.value = false
+  editingStrategy.value = false
   editingLink.value = null
   detail.value = await apiFetch(`/api/products/${id}`)
   syncProdForm()

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"somun/internal/content/policy"
+	"somun/internal/product"
 	"somun/internal/store"
 )
 
@@ -25,6 +26,10 @@ var (
 	ErrAILabelDenied   = errors.New("AI label is only allowed for virtual-persona contents")
 	ErrBadPublishLog   = errors.New("only scheduled/held records can be created in tranche 1")
 )
+
+// autoModeValue mirrors session.PostingAuto. Importing the session package
+// here would cycle (session imports content for resume), so the literal stays.
+const autoModeValue = "auto"
 
 // Service implements review transitions, scheduling, holds, and metrics.
 type Service struct {
@@ -99,19 +104,26 @@ type ScheduleResult struct {
 	QueuePosition int            `json:"queuePosition"`
 }
 
-// Schedule reserves a queued item. Past times are rejected at input; platform
-// and group must match the two-group structure.
+// Schedule reserves an item. Queued items schedule directly; pre-queued items
+// auto-advance to queued only for auto-mode accounts (D16), otherwise they
+// are rejected. Past times are rejected at input; platform and group must
+// match the two-group structure.
 func (s *Service) Schedule(id int64, in ScheduleInput) (*ScheduleResult, error) {
 	c, err := s.store.GetContent(id)
 	if err != nil {
 		return nil, err
 	}
-	if c.Status != policy.StatusQueued {
-		return nil, errors.New("only queued items can be scheduled")
-	}
 	account := strings.TrimSpace(in.Account)
 	if account == "" {
 		return nil, ErrNoAccount
+	}
+	autoAdvance := false
+	if c.Status != policy.StatusQueued {
+		acc, err := s.store.GetAccountRowByName(account)
+		if err != nil || acc.PostingMode != autoModeValue {
+			return nil, errors.New("only queued items can be scheduled (auto-mode accounts auto-advance)")
+		}
+		autoAdvance = true
 	}
 	platform := strings.ToLower(strings.TrimSpace(in.Platform))
 	group, ok := policy.GroupOf(platform)
@@ -129,8 +141,18 @@ func (s *Service) Schedule(id int64, in ScheduleInput) (*ScheduleResult, error) 
 		}
 		scheduledAt = t.UTC().Format(time.RFC3339)
 	}
+	if autoAdvance {
+		if err := s.store.UpdateContentStatus(id, policy.StatusQueued); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.store.ScheduleContent(id, account, platform, group, scheduledAt); err != nil {
 		return nil, err
+	}
+	if autoAdvance {
+		// Record the platform transition; reschedules hit the duplicate
+		// guard and keep the original record (idempotent by design).
+		_, _ = s.store.CreatePublishLog(id, platform, account, "scheduled", "auto-advanced")
 	}
 	updated, err := s.store.GetContent(id)
 	if err != nil {
@@ -172,6 +194,42 @@ func (s *Service) ResumeAccount(account string) (resumed, overdue int, err error
 		resumed++
 	}
 	return resumed, overdue, nil
+}
+
+// RecordManualPublish records a human-completed publish: the item must be
+// queued and scheduled (target set), and the published URL is required as
+// evidence. This is the only honest path to published without an executor.
+func (s *Service) RecordManualPublish(id int64, url string) (*store.Content, error) {
+	c, err := s.store.GetContent(id)
+	if err != nil {
+		return nil, err
+	}
+	if c.Status != policy.StatusQueued {
+		return nil, errors.New("only queued items can record a publish")
+	}
+	if strings.TrimSpace(c.TargetAccount) == "" || strings.TrimSpace(c.TargetPlatform) == "" {
+		return nil, errors.New("schedule first: target account and platform are required")
+	}
+	if err := product.ValidateURL(url); err != nil {
+		return nil, err
+	}
+	if err := s.store.UpdateContentStatus(id, policy.StatusPublished); err != nil {
+		return nil, err
+	}
+	doneAt := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.store.CreatePublishDone(id, c.TargetPlatform, c.TargetAccount,
+		doneAt, strings.TrimSpace(url)); err != nil {
+		if !errors.Is(err, store.ErrDuplicate) {
+			return nil, err
+		}
+		// A plan record (e.g. auto-advanced) already holds this triplet:
+		// complete it instead of failing.
+		if _, err := s.store.CompletePublishLog(id, c.TargetPlatform, c.TargetAccount,
+			doneAt, strings.TrimSpace(url)); err != nil {
+			return nil, err
+		}
+	}
+	return s.store.GetContent(id)
 }
 
 // RecordPublishPlan stores a scheduled/held publish-log record. Done/failed

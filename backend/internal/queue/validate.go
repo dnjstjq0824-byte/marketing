@@ -7,15 +7,46 @@ import (
 
 // Validation errors for worker result payloads.
 var (
-	ErrEmptyContents = errors.New("contents must not be empty")
-	ErrNoValidItems  = errors.New("no contents with an allowed channel")
-	ErrBadJobType    = errors.New("type must be analyze or generate")
+	ErrEmptyContents  = errors.New("contents must not be empty")
+	ErrNoValidItems   = errors.New("no contents with an allowed channel")
+	ErrBadJobType     = errors.New("type must be analyze, strategy, generate, or review")
+	ErrEmptyAngle     = errors.New("angle must not be empty")
+	ErrEmptyDecisions = errors.New("decisions must not be empty")
+	ErrBadDecision    = errors.New("invalid review decision")
 )
 
-// ValidateJobType accepts only the two specified job types.
+// ValidateJobType accepts only the four specified job types.
 func ValidateJobType(t string) error {
-	if t != JobAnalyze && t != JobGenerate {
+	if t != JobAnalyze && t != JobStrategy && t != JobGenerate && t != JobReview {
 		return ErrBadJobType
+	}
+	return nil
+}
+
+// ValidateReviewResult checks decision shapes. Target fields travel together:
+// account without platform (or vice versa) is rejected here; existence and
+// timing are checked at apply time.
+func ValidateReviewResult(res ReviewResult) error {
+	if len(res.Decisions) == 0 {
+		return ErrEmptyDecisions
+	}
+	for _, d := range res.Decisions {
+		if d.ContentID <= 0 {
+			return ErrBadDecision
+		}
+		account := strings.TrimSpace(d.Account)
+		platform := strings.ToLower(strings.TrimSpace(d.Platform))
+		if (account == "") != (platform == "") {
+			return ErrBadDecision
+		}
+	}
+	return nil
+}
+
+// ValidateStrategyResult requires a non-empty angle.
+func ValidateStrategyResult(res StrategyResult) error {
+	if strings.TrimSpace(res.Angle) == "" {
+		return ErrEmptyAngle
 	}
 	return nil
 }

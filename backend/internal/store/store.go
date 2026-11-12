@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -211,11 +212,12 @@ func (s *Store) GetProduct(id int64) (*Product, error) {
 }
 
 // ListProducts returns newest-first products, optionally filtered by business.
+// Business matching is case-insensitive so spelling variants stay together.
 func (s *Store) ListProducts(limit int, business string) ([]*Product, error) {
 	q := `SELECT ` + productCols + ` FROM products`
 	var args []any
 	if business != "" {
-		q += ` WHERE business=?`
+		q += ` WHERE business=? COLLATE NOCASE`
 		args = append(args, business)
 	}
 	q += ` ORDER BY id DESC LIMIT ?`
@@ -402,6 +404,72 @@ func (s *Store) UpdateReadingByProduct(r *Reading) error {
 		shipping_text=?,detail_core=?,review_summary=?,image_desc=?,unknowns=?,updated_at=?
 		WHERE product_id=?`, r.ProductName, r.PriceSummary, r.OptionsText, r.ShippingText,
 		r.DetailCore, r.ReviewSummary, r.ImageDesc, r.Unknowns, nowUTC(), r.ProductID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Strategy is the stored strategy result: 4 strings (agent A's output).
+type Strategy struct {
+	ID           int64  `json:"id"`
+	ProductID    int64  `json:"productId"`
+	Angle        string `json:"angle"`
+	Channels     string `json:"channels"`
+	KeyMessages  string `json:"keyMessages"`
+	ScheduleNote string `json:"scheduleNote"`
+	CreatedAt    string `json:"createdAt"`
+	UpdatedAt    string `json:"updatedAt"`
+}
+
+// UpsertStrategy stores the strategy result for a product (one per product).
+func (s *Store) UpsertStrategy(st *Strategy) (*Strategy, error) {
+	now := nowUTC()
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM strategies WHERE product_id=?`, st.ProductID).Scan(&id)
+	switch {
+	case err == sql.ErrNoRows:
+		res, err := s.db.Exec(`INSERT INTO strategies(product_id,angle,channels,key_messages,
+			schedule_note,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`,
+			st.ProductID, st.Angle, st.Channels, st.KeyMessages, st.ScheduleNote, now, now)
+		if err != nil {
+			return nil, err
+		}
+		id, _ = res.LastInsertId()
+	case err != nil:
+		return nil, err
+	default:
+		if _, err := s.db.Exec(`UPDATE strategies SET angle=?,channels=?,key_messages=?,
+			schedule_note=?,updated_at=? WHERE id=?`, st.Angle, st.Channels,
+			st.KeyMessages, st.ScheduleNote, now, id); err != nil {
+			return nil, err
+		}
+	}
+	return s.GetStrategyByProduct(st.ProductID)
+}
+
+// GetStrategyByProduct loads a product's strategy.
+func (s *Store) GetStrategyByProduct(productID int64) (*Strategy, error) {
+	st := &Strategy{}
+	err := s.db.QueryRow(`SELECT id,product_id,angle,channels,key_messages,schedule_note,
+		created_at,updated_at FROM strategies WHERE product_id=?`, productID).
+		Scan(&st.ID, &st.ProductID, &st.Angle, &st.Channels, &st.KeyMessages,
+			&st.ScheduleNote, &st.CreatedAt, &st.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return st, err
+}
+
+// UpdateStrategyByProduct rewrites a product's strategy (operator fix).
+func (s *Store) UpdateStrategyByProduct(st *Strategy) error {
+	res, err := s.db.Exec(`UPDATE strategies SET angle=?,channels=?,key_messages=?,
+		schedule_note=?,updated_at=? WHERE product_id=?`, st.Angle, st.Channels,
+		st.KeyMessages, st.ScheduleNote, nowUTC(), st.ProductID)
 	if err != nil {
 		return err
 	}
@@ -709,7 +777,7 @@ func (s *Store) ListContents(status, business string, limit int) ([]*Content, er
 		args = append(args, status)
 	}
 	if business != "" {
-		conds = append(conds, `p.business=?`)
+		conds = append(conds, `p.business=? COLLATE NOCASE`)
 		args = append(args, business)
 	}
 	if len(conds) > 0 {
@@ -807,6 +875,14 @@ func (s *Store) SetHeldByAccount(account, reason string) (int, error) {
 	return int(n), nil
 }
 
+// CountQueuedByAccount counts an account's queued items, held or not.
+func (s *Store) CountQueuedByAccount(account string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM contents
+		WHERE target_account=? AND status='queued'`, account).Scan(&n)
+	return n, err
+}
+
 // ListHeldByAccount returns held queued items of one account.
 func (s *Store) ListHeldByAccount(account string) ([]*Content, error) {
 	rows, err := s.db.Query(`SELECT `+contentCols+` FROM contents
@@ -836,6 +912,56 @@ func (s *Store) ClearHold(id int64) error {
 func (s *Store) SetHoldReason(id int64, reason string) error {
 	_, err := s.db.Exec(`UPDATE contents SET hold_reason=?, updated_at=? WHERE id=?`, reason, nowUTC(), id)
 	return err
+}
+
+// ReviewDecision is one recorded review judgment (human or chief agent).
+type ReviewDecision struct {
+	ID        int64  `json:"id"`
+	ContentID int64  `json:"contentId"`
+	Decider   string `json:"decider"`
+	Decision  string `json:"decision"`
+	Reason    string `json:"reason"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// CreateReviewDecision appends one judgment. Decision must be approved/rejected.
+func (s *Store) CreateReviewDecision(contentID int64, decider, decision, reason string) (*ReviewDecision, error) {
+	now := nowUTC()
+	res, err := s.db.Exec(`INSERT INTO review_decisions(content_id,decider,decision,reason,created_at)
+		VALUES(?,?,?,?,?)`, contentID, decider, decision, reason, now)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &ReviewDecision{ID: id, ContentID: contentID, Decider: decider,
+		Decision: decision, Reason: reason, CreatedAt: now}, nil
+}
+
+// CountRejected returns how many times a content was rejected.
+func (s *Store) CountRejected(contentID int64) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM review_decisions
+		WHERE content_id=? AND decision='rejected'`, contentID).Scan(&n)
+	return n, err
+}
+
+// ListReviewDecisions returns one content's judgments newest-first.
+func (s *Store) ListReviewDecisions(contentID int64) ([]*ReviewDecision, error) {
+	rows, err := s.db.Query(`SELECT id,content_id,decider,decision,reason,created_at
+		FROM review_decisions WHERE content_id=? ORDER BY id DESC`, contentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*ReviewDecision{}
+	for rows.Next() {
+		d := &ReviewDecision{}
+		if err := rows.Scan(&d.ID, &d.ContentID, &d.Decider, &d.Decision, &d.Reason, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 // DeleteContent hard-deletes one content item. Its publish logs and metrics
@@ -893,6 +1019,36 @@ func (s *Store) GetPublishLog(contentID int64, channel, account string) (*Publis
 		return nil, ErrNotFound
 	}
 	return l, err
+}
+
+// CreatePublishDone inserts a completion record with execution time.
+// Duplicate triplets return ErrDuplicate.
+func (s *Store) CreatePublishDone(contentID int64, channel, account, executedAt, note string) (*PublishLog, error) {
+	now := nowUTC()
+	_, err := s.db.Exec(`INSERT INTO publish_logs(content_id,channel,account,status,executed_at,note,created_at)
+		VALUES(?,?,?,'done',?,?,?)`, contentID, channel, account, executedAt, note, now)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrDuplicate
+		}
+		return nil, err
+	}
+	return s.GetPublishLog(contentID, channel, account)
+}
+
+// CompletePublishLog flips one triplet record to done with execution evidence.
+func (s *Store) CompletePublishLog(contentID int64, channel, account, executedAt, note string) (*PublishLog, error) {
+	res, err := s.db.Exec(`UPDATE publish_logs SET status='done', executed_at=?, note=?
+		WHERE content_id=? AND channel=? AND account=?`,
+		executedAt, note, contentID, channel, account)
+	if err != nil {
+		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, ErrNotFound
+	}
+	return s.GetPublishLog(contentID, channel, account)
 }
 
 // GetPublishLogByID loads one record by id.
@@ -1196,12 +1352,126 @@ func (s *Store) DeleteAffiliateLink(id int64) error {
 // Dashboard counters
 // ---------------------------------------------------------------------------
 
-// ListScheduledOn returns queued items scheduled on a date prefix (YYYY-MM-DD)
-// in execution order.
-func (s *Store) ListScheduledOn(datePrefix string) ([]*Content, error) {
+// ChannelAccount is the persisted channel-agent account row. EncID/EncPW hold
+// ciphertext; plaintext never reaches this layer.
+type ChannelAccount struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	Platform      string `json:"platform"`
+	Owner         string `json:"owner"`
+	Role          string `json:"role"`
+	Business      string `json:"business"`
+	SessionState  string `json:"sessionState"`
+	PostingMode   string `json:"postingMode"`
+	EncID         string `json:"-"`
+	EncPW         string `json:"-"`
+	LastCheckedAt string `json:"lastCheckedAt"`
+	LastWakeAt    string `json:"lastWakeAt"`
+	Usage         string `json:"usage"`
+	LastJobAt     string `json:"lastJobAt"`
+	CreatedAt     string `json:"createdAt"`
+	UpdatedAt     string `json:"updatedAt"`
+}
+
+const accountCols = `id,name,platform,owner,role,business,session_state,posting_mode,enc_id,enc_pw,last_checked_at,last_wake_at,usage,last_job_at,created_at,updated_at`
+
+func scanAccount(row interface{ Scan(...any) error }) (*ChannelAccount, error) {
+	a := &ChannelAccount{}
+	err := row.Scan(&a.ID, &a.Name, &a.Platform, &a.Owner, &a.Role, &a.Business,
+		&a.SessionState, &a.PostingMode, &a.EncID, &a.EncPW, &a.LastCheckedAt,
+		&a.LastWakeAt, &a.Usage, &a.LastJobAt, &a.CreatedAt, &a.UpdatedAt)
+	return a, err
+}
+
+// CreateAccountRow inserts one account. Duplicate names return ErrDuplicate.
+func (s *Store) CreateAccountRow(a *ChannelAccount) (*ChannelAccount, error) {
+	now := nowUTC()
+	res, err := s.db.Exec(`INSERT INTO channel_accounts(name,platform,owner,role,business,
+		session_state,posting_mode,enc_id,enc_pw,last_checked_at,last_wake_at,usage,last_job_at,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, a.Name, a.Platform, a.Owner, a.Role, a.Business,
+		a.SessionState, a.PostingMode, a.EncID, a.EncPW, a.LastCheckedAt, a.LastWakeAt,
+		a.Usage, a.LastJobAt, now, now)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrDuplicate
+		}
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return s.GetAccountRow(id)
+}
+
+// GetAccountRow loads one account by id.
+func (s *Store) GetAccountRow(id int64) (*ChannelAccount, error) {
+	a, err := scanAccount(s.db.QueryRow(`SELECT `+accountCols+` FROM channel_accounts WHERE id=?`, id))
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return a, err
+}
+
+// GetAccountRowByName loads one account by its unique name.
+func (s *Store) GetAccountRowByName(name string) (*ChannelAccount, error) {
+	a, err := scanAccount(s.db.QueryRow(`SELECT `+accountCols+` FROM channel_accounts WHERE name=?`, name))
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	return a, err
+}
+
+// ListAccountRows returns all accounts by id.
+func (s *Store) ListAccountRows() ([]*ChannelAccount, error) {
+	rows, err := s.db.Query(`SELECT ` + accountCols + ` FROM channel_accounts ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*ChannelAccount{}
+	for rows.Next() {
+		a, err := scanAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// UpdateAccountRow rewrites one account row by id.
+func (s *Store) UpdateAccountRow(a *ChannelAccount) error {
+	res, err := s.db.Exec(`UPDATE channel_accounts SET platform=?,owner=?,role=?,business=?,
+		session_state=?,posting_mode=?,enc_id=?,enc_pw=?,last_checked_at=?,last_wake_at=?,usage=?,last_job_at=?,updated_at=?
+		WHERE id=?`, a.Platform, a.Owner, a.Role, a.Business, a.SessionState, a.PostingMode,
+		a.EncID, a.EncPW, a.LastCheckedAt, a.LastWakeAt, a.Usage, a.LastJobAt, nowUTC(), a.ID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteAccountRow removes one account row.
+func (s *Store) DeleteAccountRow(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM channel_accounts WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListScheduledRange returns queued items with scheduled_at in [fromUTC, toUTC),
+// in execution order. Bounds are RFC3339 UTC; callers convert the local day.
+func (s *Store) ListScheduledRange(fromUTC, toUTC string) ([]*Content, error) {
 	rows, err := s.db.Query(`SELECT `+contentCols+` FROM contents
-		WHERE status='queued' AND scheduled_at LIKE ? ORDER BY scheduled_at ASC, reserve_seq ASC, id ASC`,
-		datePrefix+"%")
+		WHERE status='queued' AND scheduled_at>=? AND scheduled_at<?
+		ORDER BY scheduled_at ASC, reserve_seq ASC, id ASC`, fromUTC, toUTC)
 	if err != nil {
 		return nil, err
 	}
@@ -1226,12 +1496,13 @@ type BusinessCounts struct {
 }
 
 // DashboardByBusiness aggregates counts per business line, ” last.
+// Grouping is case-insensitive; the displayed spelling is the group minimum.
 func (s *Store) DashboardByBusiness() ([]*BusinessCounts, error) {
-	rows, err := s.db.Query(`SELECT p.business, COUNT(DISTINCT p.id),
+	rows, err := s.db.Query(`SELECT MIN(p.business), COUNT(DISTINCT p.id),
 		COALESCE(SUM(CASE WHEN c.status='queued' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN c.status='review' THEN 1 ELSE 0 END),0)
 		FROM products p LEFT JOIN contents c ON c.product_id=p.id
-		GROUP BY p.business ORDER BY (p.business=''), p.business ASC`)
+		GROUP BY p.business COLLATE NOCASE ORDER BY (p.business=''), p.business ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1253,13 +1524,18 @@ type Counts struct {
 	JobsPending    int `json:"jobsPending"`
 	JobsClaimed    int `json:"jobsClaimed"`
 	JobsFailed     int `json:"jobsFailed"`
+	JobsStuck      int `json:"jobsStuck"`
 	QueuedTotal    int `json:"queuedTotal"`
 	HeldTotal      int `json:"heldTotal"`
 	ScheduledToday int `json:"scheduledToday"`
 }
 
+// StuckClaimedMin is how long a claim may run before it counts as stuck.
+const StuckClaimedMin = 30
+
 // DashboardCounts aggregates the home-view summary in fixed queries.
-func (s *Store) DashboardCounts(todayPrefix string) (*Counts, error) {
+// The day window is [fromUTC, toUTC) in RFC3339 UTC, converted by the caller.
+func (s *Store) DashboardCounts(fromUTC, toUTC string) (*Counts, error) {
 	c := &Counts{}
 	queries := []struct {
 		dest *int
@@ -1272,12 +1548,77 @@ func (s *Store) DashboardCounts(todayPrefix string) (*Counts, error) {
 		{&c.JobsFailed, `SELECT COUNT(*) FROM jobs WHERE status='failed'`, nil},
 		{&c.QueuedTotal, `SELECT COUNT(*) FROM contents WHERE status='queued'`, nil},
 		{&c.HeldTotal, `SELECT COUNT(*) FROM contents WHERE status='queued' AND held=1`, nil},
-		{&c.ScheduledToday, `SELECT COUNT(*) FROM contents WHERE status='queued' AND scheduled_at LIKE ?`, []any{todayPrefix + "%"}},
+		{&c.ScheduledToday, `SELECT COUNT(*) FROM contents WHERE status='queued' AND scheduled_at>=? AND scheduled_at<?`, []any{fromUTC, toUTC}},
 	}
 	for _, item := range queries {
 		if err := s.db.QueryRow(item.q, item.args...).Scan(item.dest); err != nil {
 			return nil, err
 		}
 	}
+	stuck, err := s.ListStuckClaimed(StuckClaimedMin)
+	if err != nil {
+		return nil, err
+	}
+	c.JobsStuck = len(stuck)
 	return c, nil
+}
+
+// ListStuckClaimed returns claimed jobs older than the given minutes.
+// Timestamps parse in Go so no SQLite date quirks leak into the rule.
+func (s *Store) ListStuckClaimed(olderThanMin int) ([]*Job, error) {
+	rows, err := s.db.Query(`SELECT id,type,ref_id,status,worker_name,payload,result,error,
+		created_at,claimed_at,finished_at FROM jobs WHERE status='claimed'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cutoff := time.Now().Add(-time.Duration(olderThanMin) * time.Minute)
+	var out []*Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		t, err := time.Parse(time.RFC3339, j.ClaimedAt)
+		if err != nil || !t.Before(cutoff) {
+			continue
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// DeleteJobsBefore purges finished jobs older than the RFC3339 cutoff.
+// Pending and claimed jobs are never touched. Returns rows removed.
+func (s *Store) DeleteJobsBefore(cutoffRFC3339 string) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM jobs WHERE status IN ('done','failed')
+		AND finished_at != '' AND finished_at < ?`, cutoffRFC3339)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteMetricsBefore purges metric records older than the RFC3339 cutoff.
+func (s *Store) DeleteMetricsBefore(cutoffRFC3339 string) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM metrics WHERE created_at < ?`, cutoffRFC3339)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// PurgeExpired removes finished jobs older than jobsDays and metrics older
+// than metricsDays. Windows are whole UTC days back from now.
+func PurgeExpired(s *Store, jobsDays, metricsDays int) (jobs, metrics int64, err error) {
+	now := time.Now().UTC()
+	jobs, err = s.DeleteJobsBefore(now.AddDate(0, 0, -jobsDays).Format(time.RFC3339))
+	if err != nil {
+		return 0, 0, err
+	}
+	metrics, err = s.DeleteMetricsBefore(now.AddDate(0, 0, -metricsDays).Format(time.RFC3339))
+	if err != nil {
+		return jobs, 0, err
+	}
+	return jobs, metrics, nil
 }

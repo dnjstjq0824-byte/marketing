@@ -56,6 +56,29 @@ func (h *Handler) Detail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c)
 }
 
+// ListReviews handles GET /api/contents/{id}/reviews.
+func (h *Handler) ListReviews(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid content id")
+		return
+	}
+	if _, err := h.store.GetContent(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "content not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot load content")
+		return
+	}
+	items, err := h.store.ListReviewDecisions(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot list reviews")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reviews": items})
+}
+
 // Delete handles DELETE /api/contents/{id}.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
@@ -141,6 +164,37 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+type publishRecordRequest struct {
+	URL string `json:"url"`
+}
+
+// RecordPublish handles POST /api/contents/{id}/publish-record.
+func (h *Handler) RecordPublish(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid content id")
+		return
+	}
+	var req publishRecordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	c, err := h.svc.RecordManualPublish(id, strings.TrimSpace(req.URL))
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "content not found")
+		case errors.Is(err, store.ErrDuplicate):
+			writeError(w, http.StatusConflict, "publish already recorded")
+		default:
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
 }
 
 type scheduleRequest struct {

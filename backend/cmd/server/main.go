@@ -49,7 +49,10 @@ func run() error {
 	queueSvc := queue.NewService(st)
 	contentSvc := content.NewService(st)
 	productSvc := product.NewService(st)
-	sessionSvc := session.NewService(st)
+	sessionSvc, err := session.NewService(st, cfg.VaultKeyPath)
+	if err != nil {
+		return fmt.Errorf("session vault: %w", err)
+	}
 
 	if !cfg.WorkerTokenSet {
 		log.Printf("WARN: WORKER_TOKEN not set; using default dev token (local use only)")
@@ -59,6 +62,8 @@ func run() error {
 	defer stopBackup()
 	stopCheck := startCheckScheduler(sessionSvc, cfg)
 	defer stopCheck()
+	stopRetention := startRetentionScheduler(st, cfg)
+	defer stopRetention()
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -95,7 +100,7 @@ func startBackupScheduler(st *store.Store, cfg *config.Config) (stop func()) {
 		for {
 			select {
 			case <-ticker.C:
-				dest, err := store.BackupNow(st.DB(), cfg.DBPath, cfg.UploadDir, cfg.BackupDir, cfg.BackupKeep)
+				dest, err := store.BackupNow(st.DB(), cfg.DBPath, cfg.UploadDir, cfg.BackupDir, cfg.VaultKeyPath, cfg.BackupKeep)
 				if err != nil {
 					log.Printf("backup failed: %v", err)
 					continue
@@ -124,6 +129,33 @@ func startCheckScheduler(sessionSvc *session.Service, cfg *config.Config) (stop 
 			case <-ticker.C:
 				n := sessionSvc.CheckNow()
 				log.Printf("session check ok: %d accounts", n)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// startRetentionScheduler sweeps finished jobs and old metrics (D20).
+// A non-positive interval disables the timer; POST /api/system/purge stays.
+func startRetentionScheduler(st *store.Store, cfg *config.Config) (stop func()) {
+	if cfg.RetentionEvery <= 0 {
+		return func() {}
+	}
+	ticker := time.NewTicker(time.Duration(cfg.RetentionEvery) * time.Hour)
+	done := make(chan struct{})
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				jobs, metrics, err := store.PurgeExpired(st, config.RetentionJobsDays, config.RetentionMetricsDays)
+				if err != nil {
+					log.Printf("retention sweep failed: %v", err)
+					continue
+				}
+				log.Printf("retention sweep ok: jobs=%d metrics=%d", jobs, metrics)
 			case <-done:
 				return
 			}

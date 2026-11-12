@@ -21,6 +21,11 @@ const (
 	DefaultBackupEveryMin = 60
 	DefaultBackupKeep     = 7
 	DefaultWebDistDir     = "web/dist"
+	DefaultVaultKeyName   = ".vault.key"
+	// Retention windows (D20). Finished jobs 90 days, metrics 180 days.
+	RetentionJobsDays     = 90
+	RetentionMetricsDays  = 180
+	DefaultRetentionEvery = 24
 	MaxUploadMB           = 10
 	MaxImagesPerProduct   = 10
 	OperatorTokenTTLHours = 12
@@ -41,6 +46,8 @@ type Config struct {
 	BackupEveryMin int // 0 disables the scheduler; manual backup stays available
 	BackupKeep     int
 	CheckEveryMin  int // light session inspection interval; 0 disables the timer
+	VaultKeyPath   string
+	RetentionEvery int // retention sweep interval in hours; 0 disables the timer
 }
 
 // Load reads env, applies defaults, validates, and ensures directories.
@@ -76,6 +83,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("CHECK_INTERVAL_MIN must be a non-negative integer")
 	}
 	c.CheckEveryMin = checkEvery
+	retentionEvery, err := strconv.Atoi(envOr("RETENTION_CHECK_HOURS", strconv.Itoa(DefaultRetentionEvery)))
+	if err != nil || retentionEvery < 0 {
+		return nil, fmt.Errorf("RETENTION_CHECK_HOURS must be a non-negative integer")
+	}
+	c.RetentionEvery = retentionEvery
 
 	if strings.TrimSpace(c.Port) == "" {
 		return nil, fmt.Errorf("PORT must not be empty")
@@ -90,6 +102,7 @@ func Load() (*Config, error) {
 	c.DBPath = filepath.Join(c.DataDir, DefaultDBName)
 	c.UploadDir = filepath.Join(c.DataDir, "uploads")
 	c.BackupDir = filepath.Join(c.DataDir, "backups")
+	c.VaultKeyPath = filepath.Join(c.DataDir, DefaultVaultKeyName)
 	for _, dir := range []string{c.DataDir, c.UploadDir, c.BackupDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("create dir %s: %w", dir, err)
@@ -104,8 +117,8 @@ func (c *Config) Summary() string {
 	if c.WorkerTokenSet {
 		token = "(from env)"
 	}
-	return fmt.Sprintf("port=%s data=%s db=%s backup_every_min=%d backup_keep=%d check_every_min=%d worker_token=%s admin=%s",
-		c.Port, c.DataDir, c.DBPath, c.BackupEveryMin, c.BackupKeep, c.CheckEveryMin, token, c.AdminUser)
+	return fmt.Sprintf("port=%s data=%s db=%s backup_every_min=%d backup_keep=%d check_every_min=%d retention_every_h=%d worker_token=%s admin=%s",
+		c.Port, c.DataDir, c.DBPath, c.BackupEveryMin, c.BackupKeep, c.CheckEveryMin, c.RetentionEvery, token, c.AdminUser)
 }
 
 func envOr(key, fallback string) string {

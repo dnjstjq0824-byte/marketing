@@ -224,6 +224,40 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+type strategyRequest struct {
+	Angle        string `json:"angle"`
+	Channels     string `json:"channels"`
+	KeyMessages  string `json:"keyMessages"`
+	ScheduleNote string `json:"scheduleNote"`
+}
+
+// UpdateStrategy handles PATCH /api/products/{id}/strategy.
+func (h *Handler) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid product id")
+		return
+	}
+	var req strategyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	st, err := h.svc.UpdateStrategy(id, &store.Strategy{
+		Angle: req.Angle, Channels: req.Channels,
+		KeyMessages: req.KeyMessages, ScheduleNote: req.ScheduleNote,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "product or strategy not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot update strategy")
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
 type readingRequest struct {
 	ProductName   string `json:"productName"`
 	PriceSummary  string `json:"priceSummary"`

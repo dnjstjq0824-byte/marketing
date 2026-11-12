@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Handler serves slot/session endpoints.
@@ -22,6 +23,8 @@ type registerRequest struct {
 	Owner    string `json:"owner"`
 	Role     string `json:"role"`
 	Business string `json:"business"`
+	LoginID  string `json:"loginId"`
+	Password string `json:"password"`
 }
 
 // RegisterAccount handles POST /api/session/accounts.
@@ -34,8 +37,19 @@ func (h *Handler) RegisterAccount(w http.ResponseWriter, r *http.Request) {
 	a, err := h.svc.RegisterAccount(strings.TrimSpace(req.Name), strings.TrimSpace(req.Platform),
 		strings.TrimSpace(req.Owner), strings.TrimSpace(req.Role), strings.TrimSpace(req.Business))
 	if err != nil {
+		if errors.Is(err, ErrDuplicate) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if req.LoginID != "" || req.Password != "" {
+		a, err = h.svc.SetCredentials(a.ID, req.LoginID, req.Password)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, a)
 }
@@ -56,6 +70,8 @@ type updateRequest struct {
 	Role         *string `json:"role"`
 	Business     *string `json:"business"`
 	PostingMode  *string `json:"postingMode"`
+	LoginID      *string `json:"loginId"`
+	Password     *string `json:"password"`
 }
 
 // UpdateAccount handles PATCH /api/session/accounts/{id}: session state
@@ -125,6 +141,27 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.LoginID != nil || req.Password != nil {
+		loginID, password := "", ""
+		if req.LoginID != nil {
+			loginID = *req.LoginID
+		}
+		if req.Password != nil {
+			password = *req.Password
+		}
+		account, err = h.svc.SetCredentials(id, loginID, password)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrNoAccount):
+				writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrCredentials):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, "cannot save credentials")
+			}
+			return
+		}
+	}
 	if account == nil {
 		account, err = h.svc.GetAccount(id)
 		if err != nil {
@@ -175,6 +212,11 @@ func (h *Handler) Wake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a)
+}
+
+// PublishPlan handles GET /api/publish/plan.
+func (h *Handler) PublishPlan(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": h.svc.PublishPlan(time.Now())})
 }
 
 // ReloginQueue handles GET /api/session/relogin-queue.

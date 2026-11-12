@@ -74,6 +74,7 @@ SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 | BACKUP_INTERVAL_MIN | 60 | 정기 백업 간격(분), 0이면 스케줄러 끔 |
 | BACKUP_KEEP | 7 | 백업 보관 세대 |
 | CHECK_INTERVAL_MIN | 15 | 세션 경량 점검 간격(분), 0이면 타이머 끔 |
+| RETENTION_CHECK_HOURS | 24 | 보관 정리 주기(시간), 0이면 타이머 끔 |
 | WEB_DIST_DIR | web/dist | 서빙할 콘솔 빌드 경로 |
 | SERVER_URL | http://localhost:8080 | 작업자 접속 주소 |
 | WORKER_NAME | resident-claude | X-Worker-Name 미지정 시 기록명 |
@@ -99,15 +100,19 @@ SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 | GET /api/products/{id} | 운영자 | 상품+이미지+판독+작업+제휴링크 |
 | PATCH /api/products/{id} | 운영자 | 상품 수정 |
 | PATCH /api/products/{id}/reading | 운영자 | 판독 결과 수정 |
+| PATCH /api/products/{id}/strategy | 운영자 | 전략(A 산출물) 수정 |
 | DELETE /api/products/{id} | 운영자 | 상품 하드 삭제(하위 전체+업로드 파일) |
 | DELETE /api/products/{id}/images/{imageId} | 운영자 | 이미지 1장 삭제 |
 | POST /api/products/{id}/affiliate-links | 운영자 | 제휴 링크 등록 |
 | PATCH /api/products/{id}/affiliate-links/{linkId} | 운영자 | 제휴 링크 수정 |
 | DELETE /api/products/{id}/affiliate-links/{linkId} | 운영자 | 제휴 링크 1건 삭제 |
 | DELETE /api/contents/{id} | 운영자 | 콘텐츠 하드 삭제(기록·지표 포함) |
+| GET /api/contents/{id}/reviews | 운영자 | 판정 이력 조회 |
 | GET /api/contents?status=&business= | 운영자 | 콘텐츠 목록 |
 | GET/PATCH /api/contents/{id} | 운영자 | 조회·본문수정·상태전이·가상인물 표시 |
 | POST /api/contents/{id}/schedule | 운영자 | 발행 예약(과거 시각 거부) |
+| POST /api/contents/{id}/publish-record | 운영자 | 수동 발행 완료 기록(URL 증거 필수) |
+| GET /api/publish/plan | 운영자 | 항목별 실행 판정(읽기 전용) |
 | GET /api/publish-queue?group= | 운영자 | 군별 발행 큐(official_api·manual 분리) |
 | GET/POST /api/publish-logs | 운영자 | 발행 기록(중복 삼중항 거부) |
 | PATCH /api/publish-logs/{id} | 운영자 | 기록 상태·메모 수정 |
@@ -121,12 +126,13 @@ SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 | GET /api/dashboard | 운영자 | 집계+오늘 일정+사업별 현황+재로그인 큐 |
 | POST /api/system/backup | 운영자 | 수동 백업 |
 | GET /api/system/backups | 운영자 | 백업 세대 목록(최신순) |
-| GET/POST /api/session/accounts | 운영자 | 세션 계정 목록·등록 |
-| PATCH /api/session/accounts/{id} | 운영자 | 세션 상태(보류·재개)·발행 모드·주인·역할·사업 변경 |
+| POST /api/system/purge | 운영자 | 보관 정리 수동 실행(완료 작업 90일·지표 180일) |
+| GET/POST /api/session/accounts | 운영자 | 세션 계정 목록·등록(ID·비번 암호화 저장) |
+| PATCH /api/session/accounts/{id} | 운영자 | 세션 상태(보류·재개)·발행 모드·주인·역할·사업·자격증명 변경 |
 | POST /api/session/accounts/{id}/wake | 운영자 | 배정 세션 깨우기 |
 | POST /api/session/check | 운영자 | 경량 점검 수동 실행 |
 | GET /api/session/relogin-queue | 운영자 | 재로그인 필요 목록 |
-| DELETE /api/session/accounts/{id} | 운영자 | 계정 해제(보류건 있으면 거부) |
+| DELETE /api/session/accounts/{id} | 운영자 | 계정 해제(큐 참조 있으면 거부) |
 | GET/POST /api/session/slots | 운영자 | 에이전트 슬롯 목록·추가 |
 | PATCH /api/session/slots/{id} | 운영자 | 슬롯 수정 |
 | DELETE /api/session/slots/{id} | 운영자 | 슬롯 삭제 |
@@ -138,13 +144,13 @@ SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 ## 구조
 
 ```
-backend/cmd/server      서버 기동·백업/점검 스케줄러
+backend/cmd/server      서버 기동·백업/점검/보관 스케줄러
 backend/internal/config 환경변수 로드·검증
 backend/internal/router 전체 라우트
 backend/internal/store  DB 접근층(유일 SQL)·마이그레이션·백업
 backend/internal/auth   운영자 로그인·토큰
 backend/internal/product 상품 투입·출구유형·제휴링크
-backend/internal/queue  작업 큐 (§5 규격)
+backend/internal/queue  작업 큐(analyze·strategy·generate·review)
 backend/internal/content 콘텐츠 전이·검수·발행큐·지표
 backend/internal/session 슬롯·세션·발행모드·보류·재로그인큐
 worker/                 작업자 런타임 + 흐름 검증용 테스트 작업자
@@ -156,6 +162,8 @@ web/src                 콘솔 (라우터 15보기·6그룹)
 - 백업 대상은 DB 파일과 업로드 폴더이며, 스케줄러가 자동 수행한다.
   수동 실행: 설정이 아닌 시스템 구성 화면의 버튼, 또는
   `POST /api/system/backup`.
+- 보관 정리(완료 작업 90일·지표 180일)도 스케줄러+수동 버튼으로 돈다.
+  진행 중·대기 작업은 지우지 않는다.
 - 발행 큐는 공식 API군(official_api)과 직접군(manual)으로 분리돼 있고
   섞어서 조회할 수 없다. 실제 발행 호출은 없다.
 - 게시 한도 상수(Instagram 100/50 등)는 코드에 두지 않는다.

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"somun/internal/content/policy"
 	"somun/internal/store"
 )
 
@@ -110,7 +111,7 @@ func TestClaimOldestFirst(t *testing.T) {
 	}
 }
 
-// Analyze result stores the reading and auto-creates exactly one generate job.
+// Analyze result stores the reading and auto-creates exactly one strategy job.
 func TestAnalyzeResultChain(t *testing.T) {
 	st := openTestStore(t)
 	pid := seedProduct(t, st, "A")
@@ -136,8 +137,11 @@ func TestAnalyzeResultChain(t *testing.T) {
 	if rd.ProductName != "글로우사인 네임스티커" || rd.PriceSummary != "" || rd.Unknowns != "배송비 미확인" {
 		t.Fatalf("reading not stored as-is: %+v", rd)
 	}
-	if n, _ := st.CountOpenJobs(JobGenerate, pid); n != 1 {
-		t.Fatalf("generate jobs = %d, want 1", n)
+	if n, _ := st.CountOpenJobs(JobStrategy, pid); n != 1 {
+		t.Fatalf("strategy jobs = %d, want 1", n)
+	}
+	if n, _ := st.CountOpenJobs(JobGenerate, pid); n != 0 {
+		t.Fatalf("generate jobs too early = %d, want 0", n)
 	}
 	p, _ := st.GetProduct(pid)
 	if p.Name != "글로우사인 네임스티커" {
@@ -147,9 +151,45 @@ func TestAnalyzeResultChain(t *testing.T) {
 	if _, err := svc.SubmitAnalyze(j.ID, AnalyzeResult{}); !errors.Is(err, store.ErrAlreadyDone) {
 		t.Fatalf("second submit err = %v, want ErrAlreadyDone", err)
 	}
-	// ...and no second generate job appears.
+	// ...and no second strategy job appears.
+	if n, _ := st.CountOpenJobs(JobStrategy, pid); n != 1 {
+		t.Fatalf("strategy jobs after retry = %d, want 1", n)
+	}
+}
+
+// Strategy result stores the strategy and auto-creates exactly one generate job.
+func TestStrategyResultChain(t *testing.T) {
+	st := openTestStore(t)
+	pid := seedProduct(t, st, "A")
+	j, _ := st.CreateJob(JobStrategy, pid, "{}")
+	if _, err := st.ClaimNextJob(JobStrategy, "agent-a"); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(st)
+	if _, err := svc.SubmitStrategy(j.ID, StrategyResult{}); !errors.Is(err, ErrEmptyAngle) {
+		t.Fatalf("empty angle err = %v, want ErrEmptyAngle", err)
+	}
+	done, err := svc.SubmitStrategy(j.ID, StrategyResult{
+		Angle: "gift angle", Channels: "instagram,blog", KeyMessages: "k", ScheduleNote: "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != StatusDone {
+		t.Fatalf("status = %s", done.Status)
+	}
+	strat, err := st.GetStrategyByProduct(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strat.Angle != "gift angle" || strat.ScheduleNote != "" {
+		t.Fatalf("strategy not stored as-is: %+v", strat)
+	}
 	if n, _ := st.CountOpenJobs(JobGenerate, pid); n != 1 {
-		t.Fatalf("generate jobs after retry = %d, want 1", n)
+		t.Fatalf("generate jobs = %d, want 1", n)
+	}
+	if _, err := svc.SubmitStrategy(j.ID, StrategyResult{Angle: "x"}); !errors.Is(err, store.ErrAlreadyDone) {
+		t.Fatalf("second submit err = %v, want ErrAlreadyDone", err)
 	}
 }
 
@@ -252,11 +292,104 @@ func TestResultRequiresClaim(t *testing.T) {
 	}
 }
 
-// Only analyze|generate are accepted job types.
+// Only analyze|strategy|generate are accepted job types.
 func TestJobTypeValidation(t *testing.T) {
 	for _, bad := range []string{"", "publish", "check", "metrics"} {
 		if err := ValidateJobType(bad); !errors.Is(err, ErrBadJobType) {
 			t.Fatalf("type %q err = %v, want ErrBadJobType", bad, err)
 		}
+	}
+	for _, good := range []string{JobAnalyze, JobStrategy, JobGenerate, JobReview} {
+		if err := ValidateJobType(good); err != nil {
+			t.Fatalf("type %q err = %v", good, err)
+		}
+	}
+}
+
+// Chief review applies judgments: targeted approvals schedule, bare approvals
+// advance, rejections return to review. Every judgment is recorded.
+func TestSubmitReview(t *testing.T) {
+	st := openTestStore(t)
+	pid := seedProduct(t, st, "A")
+	if _, err := st.CreateAccountRow(&store.ChannelAccount{Name: "racc", Platform: "instagram",
+		SessionState: "connected", PostingMode: "auto"}); err != nil {
+		t.Fatal(err)
+	}
+	mkDraft := func() int64 {
+		c, err := st.CreateContent(&store.Content{ProductID: pid, Channel: "blog", Body: "b"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.ID
+	}
+	newReviewJob := func() int64 {
+		j, err := st.CreateJob(JobReview, pid, "{}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.ClaimNextJob(JobReview, "muse-ai"); err != nil {
+			t.Fatal(err)
+		}
+		return j.ID
+	}
+	svc := NewService(st)
+
+	// Approve with target -> queued + scheduled + chief note.
+	d1 := mkDraft()
+	if _, err := svc.SubmitReview(newReviewJob(), ReviewResult{Decisions: []ReviewDecisionItem{
+		{ContentID: d1, Approve: true, Reason: "good", Account: "racc",
+			Platform: "instagram", ScheduledAt: "2030-01-01T00:00:00Z"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	c1, _ := st.GetContent(d1)
+	if c1.Status != policy.StatusQueued || c1.TargetAccount != "racc" {
+		t.Fatalf("forwarded = %+v", c1)
+	}
+
+	// Approve without target -> approved.
+	d2 := mkDraft()
+	if _, err := svc.SubmitReview(newReviewJob(), ReviewResult{Decisions: []ReviewDecisionItem{
+		{ContentID: d2, Approve: true, Reason: "ok"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	c2, _ := st.GetContent(d2)
+	if c2.Status != policy.StatusApproved {
+		t.Fatalf("status = %s", c2.Status)
+	}
+
+	// Reject -> review with recorded reason.
+	d3 := mkDraft()
+	if _, err := svc.SubmitReview(newReviewJob(), ReviewResult{Decisions: []ReviewDecisionItem{
+		{ContentID: d3, Approve: false, Reason: "weak hook"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	c3, _ := st.GetContent(d3)
+	if c3.Status != policy.StatusReview {
+		t.Fatalf("status = %s", c3.Status)
+	}
+	revs, _ := st.ListReviewDecisions(d3)
+	if len(revs) != 1 || revs[0].Decision != "rejected" || revs[0].Decider != "muse-ai" {
+		t.Fatalf("reviews = %+v", revs)
+	}
+
+	// Bad target fails the whole submission; the job stays claimed.
+	d4 := mkDraft()
+	jid := newReviewJob()
+	if _, err := svc.SubmitReview(jid, ReviewResult{Decisions: []ReviewDecisionItem{
+		{ContentID: d4, Approve: true, Account: "ghost", Platform: "instagram"},
+	}}); !errors.Is(err, ErrBadDecision) {
+		t.Fatalf("err = %v, want ErrBadDecision", err)
+	}
+	j, _ := st.GetJob(jid)
+	if j.Status != StatusClaimed {
+		t.Fatalf("job status = %s, want claimed", j.Status)
+	}
+
+	// Non-idempotent like every result registration.
+	if _, err := svc.SubmitReview(newReviewJob(), ReviewResult{}); !errors.Is(err, ErrEmptyDecisions) {
+		t.Fatalf("err = %v, want ErrEmptyDecisions", err)
 	}
 }
