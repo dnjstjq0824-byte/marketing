@@ -148,18 +148,23 @@
   </section>
 
   <section v-else class="page">
-    <h2>모바일 앱 안내·연결</h2>
-    <p class="muted">Flutter 앱 자체는 트랜치 2입니다. 이 화면은 안내와 연결 상태만 제공합니다.</p>
+    <h2>모바일 앱 (PWA)</h2>
+    <p class="muted">별도 네이티브 앱 없이 설치형 웹(PWA)으로 씁니다. 푸시·카메라 같은
+      네이티브 기능이 필요해지면 그때 재검토합니다.</p>
     <div class="card">
-      <h3>안내</h3>
-      <ol>
-        <li>트랜치 2에서 Flutter 앱이 나오면 이 화면에서 연결 코드를 확인합니다.</li>
-        <li>하단 탭 5개(홈·대화·검수·발행·더보기)는 앱 설계에 반영돼 있습니다.</li>
+      <h3>설치 방법</h3>
+      <ol class="declist">
+        <li>모바일 Chrome·Edge에서 콘솔 주소로 접속합니다.</li>
+        <li>브라우저 메뉴에서 '앱 설치'·'홈 화면에 추가'를 누릅니다.</li>
+        <li>홈 아이콘으로 독립 창 실행. 반응형 레이아웃으로 그대로 씁니다.</li>
       </ol>
     </div>
     <div class="card">
-      <h3>연결 상태</h3>
-      <p>대기 중 — 연결된 모바일 기기가 없습니다.</p>
+      <h3>알아둘 점</h3>
+      <ul class="speclist">
+        <li><span class="k">오프라인</span><span>앱 껍데기는 캐시되지만 데이터는 서버 연결이 필요합니다.</span></li>
+        <li><span class="k">외부 접속</span><span>같은 PC가 아니면 Cloudflare Tunnel 주소를 씁니다.</span></li>
+      </ul>
     </div>
   </section>
 </template>

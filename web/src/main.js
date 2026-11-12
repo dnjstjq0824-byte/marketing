@@ -7,5 +7,11 @@ const app = createApp(App)
 app.use(router)
 app.mount('#app')
 
+// PWA: register the service worker when supported. Failure is silent:
+// the console works fully without it.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {})
+}
+
 // Restore operator session (if a token was kept) without blocking first paint.
 refreshMe()

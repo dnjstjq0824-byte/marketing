@@ -238,4 +238,15 @@ tbody tr:hover { background: var(--soft); }
 .speclist .k { flex: none; width: 130px; color: var(--muted); }
 .sect-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .sect-head .count { font-size: 12px; color: var(--muted); }
+@media (max-width: 900px) {
+  .shell { flex-direction: column; }
+  .side { width: auto; height: auto; position: static; padding: 12px; }
+  .side nav { display: flex; flex-wrap: wrap; gap: 0 14px; }
+  .group h4 { margin: 8px 4px 2px; }
+  .side a { padding: 4px 6px; }
+  .topbar { position: static; padding: 10px 16px; }
+  .main { padding: 16px 16px 40px; }
+  .row { flex-direction: column; }
+  .grow, .grow2 { min-width: 0; }
+}
 </style>

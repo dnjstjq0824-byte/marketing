@@ -3,6 +3,7 @@ package router
 
 import (
 	"encoding/json"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +18,11 @@ import (
 	"somun/internal/session"
 	"somun/internal/store"
 )
+
+func init() {
+	// PWA manifest MIME; OS registries often lack it.
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
 
 // Deps bundles the services every route needs.
 type Deps struct {

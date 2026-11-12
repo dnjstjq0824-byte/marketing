@@ -9,12 +9,12 @@
 
 현재 범위: 트랜치 1(플랫폼 뼈대·상품·판독·콘텐츠·검수·작업 큐·
 웹 콘솔 15보기·세션/슬롯 골격·모바일 앱 안내 화면) + 디자인·CRUD 전수·
-다사업 차원·발행 모드 보강. SNS 실등록·실발행, Muse 실연동, Flutter 앱은
-트랜치 2이며 이 리포에 그 코드는 없다.
+다사업 차원·발행 모드·PWA 보강. SNS 실등록·실발행, Muse 실연동은
+트랜치 2이며 이 리포에 그 코드는 없다. 모바일은 PWA 확정(Flutter 폐기).
 
 ## 스택
 
-- 웹 콘솔: Vue 3.5 + vue-router 4.6 + Vite 6.4 (`web/`)
+- 웹 콘솔: Vue 3.5 + vue-router 4.6 + Vite 6.4 + PWA(매니페스트·서비스워커) (`web/`)
 - 백엔드: Go (`backend/`, x/crypto v0.59.0, modernc.org/sqlite v1.62.0)
 - 작업자 층: Python 3 표준라이브러리만 (`worker/`, 설치 불필요)
 - DB: SQLite 시작. SQL은 `backend/internal/store` 한 패키지에만 있다.
