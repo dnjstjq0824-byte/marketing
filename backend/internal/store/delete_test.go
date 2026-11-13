@@ -377,7 +377,7 @@ func TestMigrateV5AddsReview(t *testing.T) {
 	}
 	var n int
 	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master
-		WHERE type='index' AND name IN ('idx_jobs_status_type','idx_jobs_ref')`).Scan(&n); err != nil || n != 2 {
+		WHERE type='index' AND name IN ('idx_jobs_routing','idx_jobs_ref','idx_jobs_agent','idx_jobs_lease')`).Scan(&n); err != nil || n != 4 {
 		t.Fatalf("indexes = %d err=%v", n, err)
 	}
 }
@@ -624,12 +624,12 @@ func TestPurgeExpired(t *testing.T) {
 		time.Now().UTC().AddDate(0, 0, -200).Format(time.RFC3339), mOld.ID); err != nil {
 		t.Fatal(err)
 	}
-	jobs, metrics, err := PurgeExpired(st, 90, 180)
+	jobs, metrics, notifs, err := PurgeExpired(st, 90, 180, 90)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if jobs != 1 || metrics != 1 {
-		t.Fatalf("PurgeExpired = jobs %d metrics %d, want 1/1", jobs, metrics)
+	if jobs != 1 || metrics != 1 || notifs != 0 {
+		t.Fatalf("PurgeExpired = jobs %d metrics %d notifs %d, want 1/1/0", jobs, metrics, notifs)
 	}
 	if _, err := st.GetJob(freshDone.ID); err != nil {
 		t.Fatalf("fresh done job purged: %v", err)

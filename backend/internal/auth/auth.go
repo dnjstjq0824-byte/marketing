@@ -3,11 +3,13 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"somun/internal/store"
@@ -28,24 +30,75 @@ var (
 // MinPasswordLength is the shortest accepted operator password.
 const MinPasswordLength = 8
 
-// Service issues and validates operator sessions.
+// Service issues and validates operator sessions. Sessions persist in the
+// store (hashed), so logins survive restarts and refreshes without new logins.
 type Service struct {
-	store *store.Store
-	ttl   time.Duration
-
-	mu       sync.Mutex
-	sessions map[string]session
-}
-
-type session struct {
-	userID   int64
-	username string
-	expires  time.Time
+	store   *store.Store
+	ttl     time.Duration
+	limiter *LoginLimiter
 }
 
 // NewService builds an auth service with the given token TTL.
 func NewService(st *store.Store, ttl time.Duration) *Service {
-	return &Service{store: st, ttl: ttl, sessions: map[string]session{}}
+	return &Service{store: st, ttl: ttl, limiter: NewLoginLimiter()}
+}
+
+// hashToken identifies a session row without storing the bearer itself.
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// LoginBlocked reports whether this username+IP is rate limited (D31).
+func (s *Service) LoginBlocked(username, ip string) bool {
+	return s.limiter.Blocked(username, ip)
+}
+
+// LoginFailed records a failed attempt for rate limiting.
+func (s *Service) LoginFailed(username, ip string) {
+	s.limiter.Failed(username, ip)
+}
+
+// LoginSucceeded clears rate-limit state after a good login.
+func (s *Service) LoginSucceeded(username, ip string) {
+	s.limiter.Succeeded(username, ip)
+}
+
+// ClientIP returns the host part of the remote address for rate limiting.
+func ClientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// DefaultPasswordInUse reports whether any stored hash matches the default
+// password. Expensive by design (bcrypt); call only at boot (D31).
+func DefaultPasswordInUse(hashes []string, defaultPassword string) bool {
+	for _, h := range hashes {
+		if bcrypt.CompareHashAndPassword([]byte(h), []byte(defaultPassword)) == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// MinProductionTokenLength is the shortest accepted WORKER_TOKEN in production.
+const MinProductionTokenLength = 32
+
+// CheckProductionBoot refuses production boot on default secrets (D31).
+func CheckProductionBoot(workerToken string, workerTokenSet bool, defaultToken string, passwordHashes []string, defaultPassword string) error {
+	if !workerTokenSet || workerToken == "" || workerToken == defaultToken {
+		return fmt.Errorf("production refuses to boot: set WORKER_TOKEN explicitly")
+	}
+	if len(workerToken) < MinProductionTokenLength {
+		return fmt.Errorf("production refuses to boot: WORKER_TOKEN must be %d+ characters", MinProductionTokenLength)
+	}
+	if DefaultPasswordInUse(passwordHashes, defaultPassword) {
+		return fmt.Errorf("production refuses to boot: an operator still uses the default password")
+	}
+	return nil
 }
 
 // EnsureAdmin seeds the first admin user from env-provided credentials.
@@ -72,29 +125,31 @@ func (s *Service) Login(username, password string) (string, *store.User, error) 
 		return "", nil, err
 	}
 	token := hex.EncodeToString(buf)
-	s.mu.Lock()
-	s.sessions[token] = session{userID: u.ID, username: u.Username, expires: time.Now().Add(s.ttl)}
-	s.mu.Unlock()
+	expires := time.Now().Add(s.ttl).UTC().Format(time.RFC3339)
+	if err := s.store.CreateOperatorSession(hashToken(token), u.ID, u.Username, expires); err != nil {
+		return "", nil, err
+	}
 	return token, u, nil
 }
 
-// Validate returns the session user for a token.
+// Validate returns the session user for a token. Expired rows are removed.
 func (s *Service) Validate(token string) (int64, string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[token]
-	if !ok || time.Now().After(sess.expires) {
-		delete(s.sessions, token)
+	hash := hashToken(token)
+	sess, err := s.store.GetOperatorSession(hash)
+	if err != nil {
 		return 0, "", ErrBadToken
 	}
-	return sess.userID, sess.username, nil
+	expires, err := time.Parse(time.RFC3339, sess.ExpiresAt)
+	if err != nil || time.Now().After(expires) {
+		_ = s.store.DeleteOperatorSession(hash)
+		return 0, "", ErrBadToken
+	}
+	return sess.UserID, sess.Username, nil
 }
 
 // Logout drops one token.
 func (s *Service) Logout(token string) {
-	s.mu.Lock()
-	delete(s.sessions, token)
-	s.mu.Unlock()
+	_ = s.store.DeleteOperatorSession(hashToken(token))
 }
 
 // ListUsers returns operators (hashes are json:"-" and never serialize).

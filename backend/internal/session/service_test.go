@@ -118,36 +118,6 @@ func TestUnregisterHeldGuard(t *testing.T) {
 	}
 }
 
-// Slots update label/agent with uniqueness, then delete.
-func TestSlotUpdateDelete(t *testing.T) {
-	svc := newTestService(t)
-	slots := svc.ListSlots()
-	if len(slots) != 3 {
-		t.Fatalf("seeded slots = %d", len(slots))
-	}
-	name := "agent-x"
-	upd, err := svc.UpdateSlot(slots[0].ID, nil, &name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if upd.AgentName != "agent-x" || upd.Label != "A" {
-		t.Fatalf("updated = %+v", upd)
-	}
-	dup := "B"
-	if _, err := svc.UpdateSlot(slots[0].ID, &dup, nil); !errors.Is(err, ErrSlotTaken) {
-		t.Fatalf("dup label: err=%v", err)
-	}
-	if err := svc.DeleteSlot(slots[0].ID); err != nil {
-		t.Fatal(err)
-	}
-	if len(svc.ListSlots()) != 2 {
-		t.Fatal("slot not deleted")
-	}
-	if err := svc.DeleteSlot(slots[0].ID); !errors.Is(err, ErrNoSlot) {
-		t.Fatalf("second delete: err=%v", err)
-	}
-}
-
 // Credentials encrypt at rest, round-trip internally, and never leak to views.
 func TestCredentialsVault(t *testing.T) {
 	svc := newTestService(t)

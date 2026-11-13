@@ -1,6 +1,7 @@
 package content
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -165,7 +166,34 @@ func (s *Service) Schedule(id int64, in ScheduleInput) (*ScheduleResult, error) 
 			return nil, err
 		}
 	}
+	// P1-2: manual-group reservations feed the session-posting lane.
+	if group == policy.GroupManual {
+		if err := s.ensurePublishJob(updated, account, platform); err != nil {
+			return nil, err
+		}
+	}
 	return &ScheduleResult{Content: updated, QueuePosition: pos}, nil
+}
+
+// ensurePublishJob enqueues one P-lane job per content+account pair.
+// Title/body ride the payload: the adapter has no content-read endpoint.
+func (s *Service) ensurePublishJob(c *store.Content, account, platform string) error {
+	active, err := s.store.HasActivePublishJob(c.ID, account)
+	if err != nil || active {
+		return err
+	}
+	business, priority := "", 0
+	if p, err := s.store.GetProduct(c.ProductID); err == nil {
+		business, priority = p.Business, p.Priority
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"content_id": c.ID, "account": account, "platform": platform,
+		"title": c.Title, "body": c.Body,
+	})
+	// Literal "publish": importing queue here would cycle
+	// (content -> queue -> agent -> session -> content).
+	_, err = s.store.CreateJobFull("publish", c.ID, string(payload), business, priority, false)
+	return err
 }
 
 // ResumeAccount releases an account's held items after re-login, except items

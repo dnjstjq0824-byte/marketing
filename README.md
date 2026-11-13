@@ -41,9 +41,24 @@ npm run build
 ```
 
 ```powershell
-# 3. 테스트 작업자 (큐 흐름 검증용. Muse 실연동이 아니다)
+# 3. 테스트 작업자 (큐 흐름 검증용. 상주는 아래 install-workers)
 cd worker
 python worker.py
+```
+
+```powershell
+# 3b. 상주 작업자 등록 (A/B/C 레인, 실AI 실행, 로그온 자동 시작)
+powershell -File scripts\install-workers.ps1 -ServerUrl http://127.0.0.1:18080 -ChatAccountId 3
+# 관리자 권한 불필요(시작 폴더 방식). 토큰은 scripts/workers/*.cmd에만 저장(git 제외).
+```
+
+```powershell
+# 4. P레인 발행 어댑터 (실화면 세션 포스팅. 최초 1회 설치 후)
+adapter\.venv\Scripts\python -m playwright install chromium  # 최초 1회
+adapter\.venv\Scripts\python -m adapter.login <계정명> naver_blog  # 최초 1회 직접 로그인
+$env:AGENT_TOKEN = "<P레인 에이전트 토큰>"
+adapter\.venv\Scripts\python -m adapter.worker_adapter
+# 상세: adapter/README.md
 ```
 
 브라우저에서 `http://localhost:8080/` 을 연다. 운영자 로그인은 설정 화면에서
@@ -77,16 +92,31 @@ python test_worker.py --run-once # 실서버 대상 1건 처리
 SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 ```
 
+```powershell
+# P1-3 소크 (가상 에이전트 N기·T분, 판정까지)
+$env:SOMUN_URL='http://127.0.0.1:18080'
+python tools/soak.py --agents 10 --minutes 5
+```
+
 ## 환경변수
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
 | PORT | 8080 | 서버 포트 |
+| SOMUN_ENV | dev | dev·production. production은 기본 비밀값이면 기동 거부 |
+| BIND_ADDR | dev 빈값(=전체)·production 127.0.0.1 | 리슨 주소 |
 | DATA_DIR | data | DB·업로드·백업 루트 |
 | WORKER_TOKEN | local-worker-token | 작업자 API 토큰(기본값은 로컬 전용) |
 | ADMIN_USER / ADMIN_PASS | admin / changeme123 | 최초 운영자 시드(운영자 0명일 때만 적용) |
 | BACKUP_INTERVAL_MIN | 60 | 정기 백업 간격(분), 0이면 스케줄러 끔 |
 | BACKUP_KEEP | 7 | 백업 보관 세대 |
+| BACKUP_MIRROR_DIR | start.ps1 기본 `$HOME/somun-backup-mirror` | 최신 세대를 이 폴더에도 복사(외부 사본) |
+| LEASE_SEC | 600 | claim 리스(초). 1차 만료 1회 복귀, 2차 실패 |
+| LONGPOLL_MAX_SEC | 25 | claim 롱폴 상한(초). WriteTimeout보다 작게 유지 |
+| DB_READ_CONNS | 4 | 읽기 풀 연결 수(쓰기는 1 고정) |
+| EXECUTOR_HEARTBEAT_MIN | 0 | 실행기 틱(분). 0이면 판정만 하고 실행 정지 |
+| EXECUTOR_MIN_INTERVAL_MIN | 30 | 같은 계정 연속 발행 최소 간격(분, 0~1440) |
+| EXECUTOR_MAX_ACTIVE | 2 | 틱당 최대 처리 건수 |
 | CHECK_INTERVAL_MIN | 15 | 세션 경량 점검 간격(분), 0이면 타이머 끔 |
 | RETENTION_CHECK_HOURS | 24 | 보관 정리 주기(시간), 0이면 타이머 끔 |
 | WEB_DIST_DIR | web/dist | 서빙할 콘솔 빌드 경로 |
@@ -94,12 +124,21 @@ SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 | WORKER_NAME | resident-claude | X-Worker-Name 미지정 시 기록명 |
 | POLL_INTERVAL_SEC | 5 | 작업자 폴링 간격 |
 | WORKER_TIMEOUT_SEC | 30 | 작업자 요청 타임아웃(초) |
+| AGENT_TOKEN | (비어 있음) | 설정 시 에이전트 모드(레인 라우팅·롱폴·하트비트) |
+| LONGPOLL_WAIT_SEC | 20 | claim 롱폴 대기(초) |
+| HEARTBEAT_SEC | 60 | 에이전트 생존 신호 간격(초) |
+| JOB_HEARTBEAT_SEC | 120 | claim 리스 연장 간격(초) |
+| SOMUN_REAL_AI | 0 | 1이면 작업자가 연결된 AI로 실실행(가짜 핸들러 대체) |
+| SOMUN_CHAT_ACCOUNT_ID | 0 | 실실행에 쓰는 연결된 AI 계정 id |
+| CHAT_TIMEOUT_SEC | 120 | 채팅 요청 타임아웃(초) |
 
 ## API
 
 인증 두 갈래: 운영자 화면은 `Authorization: Bearer <로그인 토큰>`,
-작업자는 `Bearer <WORKER_TOKEN>` + `X-Worker-Name`. 오류 형식은
-`{ "error": "메시지" }` + HTTP 상태 코드다.
+작업자는 `Bearer <AGENT_TOKEN 또는 WORKER_TOKEN>` + `X-Worker-Name`.
+에이전트 토큰은 신원을 토큰으로 확정하고 X-Worker-Name은 무시한다.
+production에서는 공유 토큰 경로가 닫힌다(에이전트 토큰만).
+오류 형식은 `{ "error": "메시지" }` + HTTP 상태 코드다.
 요청·응답 스키마와 에러 코드별 의미는 [부록 B](APPENDIX.md)를 따른다.
 
 | 메서드·경로 | 인증 | 설명 |
@@ -139,22 +178,39 @@ SOMUN_LIVE=1 python -m unittest test_worker  # 실서버 연동 포함
 | POST /api/jobs/{id}/cancel | 운영자 | 작업 취소(실패 처리, 재등록 없음) |
 | DELETE /api/jobs/{id} | 운영자 | 작업 삭제 |
 | GET /api/dashboard | 운영자 | 집계+오늘 일정+사업별 현황+재로그인 큐 |
+| GET /api/notifications?unread=&limit=&offset= | 운영자 | 알림 발신함 + 미읽음 수 |
+| POST /api/notifications/{id}/read | 운영자 | 알림 1건 읽음(없으면 404) |
+| POST /api/notifications/read-all | 운영자 | 미읽음 전체 읽음 |
 | POST /api/system/backup | 운영자 | 수동 백업 |
 | GET /api/system/backups | 운영자 | 백업 세대 목록(최신순) |
 | POST /api/system/purge | 운영자 | 보관 정리 수동 실행(완료 작업 90일·지표 180일) |
 | GET/POST /api/session/accounts | 운영자 | 세션 계정 목록·등록(ID·비번 암호화 저장) |
-| PATCH /api/session/accounts/{id} | 운영자 | 세션 상태(보류·재개)·발행 모드·주인·역할·사업·자격증명 변경 |
+| PATCH /api/session/accounts/{id} | 운영자 | 세션 상태(보류·재개)·발행 모드·주인·역할·사업·자격증명·종류·플랫폼ID 변경 |
+| GET/POST /api/executor/config | 운영자 | 실행기 설정 조회·저장(심박·최소간격·최대처리) |
 | POST /api/session/accounts/{id}/wake | 운영자 | 배정 세션 깨우기 |
+| POST /api/session/accounts/{id}/login-start | 운영자 | 로그인 브라우저 열기(이미 진행 중이면 409) |
+| POST /api/session/accounts/{id}/login-finish | 운영자 | 로그인 확정·세션 검증·연결 전환 |
+| POST /api/session/accounts/{id}/login-cancel | 운영자 | 진행 중 로그인 취소(멱등) |
+| POST /api/chat/send | 운영자 | AI 계정으로 1건 전송 → 실답장(미연결 409·미지원 501, 느리면 202+폴링) |
+| GET /api/chat/pending?afterId= | 운영자 | 백그라운드 전송 결과 폴링 |
+| GET /api/chat/history?accountId=&limit= | 운영자 | 대화 기록(오래된 순) |
+| POST /api/worker/chat/send | 작업자 | 작업자용 전송(같은 본문, 202 시 폴링) |
+| GET /api/worker/chat/pending?afterId= | 작업자 | 작업자용 결과 폴링 |
 | POST /api/session/check | 운영자 | 경량 점검 수동 실행 |
 | GET /api/session/relogin-queue | 운영자 | 재로그인 필요 목록 |
 | DELETE /api/session/accounts/{id} | 운영자 | 계정 해제(큐 참조 있으면 거부) |
-| GET/POST /api/session/slots | 운영자 | 에이전트 슬롯 목록·추가(인메모리, P1-0에서 /api/agents로 대체) |
-| PATCH /api/session/slots/{id} | 운영자 | 슬롯 수정 |
-| DELETE /api/session/slots/{id} | 운영자 | 슬롯 삭제 |
-| GET /api/worker/jobs/next?type= | 작업자 | 대기 작업 원자적 claim |
+| GET/POST /api/agents | 운영자 | 에이전트 목록(필터·페이지)·등록(토큰 1회 표시) |
+| GET/PATCH/DELETE /api/agents/{id} | 운영자 | 상세(최근 작업)·수정·삭제(처리 중 있으면 409) |
+| POST /api/agents/{id}/rotate-token | 운영자 | 토큰 순환(새 토큰 1회 표시) |
+| POST /api/agents/bulk | 운영자 | 일괄 일시중지·재개·레인 변경 |
+| GET /api/agents/stats | 운영자 | 온라인·오프라인·중지·시간당 완료·실패·실패 상위 |
+| POST /api/jobs/{id}/requeue | 운영자 | 실패 작업 대기 복귀(시도 초기화) |
+| GET /api/worker/jobs/next?type=&wait= | 작업자 | 레인 라우팅 claim(에이전트는 타입 생략·롱폴 가능) |
 | GET /api/worker/jobs | 작업자 | 작업 최근 100건 |
-| POST /api/worker/jobs/{id}/result | 작업자 | 결과 등록(비멱등, 완료건 재등록 400) |
-| POST /api/worker/jobs/{id}/fail | 작업자 | 실패 등록(자동 재등록 없음) |
+| POST /api/worker/jobs/{id}/result | 작업자 | 결과 등록(비멱등, 완료건 재등록 400, 타인 claim 409) |
+| POST /api/worker/jobs/{id}/fail | 작업자 | 실패 등록(자동 재등록 없음, 타인 claim 409) |
+| POST /api/worker/heartbeat | 에이전트 | 생존 신호(중지면 enabled=false) |
+| POST /api/worker/jobs/{id}/heartbeat | 에이전트 | 리스 연장(타인 claim 409) |
 
 ## 구조
 
@@ -165,18 +221,49 @@ backend/internal/router 전체 라우트
 backend/internal/store  DB 접근층(유일 SQL)·마이그레이션·백업
 backend/internal/auth   운영자 로그인·토큰
 backend/internal/product 상품 투입·출구유형·제휴링크
-backend/internal/queue  작업 큐(analyze·strategy·generate·review)
+backend/internal/queue  작업 큐(analyze·strategy·generate·review·publish)
 backend/internal/content 콘텐츠 전이·검수·발행큐·지표
-backend/internal/session 슬롯·세션·발행모드·보류·재로그인큐
+backend/internal/session 세션·발행모드·보류·재로그인큐
+backend/internal/agent 에이전트 등록·라우팅 claim·리스·롱폴
 worker/                 작업자 런타임 + 흐름 검증용 테스트 작업자
 web/src                 콘솔 (라우터 15보기·6그룹)
 ```
 
+## 외부 공개 (Cloudflare Tunnel + Access, 무료 범위)
+
+서버는 production에서 127.0.0.1에만 바인드한다. 외부 접속은
+cloudflared 터널이 로컬 포트로 붙는 구조다. 개통 절차(최초 1회):
+
+```powershell
+# 1. cloudflared 설치 후 로그인(브라우저 승인 1회)
+cloudflared tunnel login
+# 2. 터널 생성 + DNS 연결(예: somun.example.com)
+cloudflared tunnel create somun-core
+cloudflared tunnel route dns somun-core somun.example.com
+# 3. 인그레스 설정 파일(~/.cloudflared/config.yml)
+#    - hostname: somun.example.com
+#      service: http://127.0.0.1:8080
+# 4. 실행(포그라운드 확인 후 자동 시작으로 전환)
+cloudflared tunnel run somun-core
+```
+
+- 콘솔 경로(`/`, `/settings` 등)에는 Cloudflare Access(무료 범위)를 한 겹 더
+  걸고, 개통 시점에 과금 0원임을 확인한다.
+- 작업자 API(`/api/worker/*`)는 에이전트별 토큰(P1-0)으로 인증한다.
+  P1-0 전까지는 공유 WORKER_TOKEN이므로 외부에 열지 않는다.
+- 자동 시작: `powershell -File scripts\install-task.ps1 -DryRun`으로
+  명령을 확인한 뒤 `-DryRun` 없이 실행하면 로그온 트리거가 등록된다.
+- 업데이트·롤백: `scripts\update.ps1` → `scripts\rollback.ps1`
+  (스냅샷→빌드→보존→교체→재기동→헬스 확인).
+
 ## 운영 메모
 
-- 백업 대상은 DB 파일과 업로드 폴더이며, 스케줄러가 자동 수행한다.
-  수동 실행: 설정이 아닌 시스템 구성 화면의 버튼, 또는
+- 백업 대상은 DB 일관 스냅샷(VACUUM INTO)+금고 키+업로드 폴더이며,
+  스케줄러가 자동 수행한다. 수동 실행: 시스템 구성 화면의 버튼, 또는
   `POST /api/system/backup`.
+- 복원: 서버 정지 상태에서 `.\backend\somun.exe restore <세대명>` 실행.
+  현 data는 형제 `data-pre-restore-<시각>/`로 옮겨지고 세대가 복사된 뒤
+  무결성 검사를 통과해야 끝난다. 세대 목록은 `GET /api/system/backups`.
 - 보관 정리(완료 작업 90일·지표 180일)도 스케줄러+수동 버튼으로 돈다.
   진행 중·대기 작업은 지우지 않는다.
 - 발행 큐는 공식 API군(official_api)과 직접군(manual)으로 분리돼 있고

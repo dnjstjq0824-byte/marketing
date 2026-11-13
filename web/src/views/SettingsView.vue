@@ -28,24 +28,35 @@
       <ul v-if="users.length" class="speclist">
         <li v-for="u in users" :key="u.id">
           <span class="k">{{ u.username }}</span>
-          <span>{{ u.role }} <button v-if="u.id !== auth.user.id" class="ghost" @click="removeUser(u.id)">삭제</button></span>
+          <span><span :class="u.role === 'admin' ? 'pill p-chief' : 'pill p-worker'">{{ u.role }}</span> <button v-if="u.id !== auth.user.id" class="ghost small" @click="confirmDelUser = u.id">삭제</button></span>
         </li>
       </ul>
       <div class="form-grid">
-        <label>새 아이디 <input v-model="newUser.username" /></label>
-        <label>비밀번호(8자+) <input v-model="newUser.password" type="password" /></label>
+        <label>새 아이디 <input v-model="newUser.username" autocomplete="off" /></label>
+        <label>비밀번호(8자+) <input v-model="newUser.password" type="password" autocomplete="new-password" /></label>
         <div class="full"><button @click="addUser">운영자 추가</button></div>
       </div>
-      <p v-if="userError" class="error">{{ userError }}</p>
+      <p v-if="userError" class="banner err">{{ userError }}</p>
+    </div>
+
+    <div v-if="confirmDelUser !== null" class="modal-back" @click.self="confirmDelUser = null">
+      <div class="modal">
+        <h3>운영자 삭제</h3>
+        <p>이 운영자는 다시 로그인할 수 없습니다. 되돌릴 수 없습니다.</p>
+        <div class="btnrow">
+          <button class="danger" @click="doRemoveUser">삭제</button>
+          <button class="ghost" @click="confirmDelUser = null">취소</button>
+        </div>
+      </div>
     </div>
 
     <div v-if="auth.user" class="card narrow">
       <h3>비밀번호 변경</h3>
-      <label>현재 비밀번호 <input v-model="pwForm.current" type="password" /></label>
-      <label>새 비밀번호(8자+) <input v-model="pwForm.next" type="password" /></label>
+      <label>현재 비밀번호 <input v-model="pwForm.current" type="password" autocomplete="current-password" /></label>
+      <label>새 비밀번호(8자+) <input v-model="pwForm.next" type="password" autocomplete="new-password" /></label>
       <button @click="changePassword">변경</button>
-      <p v-if="pwMsg" class="ok">{{ pwMsg }}</p>
-      <p v-if="pwError" class="error">{{ pwError }}</p>
+      <p v-if="pwMsg" class="banner okk">{{ pwMsg }}</p>
+      <p v-if="pwError" class="banner err">{{ pwError }}</p>
     </div>
 
     <div class="card narrow">
@@ -73,6 +84,7 @@ const userError = ref('')
 const pwForm = ref({ current: '', next: '' })
 const pwMsg = ref('')
 const pwError = ref('')
+const confirmDelUser = ref(null)
 
 async function doLogin() {
   busy.value = true
@@ -115,7 +127,9 @@ async function addUser() {
   }
 }
 
-async function removeUser(id) {
+async function doRemoveUser() {
+  const id = confirmDelUser.value
+  confirmDelUser.value = null
   userError.value = ''
   try {
     await apiFetch(`/api/users/${id}`, { method: 'DELETE' })

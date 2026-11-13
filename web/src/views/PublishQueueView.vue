@@ -2,7 +2,7 @@
   <section class="page">
     <h2>발행 큐</h2>
     <p class="muted">큐·상태·화면까지만 제공합니다. 실제 외부 채널 발행은 트랜치 2입니다. 두 채널군은 분리 표기되며 섞지 않습니다.</p>
-    <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="error" class="banner err">{{ error }}</p>
 
     <div class="card">
       <h3>예약 등록</h3>
@@ -26,7 +26,7 @@
         <div class="full"><button @click="reserve">예약</button></div>
       </div>
       <p class="muted small">과거 시각은 입력 단계에서 거부됩니다. 같은 계정·같은 시각 예약은 적재 순서대로 직렬 실행됩니다.</p>
-      <p v-if="schedMsg" class="ok">{{ schedMsg }}</p>
+      <p v-if="schedMsg" class="banner okk">{{ schedMsg }}</p>
     </div>
 
     <div class="card">
@@ -40,13 +40,13 @@
               <td>{{ p.contentId }}</td>
               <td class="ellipsis">{{ p.title || '(제목 없음)' }}</td>
               <td>{{ p.account || '—' }}</td>
-              <td><span :class="verdictClass(p.verdict)">{{ p.verdict }}</span></td>
+              <td><span :class="verdictClass(p.verdict)">{{ verdictLabel(p.verdict) }}</span></td>
               <td>{{ p.reason }}</td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p v-else class="empty">큐가 비어 있습니다.</p>
+      <EmptyArt v-else art="tray" title="큐가 비어 있습니다" />
     </div>
 
     <div class="card">
@@ -57,7 +57,7 @@
         <label class="full">발행된 URL <input v-model="recForm.url" placeholder="https://…" /></label>
         <div class="full"><button @click="recordPublish">기록</button></div>
       </div>
-      <p v-if="recMsg" class="ok">{{ recMsg }}</p>
+      <p v-if="recMsg" class="banner okk">{{ recMsg }}</p>
     </div>
 
     <div class="card">
@@ -78,7 +78,7 @@
       </div>
       <div v-if="logs.length" class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>콘텐츠</th><th>채널</th><th>계정</th><th>상태</th><th>메모</th><th></th></tr></thead>
+          <thead><tr><th>ID</th><th>콘텐츠</th><th>채널</th><th>계정</th><th>상태</th><th class="num">시도</th><th>마지막 오류</th><th>메모</th><th></th></tr></thead>
           <tbody>
             <tr v-for="l in logs" :key="l.id">
               <td>{{ l.id }}</td>
@@ -92,18 +92,20 @@
                 </select>
                 <span v-else>{{ l.status }}</span>
               </td>
+              <td class="num">{{ l.attempts || 0 }}</td>
+              <td>{{ l.lastError || '—' }}</td>
               <td>
                 <input v-if="editingLog === l.id" v-model="logEdit.note" />
                 <span v-else>{{ l.note || '—' }}</span>
               </td>
               <td>
                 <template v-if="editingLog === l.id">
-                  <button @click="saveLog(l.id)">저장</button>
-                  <button class="ghost" @click="editingLog = null">취소</button>
+                  <button class="small" @click="saveLog(l.id)">저장</button>
+                  <button class="ghost small" @click="editingLog = null">취소</button>
                 </template>
                 <template v-else>
-                  <button class="ghost" @click="startLogEdit(l)">수정</button>
-                  <button class="ghost" @click="deleteLog(l.id)">삭제</button>
+                  <button class="ghost small" @click="startLogEdit(l)">수정</button>
+                  <button class="ghost small" @click="confirmDelLog = l.id">삭제</button>
                 </template>
               </td>
             </tr>
@@ -114,7 +116,7 @@
     </div>
 
     <div class="row">
-      <div class="card grow">
+      <div class="card grow rule-pine">
         <div class="sect-head"><h3>공식 발행 API군</h3><span class="count">{{ official.length }}건</span></div>
         <p class="muted small">Instagram / Facebook · Threads · TikTok · YouTube · Blogger</p>
         <div v-if="official.length" class="table-wrap">
@@ -122,7 +124,7 @@
             <thead><tr><th>ID</th><th>사업</th><th>제목</th><th>계정</th><th>예정</th><th>보류</th></tr></thead>
             <tbody>
               <tr v-for="c in official" :key="c.id">
-                <td>{{ c.id }}</td>
+                <td class="id">{{ c.id }}</td>
                 <td>{{ prodBiz[c.productId] || '(미지정)' }}</td>
                 <td class="ellipsis">{{ c.title || '(제목 없음)' }}</td>
                 <td>{{ c.targetAccount || '—' }}</td>
@@ -132,17 +134,17 @@
             </tbody>
           </table>
         </div>
-        <p v-else class="empty">큐가 비어 있습니다.</p>
+        <EmptyArt v-else art="tray" title="큐가 비어 있습니다" />
       </div>
-      <div class="card grow">
+      <div class="card grow rule-gold">
         <div class="sect-head"><h3>직접 posting군 (API 없음)</h3><span class="count">{{ manual.length }}건</span></div>
-        <p class="muted small">네이버 블로그 · 티스토리 — 처리 방향은 PO 결정 대기</p>
+        <p class="muted small">네이버 블로그 · 티스토리 — 세션 포스팅(P1-2)</p>
         <div v-if="manual.length" class="table-wrap">
           <table>
             <thead><tr><th>ID</th><th>사업</th><th>제목</th><th>계정</th><th>예정</th><th>보류</th></tr></thead>
             <tbody>
               <tr v-for="c in manual" :key="c.id">
-                <td>{{ c.id }}</td>
+                <td class="id">{{ c.id }}</td>
                 <td>{{ prodBiz[c.productId] || '(미지정)' }}</td>
                 <td class="ellipsis">{{ c.title || '(제목 없음)' }}</td>
                 <td>{{ c.targetAccount || '—' }}</td>
@@ -152,7 +154,18 @@
             </tbody>
           </table>
         </div>
-        <p v-else class="empty">큐가 비어 있습니다.</p>
+        <EmptyArt v-else art="tray" title="큐가 비어 있습니다" />
+      </div>
+    </div>
+
+    <div v-if="confirmDelLog !== null" class="modal-back" @click.self="confirmDelLog = null">
+      <div class="modal">
+        <h3>발행 기록 #{{ confirmDelLog }} 삭제</h3>
+        <p>이 기록만 지워집니다. 되돌릴 수 없습니다.</p>
+        <div class="btnrow">
+          <button class="danger" @click="doDeleteLog">삭제</button>
+          <button class="ghost" @click="confirmDelLog = null">취소</button>
+        </div>
       </div>
     </div>
   </section>
@@ -161,6 +174,12 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { apiFetch } from '../stores/auth.js'
+import { VERDICT, label } from '../stores/labels.js'
+import EmptyArt from '../components/EmptyArt.vue'
+
+function verdictLabel(v) {
+  return label(VERDICT, v)
+}
 
 function shortDate(iso) {
   return iso ? iso.slice(0, 16).replace('T', ' ') : '—'
@@ -179,6 +198,7 @@ const logEdit = ref({ status: 'scheduled', note: '' })
 const plan = ref([])
 const recForm = ref({ contentId: '', url: '' })
 const recMsg = ref('')
+const confirmDelLog = ref(null)
 
 function verdictClass(v) {
   return {
@@ -223,7 +243,9 @@ async function saveLog(id) {
   }
 }
 
-async function deleteLog(id) {
+async function doDeleteLog() {
+  const id = confirmDelLog.value
+  confirmDelLog.value = null
   error.value = ''
   try {
     await apiFetch(`/api/publish-logs/${id}`, { method: 'DELETE' })

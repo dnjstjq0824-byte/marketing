@@ -34,11 +34,18 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
+	ip := ClientIP(r)
+	if h.svc.LoginBlocked(req.Username, ip) {
+		writeError(w, http.StatusTooManyRequests, "too many failed logins; try again later")
+		return
+	}
 	token, user, err := h.svc.Login(req.Username, req.Password)
 	if err != nil {
+		h.svc.LoginFailed(req.Username, ip)
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
+	h.svc.LoginSucceeded(req.Username, ip)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token,
 		"user":  map[string]any{"id": user.ID, "username": user.Username, "role": user.Role},

@@ -19,48 +19,48 @@
       <div class="sect-head"><h3>수집 기록</h3><span class="count">{{ metrics.length }}건</span></div>
       <div v-if="metrics.length" class="table-wrap">
       <table>
-        <thead><tr><th>ID</th><th>콘텐츠</th><th>채널</th><th>노출</th><th>유입</th><th>주문</th><th>문의</th><th>판정</th><th>판정 흐름</th><th></th></tr></thead>
+        <thead><tr><th class="id">ID</th><th class="num">콘텐츠</th><th>채널</th><th class="num">노출</th><th class="num">유입</th><th class="num">주문</th><th class="num">문의</th><th>판정</th><th>판정 흐름</th><th></th></tr></thead>
         <tbody>
           <tr v-for="m in metrics" :key="m.id">
-            <td>{{ m.id }}</td>
-            <td>{{ m.contentId || '—' }}</td>
+            <td class="id">{{ m.id }}</td>
+            <td class="num">{{ m.contentId || '—' }}</td>
             <td>{{ m.channel || '—' }}</td>
-            <td>{{ num(m.exposures) }}</td>
-            <td>{{ num(m.inflows) }}</td>
-            <td>{{ num(m.orders) }}</td>
-            <td>{{ num(m.inquiries) }}</td>
+            <td class="num">{{ num(m.exposures) }}</td>
+            <td class="num">{{ num(m.inflows) }}</td>
+            <td class="num">{{ num(m.orders) }}</td>
+            <td class="num">{{ num(m.inquiries) }}</td>
             <td>{{ m.causeClass || '—' }}</td>
             <td>
               <label class="check"><input type="checkbox" :checked="m.checkUrl" @change="setCheck(m, 'checkUrl', $event)" /> ①URL실재</label>
               <label class="check"><input type="checkbox" :checked="m.checkSession" @change="setCheck(m, 'checkSession', $event)" /> ②수집경로·세션</label>
               <label class="check"><input type="checkbox" :checked="m.checkDisplay" @change="setCheck(m, 'checkDisplay', $event)" /> ③채널표시</label>
             </td>
-            <td><button class="ghost" @click="deleteMetric(m.id)">삭제</button></td>
+            <td><button class="ghost small" @click="confirmDelMetric = m.id">삭제</button></td>
           </tr>
         </tbody>
       </table>
       </div>
-      <p v-else class="empty">기록이 없습니다.</p>
+      <EmptyArt v-else art="lens" title="기록이 없습니다" hint="위 폼에서 첫 지표를 기록하세요." />
       <p class="muted small">판정 흐름: ① 발행 URL 실재 → ② 수집 경로·세션 상태 → ③ 채널 표시 여부 순서로 확인합니다.</p>
     </div>
   </section>
 
   <section v-else-if="view === 'criteria'" class="page">
     <h2>판정·기준</h2>
-    <p class="muted">아래는 결정 대기 항목입니다. 확정값으로 채우지 않고 대기 표시로 둡니다.</p>
+    <p class="muted">해소된 항목은 <span class="pill p-approved">해소</span> 표시로 구분합니다. 대기 항목은 확정값으로 채우지 않습니다.</p>
     <div class="card">
-      <h3>모순 6건 (대기)</h3>
+      <div class="sect-head"><h3>모순 6건</h3><span class="count">해소 3 · 대기 3</span></div>
       <ol class="declist">
         <li>블로그 채널 — 종전 결정(로그인 세션 직접 포스팅) vs 약관·API 종료</li>
-        <li>Instagram 게시 한도 100 vs 50</li>
-        <li>TikTok Intended Use vs SOMUN 1차 사용 형태</li>
+        <li>Instagram 게시 한도 100 vs 50 <span class="pill p-approved">해소</span></li>
+        <li>TikTok Intended Use vs SOMUN 1차 사용 형태 <span class="pill p-approved">해소</span></li>
         <li>피클의 마케팅 활용 전제 (공식 근거 없음)</li>
         <li>스마트스토어 판독 — 화면 열람 vs 자동 수집의 경계</li>
-        <li>Instagram 해시태그 30 vs 5</li>
+        <li>Instagram 해시태그 30 vs 5 <span class="pill p-approved">해소</span></li>
       </ol>
     </div>
     <div class="card">
-      <h3>미확인 15건 (대기)</h3>
+      <div class="sect-head"><h3>미확인 15건</h3><span class="count">해소 1 · 대기 14</span></div>
       <ol class="declist">
         <li>쿠팡 파트너스 약관 원문</li>
         <li>Instagram 한도·해시태그 확정값</li>
@@ -75,50 +75,53 @@
         <li>APR 매출과 발행 방식의 인과</li>
         <li>TikTok 감사 소요 기간</li>
         <li>플랫폼 자체 AI 라벨 정책</li>
-        <li>상주 Muse 연결의 구체 기술 방식</li>
+        <li>상주 Muse 연결의 구체 기술 방식 <span class="pill p-approved">해소</span></li>
         <li>SOMUN 상표 정식 검색·도메인 확정</li>
       </ol>
     </div>
     <div class="card">
-      <h3>PO 결정 필요 3건 (대기)</h3>
+      <div class="sect-head"><h3>PO 결정 3건</h3><span class="count">해소 1 · 대기 2</span></div>
       <ol class="declist">
-        <li>모순-1 처리 방향</li>
+        <li>모순-1 처리 방향 <span class="pill p-approved">해소</span></li>
         <li>모순-3 확인 선행 여부</li>
-        <li>파일럿 발행에 쓸 SNS 계정</li>
+        <li>파일럿 슬롯 등록 + 로그인 수행</li>
       </ol>
     </div>
   </section>
 
   <section v-else-if="view === 'resident'" class="page">
     <h2>Muse 상주 관리</h2>
-    <p class="muted">실제 Muse 연동은 트랜치 2입니다. 이 화면에서는 작업 큐(최근 100건)의 처리·실패 상태를 봅니다.</p>
+    <p class="muted">상주 작업자(A/B/C 레인)의 연결 상태와 작업 큐(최근 100건)의 처리·실패 상태를 봅니다.</p>
     <p v-if="error" class="error">{{ error }}</p>
     <div class="card">
       <div class="toolbar">
-        <span class="muted">상주 연결: 대기 (트랜치 2 범위)</span>
+        <span class="muted">상주 연결: {{ residentOnline }}기 온라인 / {{ residentTotal }}기 등록 (1시간 완료 {{ residentDone }} · 실패 {{ residentFailed }})</span>
         <button class="ghost" @click="loadJobs">새로고침</button>
       </div>
       <div v-if="jobs.length" class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>종류</th><th>상품</th><th>상태</th><th>작업자</th><th>사유</th><th>생성</th><th></th></tr></thead>
+          <thead><tr><th>ID</th><th>종류</th><th>상품</th><th>상태</th><th>작업자</th><th class="num">시도</th><th>리스</th><th>사유</th><th>생성</th><th></th></tr></thead>
           <tbody>
             <tr v-for="j in jobs" :key="j.id">
-              <td>{{ j.id }}</td>
-              <td>{{ j.type }}</td>
-              <td>{{ j.refId }}</td>
-              <td><span :class="'pill p-' + j.status">{{ j.status }}</span></td>
+              <td class="id">{{ j.id }}</td>
+              <td>{{ jobTypeLabel(j.type) }}</td>
+              <td class="num">{{ j.refId }}</td>
+              <td><span :class="'pill p-' + j.status">{{ jobStatusLabel(j.status) }}</span></td>
               <td>{{ j.workerName || '—' }}</td>
+              <td class="num">{{ j.attempts || 0 }}</td>
+              <td>{{ j.leaseUntil ? shortTime(j.leaseUntil) : '—' }}</td>
               <td>{{ j.error || '—' }}</td>
               <td>{{ shortDate(j.createdAt) }}</td>
               <td>
-                <button v-if="j.status === 'pending' || j.status === 'claimed'" class="ghost" @click="cancelJob(j.id)">취소</button>
-                <button class="ghost" @click="deleteJob(j.id)">삭제</button>
+                <button v-if="j.status === 'pending' || j.status === 'claimed'" class="ghost small" @click="cancelJob(j.id)">취소</button>
+                <button v-if="j.status === 'failed'" class="ghost small" @click="requeueJob(j.id)">재등록</button>
+                <button class="ghost small" @click="confirmDelJob = j.id">삭제</button>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p v-else class="empty">작업이 없습니다.</p>
+      <EmptyArt v-else art="tray" title="작업이 없습니다" />
       <p class="muted small">실패한 작업은 자동 재등록되지 않습니다. 원인을 확인한 뒤 상품을 다시 투입하세요.</p>
     </div>
   </section>
@@ -142,6 +145,17 @@
       <p>완료된 작업 90일, 지표 180일까지 보관합니다. 진행 중·대기 작업은 손대지 않습니다. RETENTION_CHECK_HOURS 간격으로 자동 실행됩니다.</p>
       <button @click="purgeNow">지금 정리 실행</button>
       <p v-if="purgeMsg" class="ok">{{ purgeMsg }}</p>
+    </div>
+    <div class="card">
+      <div class="sect-head"><h3>발행 실행기</h3><span :class="execForm.heartbeatMin > 0 ? 'pill p-connected' : 'pill p-pending'">{{ execForm.heartbeatMin > 0 ? '가동' : '정지' }}</span></div>
+      <p class="muted small">공식 API군 판정 통과 건만 실행합니다. 심박 0이면 판정만 하고 실행은 쉽니다.</p>
+      <div class="form-grid">
+        <label>심박(분, 0=정지) <input v-model.number="execForm.heartbeatMin" type="number" min="0" /></label>
+        <label>계정당 최소 간격(분) <input v-model.number="execForm.minIntervalMin" type="number" min="0" max="1440" /></label>
+        <label>틱당 최대 처리 <input v-model.number="execForm.maxActive" type="number" min="1" /></label>
+        <div class="full"><button @click="saveExecutor">저장</button></div>
+      </div>
+      <p v-if="execMsg" class="banner okk">{{ execMsg }}</p>
     </div>
     <div class="card">
       <h3>구성 메모</h3>
@@ -173,11 +187,42 @@
       </ul>
     </div>
   </section>
+
+  <div v-if="confirmDelMetric !== null" class="modal-back" @click.self="confirmDelMetric = null">
+    <div class="modal">
+      <h3>지표 #{{ confirmDelMetric }} 삭제</h3>
+      <p>이 기록만 지워집니다. 되돌릴 수 없습니다.</p>
+      <div class="btnrow">
+        <button class="danger" @click="doDeleteMetric">삭제</button>
+        <button class="ghost" @click="confirmDelMetric = null">취소</button>
+      </div>
+    </div>
+  </div>
+  <div v-if="confirmDelJob !== null" class="modal-back" @click.self="confirmDelJob = null">
+    <div class="modal">
+      <h3>작업 #{{ confirmDelJob }} 삭제</h3>
+      <p>작업 이력에서 지워집니다. 되돌릴 수 없습니다.</p>
+      <div class="btnrow">
+        <button class="danger" @click="doDeleteJob">삭제</button>
+        <button class="ghost" @click="confirmDelJob = null">취소</button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
 import { onMounted, ref, watch } from 'vue'
 import { apiFetch } from '../stores/auth.js'
+import { JOB_STATUS, JOB_TYPE, label } from '../stores/labels.js'
+import EmptyArt from '../components/EmptyArt.vue'
+
+function jobTypeLabel(t) {
+  return label(JOB_TYPE, t)
+}
+
+function jobStatusLabel(s) {
+  return label(JOB_STATUS, s)
+}
 
 const props = defineProps({ view: { type: String, default: 'metrics' } })
 
@@ -188,6 +233,14 @@ const jobs = ref([])
 const backupMsg = ref('')
 const backups = ref([])
 const purgeMsg = ref('')
+const execForm = ref({ heartbeatMin: 0, minIntervalMin: 30, maxActive: 2 })
+const execMsg = ref('')
+const confirmDelMetric = ref(null)
+const confirmDelJob = ref(null)
+const residentOnline = ref(0)
+const residentTotal = ref(0)
+const residentDone = ref(0)
+const residentFailed = ref(0)
 
 function num(v) {
   return v === null || v === undefined ? '—' : v
@@ -195,6 +248,10 @@ function num(v) {
 
 function shortDate(iso) {
   return iso ? iso.slice(0, 16).replace('T', ' ') : '—'
+}
+
+function shortTime(iso) {
+  return iso ? iso.slice(11, 16) : '—'
 }
 
 function optInt(v) {
@@ -213,6 +270,8 @@ async function load() {
     } else if (props.view === 'system') {
       const data = await apiFetch('/api/system/backups')
       backups.value = data.backups || []
+      const cfg = await apiFetch('/api/executor/config')
+      execForm.value = { heartbeatMin: cfg.heartbeatMin, minIntervalMin: cfg.minIntervalMin, maxActive: cfg.maxActive }
     }
   } catch (e) {
     error.value = e.message
@@ -220,11 +279,35 @@ async function load() {
 }
 
 async function loadJobs() {
-  const data = await apiFetch('/api/jobs')
+  const [data, stats, agents] = await Promise.all([
+    apiFetch('/api/jobs'),
+    apiFetch('/api/agents/stats').catch(() => null),
+    apiFetch('/api/agents?limit=1').catch(() => null),
+  ])
   jobs.value = data.jobs || []
+  if (stats) {
+    residentOnline.value = stats.online || 0
+    residentDone.value = stats.done1h || 0
+    residentFailed.value = stats.failed1h || 0
+  }
+  if (agents) residentTotal.value = agents.total || 0
 }
 
-async function deleteMetric(id) {
+async function saveExecutor() {
+  error.value = ''
+  execMsg.value = ''
+  try {
+    const data = await apiFetch('/api/executor/config', { method: 'POST', body: JSON.stringify(execForm.value) })
+    execForm.value = { heartbeatMin: data.heartbeatMin, minIntervalMin: data.minIntervalMin, maxActive: data.maxActive }
+    execMsg.value = '실행기 설정을 저장했습니다.'
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function doDeleteMetric() {
+  const id = confirmDelMetric.value
+  confirmDelMetric.value = null
   error.value = ''
   try {
     await apiFetch(`/api/metrics/${id}`, { method: 'DELETE' })
@@ -244,10 +327,22 @@ async function cancelJob(id) {
   }
 }
 
-async function deleteJob(id) {
+async function doDeleteJob() {
+  const id = confirmDelJob.value
+  confirmDelJob.value = null
   error.value = ''
   try {
     await apiFetch(`/api/jobs/${id}`, { method: 'DELETE' })
+    await loadJobs()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function requeueJob(id) {
+  error.value = ''
+  try {
+    await apiFetch(`/api/jobs/${id}/requeue`, { method: 'POST' })
     await loadJobs()
   } catch (e) {
     error.value = e.message

@@ -10,9 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"somun/internal/agent"
 	"somun/internal/auth"
+	"somun/internal/chat"
 	"somun/internal/config"
 	"somun/internal/content"
+	"somun/internal/executor"
+	"somun/internal/notify"
 	"somun/internal/product"
 	"somun/internal/queue"
 	"somun/internal/session"
@@ -26,23 +30,31 @@ func init() {
 
 // Deps bundles the services every route needs.
 type Deps struct {
-	Config  *config.Config
-	Store   *store.Store
-	Auth    *auth.Service
-	Queue   *queue.Service
-	Content *content.Service
-	Product *product.Service
-	Session *session.Service
+	Config   *config.Config
+	Store    *store.Store
+	Auth     *auth.Service
+	Queue    *queue.Service
+	Content  *content.Service
+	Product  *product.Service
+	Session  *session.Service
+	Notify   *notify.Service
+	Agents   *agent.Service
+	Executor *executor.Service
+	Chat     *chat.Service
 }
 
 // New builds the full HTTP handler tree.
 func New(d *Deps) http.Handler {
 	mux := http.NewServeMux()
 	authH := auth.NewHandler(d.Auth)
-	queueH := queue.NewHandler(d.Queue, d.Config.WorkerToken)
+	queueH := queue.NewHandler(d.Queue, d.Agents, d.Config.WorkerToken, d.Config.Env != "production")
+	agentH := agent.NewHandler(d.Agents)
 	productH := product.NewHandler(d.Product, d.Store, d.Config.UploadDir)
 	contentH := content.NewHandler(d.Content, d.Store)
 	sessionH := session.NewHandler(d.Session)
+	notifyH := notify.NewHandler(d.Notify)
+	execH := executor.NewHandler(d.Executor)
+	chatH := chat.NewHandler(d.Chat)
 
 	// Public.
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -95,16 +107,30 @@ func New(d *Deps) http.Handler {
 	mux.Handle("POST /api/session/check", op(http.HandlerFunc(sessionH.CheckNow)))
 	mux.Handle("GET /api/session/relogin-queue", op(http.HandlerFunc(sessionH.ReloginQueue)))
 	mux.Handle("POST /api/session/accounts/{id}/wake", op(http.HandlerFunc(sessionH.Wake)))
+	mux.Handle("POST /api/session/accounts/{id}/login-start", op(http.HandlerFunc(sessionH.LoginStart)))
+	mux.Handle("POST /api/session/accounts/{id}/login-finish", op(http.HandlerFunc(sessionH.LoginFinish)))
+	mux.Handle("POST /api/session/accounts/{id}/login-cancel", op(http.HandlerFunc(sessionH.LoginCancel)))
 	mux.Handle("GET /api/jobs", op(http.HandlerFunc(queueH.ListForOperator)))
 	mux.Handle("POST /api/jobs/{id}/cancel", op(http.HandlerFunc(queueH.CancelForOperator)))
 	mux.Handle("DELETE /api/jobs/{id}", op(http.HandlerFunc(queueH.DeleteForOperator)))
+	mux.Handle("POST /api/jobs/{id}/requeue", op(http.HandlerFunc(agentH.Requeue)))
 	mux.Handle("DELETE /api/session/accounts/{id}", op(http.HandlerFunc(sessionH.Unregister)))
-	mux.Handle("GET /api/session/slots", op(http.HandlerFunc(sessionH.ListSlots)))
-	mux.Handle("POST /api/session/slots", op(http.HandlerFunc(sessionH.AddSlot)))
-	mux.Handle("PATCH /api/session/slots/{id}", op(http.HandlerFunc(sessionH.UpdateSlot)))
-	mux.Handle("DELETE /api/session/slots/{id}", op(http.HandlerFunc(sessionH.DeleteSlot)))
+
+	mux.Handle("GET /api/agents", op(http.HandlerFunc(agentH.List)))
+	mux.Handle("POST /api/agents", op(http.HandlerFunc(agentH.Register)))
+	mux.Handle("POST /api/agents/bulk", op(http.HandlerFunc(agentH.Bulk)))
+	mux.Handle("GET /api/agents/stats", op(http.HandlerFunc(agentH.Stats)))
+	mux.Handle("GET /api/agents/{id}", op(http.HandlerFunc(agentH.Detail)))
+	mux.Handle("PATCH /api/agents/{id}", op(http.HandlerFunc(agentH.Update)))
+	mux.Handle("DELETE /api/agents/{id}", op(http.HandlerFunc(agentH.Delete)))
+	mux.Handle("POST /api/agents/{id}/rotate-token", op(http.HandlerFunc(agentH.Rotate)))
 
 	mux.Handle("GET /api/dashboard", op(http.HandlerFunc(d.dashboard)))
+	mux.Handle("GET /api/notifications", op(http.HandlerFunc(notifyH.List)))
+	mux.Handle("POST /api/notifications/{id}/read", op(http.HandlerFunc(notifyH.Read)))
+	mux.Handle("POST /api/notifications/read-all", op(http.HandlerFunc(notifyH.ReadAll)))
+	mux.Handle("GET /api/executor/config", op(http.HandlerFunc(execH.GetConfig)))
+	mux.Handle("POST /api/executor/config", op(http.HandlerFunc(execH.SetConfig)))
 	mux.Handle("POST /api/system/backup", op(http.HandlerFunc(d.backup)))
 	mux.Handle("GET /api/system/backups", op(http.HandlerFunc(d.backupList)))
 	mux.Handle("POST /api/system/purge", op(http.HandlerFunc(d.purge)))
@@ -115,6 +141,14 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/worker/jobs", wk(http.HandlerFunc(queueH.List)))
 	mux.Handle("POST /api/worker/jobs/{id}/result", wk(http.HandlerFunc(queueH.Result)))
 	mux.Handle("POST /api/worker/jobs/{id}/fail", wk(http.HandlerFunc(queueH.Fail)))
+	mux.Handle("POST /api/worker/heartbeat", wk(http.HandlerFunc(agentH.Heartbeat)))
+	mux.Handle("POST /api/worker/jobs/{id}/heartbeat", wk(http.HandlerFunc(agentH.JobHeartbeat)))
+	mux.Handle("POST /api/worker/chat/send", wk(http.HandlerFunc(chatH.Send)))
+	mux.Handle("GET /api/worker/chat/pending", wk(http.HandlerFunc(chatH.Pending)))
+
+	mux.Handle("POST /api/chat/send", op(http.HandlerFunc(chatH.Send)))
+	mux.Handle("GET /api/chat/pending", op(http.HandlerFunc(chatH.Pending)))
+	mux.Handle("GET /api/chat/history", op(http.HandlerFunc(chatH.History)))
 
 	// Uploaded images (read-only).
 	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(d.Config.UploadDir))))
@@ -152,7 +186,7 @@ func (d *Deps) dashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Deps) backup(w http.ResponseWriter, r *http.Request) {
-	dest, err := store.BackupNow(d.Store.DB(), d.Config.DBPath, d.Config.UploadDir, d.Config.BackupDir, d.Config.VaultKeyPath, d.Config.BackupKeep)
+	dest, err := store.BackupNow(d.Store.DB(), d.Config.DBPath, d.Config.UploadDir, d.Config.BackupDir, d.Config.VaultKeyPath, d.Config.BackupKeep, d.Config.MirrorDir)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "backup failed: "+err.Error())
 		return
@@ -165,12 +199,12 @@ func (d *Deps) backupList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Deps) purge(w http.ResponseWriter, r *http.Request) {
-	jobs, metrics, err := store.PurgeExpired(d.Store, config.RetentionJobsDays, config.RetentionMetricsDays)
+	jobs, metrics, notifs, err := store.PurgeExpired(d.Store, config.RetentionJobsDays, config.RetentionMetricsDays, config.RetentionNotificationsDays)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "purge failed: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "jobs": jobs, "metrics": metrics})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "jobs": jobs, "metrics": metrics, "notifications": notifs})
 }
 
 func (d *Deps) spaFallback() http.HandlerFunc {
@@ -193,6 +227,8 @@ func (d *Deps) spaFallback() http.HandlerFunc {
 			http.ServeFile(w, r, candidate)
 			return
 		}
+		// The shell must never stick: hashed assets cache, index.html revalidates.
+		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFile(w, r, index)
 	}
 }

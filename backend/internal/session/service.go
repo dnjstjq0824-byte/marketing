@@ -1,4 +1,4 @@
-// Package session manages agent slots and channel-account sessions (§9).
+// Package session manages channel-account sessions (§9).
 // Accounts persist in channel_accounts; login credentials persist only as
 // AES-256-GCM ciphertext under a machine-local vault key. Plaintext passwords
 // never touch the database, logs, or API responses.
@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 	"time"
 
 	"somun/internal/content"
@@ -49,15 +48,13 @@ const (
 // Errors.
 var (
 	ErrNoAccount     = errors.New("account not found")
-	ErrNoSlot        = errors.New("slot not found")
 	ErrBadState      = errors.New("unknown session state")
 	ErrBadRole       = errors.New("role must be chief or worker")
 	ErrNoName        = errors.New("name is required")
-	ErrNoSlotLabel   = errors.New("slot label is required")
-	ErrSlotTaken     = errors.New("slot label already exists")
 	ErrFinalDisposal = errors.New("release/transfer is a PO decision, not implemented")
 	ErrHeldItems     = errors.New("account still has queued items")
 	ErrBadMode       = errors.New("posting mode must be auto or manual")
+	ErrBadKind       = errors.New("kind must be channel or agent_service")
 	ErrCredentials   = errors.New("login ID and password are both required")
 	ErrDuplicate     = errors.New("account name already exists")
 	ErrVault         = errors.New("credential vault unavailable")
@@ -79,14 +76,8 @@ type Account struct {
 	LastWakeAt     string `json:"lastWakeAt"`
 	Usage          string `json:"usage"`
 	LastJobAt      string `json:"lastJobAt"`
-}
-
-// Slot is one neutral agent slot. Labels A/B/C are examples; any label works.
-type Slot struct {
-	ID        int64  `json:"id"`
-	Label     string `json:"label"`
-	AgentName string `json:"agentName"`
-	AccountID *int64 `json:"accountId"`
+	Kind           string `json:"kind"`
+	PlatformUserID string `json:"platformUserId"`
 }
 
 // ReloginItem is one account needing its owner to log back in.
@@ -98,18 +89,22 @@ type ReloginItem struct {
 	HeldCount    int    `json:"heldCount"`
 }
 
-// Service persists accounts in the store and keeps slots in memory.
+// Service persists channel accounts in the store.
 type Service struct {
 	store   *store.Store
 	content *content.Service
 	vault   cipher.AEAD
-
-	slotMu   sync.Mutex
-	slots    map[int64]*Slot
-	slotNext int64
+	// OnSessionState, when set, fires after a session move (notify hook).
+	OnSessionState func(id int64, name, prev, next string)
+	// Console-driven login (login.go).
+	loginDataDir string
+	loginPython  string
+	logins       *LoginManager
+	// verifyRunner replaces the adapter.verify subprocess in tests.
+	verifyRunner func(name, platform string) (string, string)
 }
 
-// NewService loads (or creates) the vault key and seeds neutral slots A/B/C.
+// NewService loads (or creates) the vault key.
 func NewService(st *store.Store, keyPath string) (*Service, error) {
 	key, err := loadOrCreateKey(keyPath)
 	if err != nil {
@@ -123,13 +118,7 @@ func NewService(st *store.Store, keyPath string) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrVault, err)
 	}
-	s := &Service{store: st, content: content.NewService(st), vault: vault,
-		slots: map[int64]*Slot{}, slotNext: 1}
-	for _, label := range []string{"A", "B", "C"} {
-		s.slots[s.slotNext] = &Slot{ID: s.slotNext, Label: label}
-		s.slotNext++
-	}
-	return s, nil
+	return &Service{store: st, content: content.NewService(st), vault: vault}, nil
 }
 
 // loadOrCreateKey reads the 32-byte vault key, generating one (0600) on first boot.
@@ -185,6 +174,27 @@ func (s *Service) open(ciphertext string) (string, error) {
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
 
+// CredentialsFor decrypts one account's login pair for internal publishers.
+// It never serves API responses; callers must not log the values.
+func (s *Service) CredentialsFor(id int64) (string, string, error) {
+	row, err := s.store.GetAccountRow(id)
+	if err != nil {
+		return "", "", err
+	}
+	loginID, err := s.open(row.EncID)
+	if err != nil {
+		return "", "", err
+	}
+	password, err := s.open(row.EncPW)
+	if err != nil {
+		return "", "", err
+	}
+	if loginID == "" || password == "" {
+		return "", "", ErrCredentials
+	}
+	return loginID, password, nil
+}
+
 func toView(row *store.ChannelAccount) *Account {
 	return &Account{
 		ID: row.ID, Name: row.Name, Platform: row.Platform, Owner: row.Owner,
@@ -192,6 +202,7 @@ func toView(row *store.ChannelAccount) *Account {
 		PostingMode: row.PostingMode, HasCredentials: row.EncPW != "",
 		LastCheckedAt: row.LastCheckedAt, LastWakeAt: row.LastWakeAt,
 		Usage: row.Usage, LastJobAt: row.LastJobAt,
+		Kind: row.Kind, PlatformUserID: row.PlatformUser,
 	}
 }
 
@@ -330,6 +341,9 @@ func (s *Service) SetSessionState(id int64, state, usage string) (*Account, erro
 		// Leaving inactive_hold resumes nothing automatically: contact-lost
 		// disposal is a PO decision. Holds stay until reviewed.
 	}
+	if s.OnSessionState != nil {
+		s.OnSessionState(id, row.Name, prev, state)
+	}
 	return s.GetAccount(id)
 }
 
@@ -374,6 +388,31 @@ func (s *Service) SetPostingMode(id int64, mode string) (*Account, error) {
 		return nil, err
 	}
 	row.PostingMode = mode
+	if err := s.store.UpdateAccountRow(row); err != nil {
+		return nil, err
+	}
+	return s.GetAccount(id)
+}
+
+// SetKindFields tags an account (channel vs agent_service) with an optional
+// platform user id. Nil pointers leave the field untouched.
+func (s *Service) SetKindFields(id int64, kind, platformUserID *string) (*Account, error) {
+	if kind != nil && *kind != "channel" && *kind != "agent_service" {
+		return nil, ErrBadKind
+	}
+	row, err := s.store.GetAccountRow(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrNoAccount
+		}
+		return nil, err
+	}
+	if kind != nil {
+		row.Kind = *kind
+	}
+	if platformUserID != nil {
+		row.PlatformUser = *platformUserID
+	}
 	if err := s.store.UpdateAccountRow(row); err != nil {
 		return nil, err
 	}
@@ -538,76 +577,6 @@ func (s *Service) ReloginQueue() []*ReloginItem {
 			Owner: row.Owner, SessionState: row.SessionState, HeldCount: len(held)})
 	}
 	return out
-}
-
-// ListSlots returns all slots by id.
-func (s *Service) ListSlots() []*Slot {
-	s.slotMu.Lock()
-	defer s.slotMu.Unlock()
-	var out []*Slot
-	for id := int64(1); id < s.slotNext; id++ {
-		if sl, ok := s.slots[id]; ok {
-			cp := *sl
-			out = append(out, &cp)
-		}
-	}
-	return out
-}
-
-// AddSlot appends a neutral slot with a unique label.
-func (s *Service) AddSlot(label, agentName string) (*Slot, error) {
-	if label == "" {
-		return nil, ErrNoSlotLabel
-	}
-	s.slotMu.Lock()
-	defer s.slotMu.Unlock()
-	for _, sl := range s.slots {
-		if sl.Label == label {
-			return nil, ErrSlotTaken
-		}
-	}
-	sl := &Slot{ID: s.slotNext, Label: label, AgentName: agentName}
-	s.slots[s.slotNext] = sl
-	s.slotNext++
-	cp := *sl
-	return &cp, nil
-}
-
-// UpdateSlot rewrites a slot's label and/or agent name.
-func (s *Service) UpdateSlot(id int64, label, agentName *string) (*Slot, error) {
-	s.slotMu.Lock()
-	defer s.slotMu.Unlock()
-	sl, ok := s.slots[id]
-	if !ok {
-		return nil, ErrNoSlot
-	}
-	if label != nil {
-		if *label == "" {
-			return nil, ErrNoSlotLabel
-		}
-		for otherID, other := range s.slots {
-			if otherID != id && other.Label == *label {
-				return nil, ErrSlotTaken
-			}
-		}
-		sl.Label = *label
-	}
-	if agentName != nil {
-		sl.AgentName = *agentName
-	}
-	cp := *sl
-	return &cp, nil
-}
-
-// DeleteSlot removes one slot.
-func (s *Service) DeleteSlot(id int64) error {
-	s.slotMu.Lock()
-	defer s.slotMu.Unlock()
-	if _, ok := s.slots[id]; !ok {
-		return ErrNoSlot
-	}
-	delete(s.slots, id)
-	return nil
 }
 
 func stateLabel(s string) string {

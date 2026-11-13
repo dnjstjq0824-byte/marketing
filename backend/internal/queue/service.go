@@ -17,12 +17,19 @@ var (
 	ErrJobNotStrategy = errors.New("job is not a strategy job")
 	ErrJobNotGenerate = errors.New("job is not a generate job")
 	ErrJobNotReview   = errors.New("job is not a review job")
+	ErrJobNotPublish  = errors.New("job is not a publish job")
+	ErrNoURL          = errors.New("url is required")
+	ErrNotQueued      = errors.New("content is not queued")
 )
 
 // Service implements the queue flow: claim, result/fail registration, and the
 // automatic analyze->reading->generate chain (§5).
 type Service struct {
 	store *store.Store
+	// OnFail, when set, fires after a failure is recorded (notify hook).
+	OnFail func(job *store.Job)
+	// OnReviewHuman, when set, fires when rejects pass the regen cap (D21).
+	OnReviewHuman func(contentID int64, message string)
 }
 
 // NewService builds the queue service.
@@ -173,6 +180,22 @@ func (s *Service) SubmitGenerate(jobID int64, res GenerateResult) (*store.Job, i
 	if err != nil {
 		return nil, 0, fmt.Errorf("generate ref product: %w", err)
 	}
+	// D21: a regeneration payload links the new drafts onto the rejected
+	// draft's revision chain. A missing parent unlinks silently.
+	var regen struct {
+		RevisionOf int64 `json:"revision_of"`
+	}
+	_ = json.Unmarshal([]byte(job.Payload), &regen)
+	revOf, revRoot := int64(0), int64(0)
+	if regen.RevisionOf > 0 {
+		if parent, err := s.store.GetContent(regen.RevisionOf); err == nil {
+			revOf = parent.ID
+			revRoot = parent.RevisionRootID
+			if revRoot == 0 {
+				revRoot = parent.ID
+			}
+		}
+	}
 	sponsored := product.ExitType == "B"
 	var draftIDs []int64
 	for _, it := range items {
@@ -183,6 +206,8 @@ func (s *Service) SubmitGenerate(jobID int64, res GenerateResult) (*store.Job, i
 			Body:             it.Body,
 			IsSponsored:      sponsored,
 			IsVirtualPersona: it.VirtualPersona,
+			RevisionOf:       revOf,
+			RevisionRootID:   revRoot,
 		}
 		if sponsored {
 			c.Disclosure = policy.DisclosureText
@@ -197,7 +222,27 @@ func (s *Service) SubmitGenerate(jobID int64, res GenerateResult) (*store.Job, i
 		draftIDs = append(draftIDs, created.ID)
 	}
 	// Auto-create one review job per generate batch (C chief gate).
-	payload, _ := json.Marshal(map[string]any{"product_id": job.RefID, "content_ids": draftIDs})
+	// The drafts ride along: reviewers judge text, not IDs.
+	snapshot := make([]map[string]any, 0, len(items))
+	for i, it := range items {
+		snapshot = append(snapshot, map[string]any{
+			"content_id": draftIDs[i],
+			"channel":    it.Channel,
+			"title":      strings.TrimSpace(it.Title),
+			"body":       it.Body,
+		})
+	}
+	facts := map[string]any{}
+	if reading, rerr := s.store.GetReadingByProduct(job.RefID); rerr == nil {
+		facts["product_name"] = reading.ProductName
+		facts["price_summary"] = reading.PriceSummary
+		facts["detail_core"] = reading.DetailCore
+		facts["review_summary"] = reading.ReviewSummary
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"product_id": job.RefID, "content_ids": draftIDs,
+		"contents": snapshot, "facts": facts,
+	})
 	if _, err := s.store.CreateJob(JobReview, job.RefID, string(payload)); err != nil {
 		return nil, 0, fmt.Errorf("auto-create review job: %w", err)
 	}
@@ -214,6 +259,61 @@ func (s *Service) SubmitGenerate(jobID int64, res GenerateResult) (*store.Job, i
 const MaxAutoRegen = 2
 
 // SubmitReview applies chief judgments: approvals advance toward queued (with
+// SubmitPublish records an adapter session post: the scheduled log closes
+// as done and the queued item flips to published.
+func (s *Service) SubmitPublish(jobID int64, res PublishResult) (*store.Job, error) {
+	job, err := s.store.GetJob(jobID)
+	if err != nil {
+		return nil, err
+	}
+	if job.Type != JobPublish {
+		return nil, store.ErrTypeMismatch
+	}
+	if job.Status != StatusClaimed {
+		return nil, store.ErrNotClaimed
+	}
+	if strings.TrimSpace(res.URL) == "" {
+		return nil, ErrNoURL
+	}
+	var payload struct {
+		ContentID int64  `json:"content_id"`
+		Account   string `json:"account"`
+		Platform  string `json:"platform"`
+	}
+	if err := json.Unmarshal([]byte(job.Payload), &payload); err != nil {
+		return nil, fmt.Errorf("bad publish payload: %w", err)
+	}
+	c, err := s.store.GetContent(payload.ContentID)
+	if err != nil {
+		return nil, err
+	}
+	if c.Status != policy.StatusQueued {
+		return nil, ErrNotQueued
+	}
+	note := strings.TrimSpace(res.URL)
+	if ev := strings.TrimSpace(res.Evidence); ev != "" {
+		note += " | evidence: " + ev
+	}
+	rec, err := s.store.GetPublishLog(c.ID, payload.Platform, payload.Account)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+		if _, err := s.store.CreatePublishDone(c.ID, payload.Platform, payload.Account, nowStr(), note); err != nil {
+			return nil, err
+		}
+	} else if err := s.store.MarkLogDone(rec.ID, nowStr(), note); err != nil {
+		return nil, err
+	}
+	if err := s.store.MarkContentPublished(c.ID); err != nil {
+		return nil, err
+	}
+	raw, _ := json.Marshal(res)
+	return s.store.SetJobResult(jobID, string(raw))
+}
+
+func nowStr() string { return time.Now().UTC().Format(time.RFC3339) }
+
 // scheduling when a target rides along), rejections return to review and
 // trigger bounded regeneration. Judgments outside the job's content scope
 // are rejected. Every judgment is recorded with the deciding worker's name.
@@ -324,13 +424,23 @@ func (s *Service) SubmitReview(jobID int64, res ReviewResult) (*store.Job, error
 			case policy.StatusQueued:
 				_ = s.store.UpdateContentStatus(d.ContentID, policy.StatusApproved)
 			}
-			if n, err := s.store.CountRejected(d.ContentID); err == nil && n <= MaxAutoRegen {
+			// D21: the cap counts rejects across the revision chain.
+			n, err := s.store.CountRejectedChain(d.ContentID)
+			if err == nil && n <= MaxAutoRegen {
+				angle, keyMessages := "", ""
+				if strategy, serr := s.store.GetStrategyByProduct(c.ProductID); serr == nil {
+					angle, keyMessages = strategy.Angle, strategy.KeyMessages
+				}
 				retry, _ := json.Marshal(map[string]any{
-					"product_id":  c.ProductID,
-					"revision_of": d.ContentID,
-					"feedback":    strings.TrimSpace(d.Reason),
+					"product_id":   c.ProductID,
+					"revision_of":  d.ContentID,
+					"feedback":     strings.TrimSpace(d.Reason),
+					"angle":        angle,
+					"key_messages": keyMessages,
 				})
 				_, _ = s.store.CreateJob(JobGenerate, c.ProductID, string(retry))
+			} else if err == nil && s.OnReviewHuman != nil {
+				s.OnReviewHuman(d.ContentID, fmt.Sprintf("콘텐츠 #%d: 반려 %d회 — 사람이 검수하세요", d.ContentID, n))
 			}
 			continue
 		}
@@ -359,7 +469,14 @@ func (s *Service) Fail(jobID int64, reason string) (*store.Job, error) {
 	if strings.TrimSpace(reason) == "" {
 		return nil, errors.New("error reason is required")
 	}
-	return s.store.SetJobFailed(jobID, strings.TrimSpace(reason))
+	job, err := s.store.SetJobFailed(jobID, strings.TrimSpace(reason))
+	if err != nil {
+		return nil, err
+	}
+	if s.OnFail != nil {
+		s.OnFail(job)
+	}
+	return job, nil
 }
 
 // Recent returns the newest 100 jobs.

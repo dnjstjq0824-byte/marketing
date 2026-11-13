@@ -7,21 +7,25 @@ import (
 	"strconv"
 	"strings"
 
+	"somun/internal/agent"
 	"somun/internal/store"
 )
 
 // Handler serves the worker API under /api/worker.
 type Handler struct {
 	svc         *Service
+	agents      *agent.Service
 	workerToken string
+	allowShared bool // dev only; production serves agent tokens alone
 }
 
 // NewHandler builds the worker handler.
-func NewHandler(svc *Service, workerToken string) *Handler {
-	return &Handler{svc: svc, workerToken: workerToken}
+func NewHandler(svc *Service, agents *agent.Service, workerToken string, allowShared bool) *Handler {
+	return &Handler{svc: svc, agents: agents, workerToken: workerToken, allowShared: allowShared}
 }
 
-// Auth rejects requests without the worker bearer token.
+// Auth resolves agent tokens first (identity from the token, D23), then the
+// shared dev token. Paused agents and production shared use are refused.
 func (h *Handler) Auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hdr := r.Header.Get("Authorization")
@@ -30,11 +34,19 @@ func (h *Handler) Auth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "worker token required")
 			return
 		}
-		if parts[1] != h.workerToken {
-			writeError(w, http.StatusUnauthorized, "invalid worker token")
+		token := parts[1]
+		if a, err := h.agents.Authenticate(token); err == nil {
+			next.ServeHTTP(w, r.WithContext(agent.WithAgent(r.Context(), a)))
+			return
+		} else if errors.Is(err, agent.ErrAgentPaused) {
+			writeError(w, http.StatusForbidden, "agent is paused")
 			return
 		}
-		next.ServeHTTP(w, r)
+		if h.allowShared && token == h.workerToken {
+			next.ServeHTTP(w, r.WithContext(agent.WithShared(r.Context())))
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "invalid worker token")
 	})
 }
 
@@ -45,18 +57,60 @@ func workerName(r *http.Request) string {
 	return DefaultWorkerName
 }
 
-// Next handles GET /api/worker/jobs/next?type=analyze|generate.
+// Next handles GET /api/worker/jobs/next?type=&wait=. Agents may omit the
+// type (whole lane) and long-poll; the shared token keeps type required.
 func (h *Handler) Next(w http.ResponseWriter, r *http.Request) {
+	a, _ := agent.AgentFrom(r.Context())
+	wait, err := parseWait(r.URL.Query().Get("wait"))
+	if err != nil || wait < 0 {
+		writeError(w, http.StatusBadRequest, "wait must be a non-negative integer")
+		return
+	}
+	if a != nil {
+		jobType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
+		if jobType != "" {
+			if err := ValidateJobType(jobType); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		job, err := h.agents.Claim(a, jobType, wait)
+		if err != nil {
+			if errors.Is(err, agent.ErrLaneMismatch) {
+				writeError(w, http.StatusForbidden, err.Error())
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "cannot claim job")
+			return
+		}
+		writeClaimed(w, job)
+		return
+	}
 	jobType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
 	if err := ValidateJobType(jobType); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	job, err := h.svc.Next(jobType, workerName(r))
+	if err == nil && job == nil && wait > 0 {
+		h.agents.Wait(wait)
+		job, err = h.svc.Next(jobType, workerName(r))
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot claim job")
 		return
 	}
+	writeClaimed(w, job)
+}
+
+func parseWait(raw string) (int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return 0, nil
+	}
+	return strconv.Atoi(raw)
+}
+
+func writeClaimed(w http.ResponseWriter, job *store.Job) {
 	if job == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"job": nil, "message": EmptyQueueMessage})
 		return
@@ -155,6 +209,12 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "cannot load job")
 		return
 	}
+	if a, _ := agent.AgentFrom(r.Context()); a != nil {
+		if job.Status != StatusClaimed || job.AgentID != a.ID {
+			writeError(w, http.StatusConflict, "job is not claimed by this agent")
+			return
+		}
+	}
 	switch job.Type {
 	case JobAnalyze:
 		var res AnalyzeResult
@@ -204,6 +264,18 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"job": toView(done)})
+	case JobPublish:
+		var res PublishResult
+		if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		done, err := h.svc.SubmitPublish(id, res)
+		if err != nil {
+			h.writeSubmitError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"job": toView(done)})
 	default:
 		writeError(w, http.StatusBadRequest, "unknown job type")
 	}
@@ -216,10 +288,11 @@ func (h *Handler) writeSubmitError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrNotClaimed):
 		writeError(w, http.StatusConflict, "job must be claimed before result registration")
 	case errors.Is(err, ErrEmptyContents), errors.Is(err, ErrNoValidItems), errors.Is(err, ErrEmptyAngle),
-		errors.Is(err, ErrEmptyDecisions), errors.Is(err, ErrBadDecision):
+		errors.Is(err, ErrEmptyDecisions), errors.Is(err, ErrBadDecision),
+		errors.Is(err, ErrNoURL), errors.Is(err, ErrNotQueued):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrJobNotAnalyze), errors.Is(err, ErrJobNotStrategy), errors.Is(err, ErrJobNotGenerate),
-		errors.Is(err, ErrJobNotReview):
+		errors.Is(err, ErrJobNotReview), errors.Is(err, ErrJobNotPublish):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "job not found")
@@ -243,6 +316,21 @@ func (h *Handler) Fail(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
+	}
+	if a, _ := agent.AgentFrom(r.Context()); a != nil {
+		cur, err := h.svc.store.GetJob(id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "job not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "cannot load job")
+			return
+		}
+		if cur.Status != StatusClaimed || cur.AgentID != a.ID {
+			writeError(w, http.StatusConflict, "job is not claimed by this agent")
+			return
+		}
 	}
 	job, err := h.svc.Fail(id, req.Error)
 	if err != nil {

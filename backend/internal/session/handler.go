@@ -34,6 +34,12 @@ func (h *Handler) RegisterAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	// Validate the credential pair before creating anything: a half-supplied
+	// pair must not leave a half-created account behind.
+	if (req.LoginID != "") != (req.Password != "") {
+		writeError(w, http.StatusBadRequest, "loginId and password must both be set or both empty")
+		return
+	}
 	a, err := h.svc.RegisterAccount(strings.TrimSpace(req.Name), strings.TrimSpace(req.Platform),
 		strings.TrimSpace(req.Owner), strings.TrimSpace(req.Role), strings.TrimSpace(req.Business))
 	if err != nil {
@@ -64,14 +70,16 @@ func (h *Handler) ListAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateRequest struct {
-	SessionState *string `json:"sessionState"`
-	Usage        *string `json:"usage"`
-	Owner        *string `json:"owner"`
-	Role         *string `json:"role"`
-	Business     *string `json:"business"`
-	PostingMode  *string `json:"postingMode"`
-	LoginID      *string `json:"loginId"`
-	Password     *string `json:"password"`
+	SessionState   *string `json:"sessionState"`
+	Usage          *string `json:"usage"`
+	Owner          *string `json:"owner"`
+	Role           *string `json:"role"`
+	Business       *string `json:"business"`
+	PostingMode    *string `json:"postingMode"`
+	LoginID        *string `json:"loginId"`
+	Password       *string `json:"password"`
+	Kind           *string `json:"kind"`
+	PlatformUserID *string `json:"platformUserId"`
 }
 
 // UpdateAccount handles PATCH /api/session/accounts/{id}: session state
@@ -86,6 +94,21 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
+	}
+	// Same atomicity rule as registration: reject half-supplied credentials
+	// before applying any other field.
+	if req.LoginID != nil || req.Password != nil {
+		lid, pw := "", ""
+		if req.LoginID != nil {
+			lid = *req.LoginID
+		}
+		if req.Password != nil {
+			pw = *req.Password
+		}
+		if lid == "" || pw == "" {
+			writeError(w, http.StatusBadRequest, "loginId and password must both be set or both empty")
+			return
+		}
 	}
 	var account *Account
 	if req.SessionState != nil {
@@ -137,6 +160,20 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err.Error())
 			default:
 				writeError(w, http.StatusInternalServerError, "cannot set posting mode")
+			}
+			return
+		}
+	}
+	if req.Kind != nil || req.PlatformUserID != nil {
+		account, err = h.svc.SetKindFields(id, req.Kind, req.PlatformUserID)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrNoAccount):
+				writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrBadKind):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, "cannot set kind fields")
 			}
 			return
 		}
@@ -214,6 +251,78 @@ func (h *Handler) Wake(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a)
 }
 
+// LoginStart handles POST /api/session/accounts/{id}/login-start: opens the
+// headed login browser for the operator. Optional body {"realProfile": true}
+// uses the operator's own Chrome profile (Chrome must be fully closed).
+func (h *Handler) LoginStart(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid account id")
+		return
+	}
+	realProfile := false
+	if r.Body != nil {
+		var req struct {
+			RealProfile bool `json:"realProfile"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			realProfile = req.RealProfile
+		}
+	}
+	pid, err := h.svc.StartLogin(id, realProfile)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNoAccount):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrLoginBusy):
+			writeError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, ErrProfileBusy):
+			writeError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, ErrBadPlatform):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"started": true, "pid": pid})
+}
+
+// LoginFinish handles POST /api/session/accounts/{id}/login-finish: confirms
+// the headed login, verifies the saved session, marks connected.
+func (h *Handler) LoginFinish(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid account id")
+		return
+	}
+	a, err := h.svc.FinishLogin(id)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNoAccount):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrNoLogin), errors.Is(err, ErrLoginFailed),
+			errors.Is(err, ErrNotLoggedIn), errors.Is(err, ErrUnverifiable):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
+}
+
+// LoginCancel handles POST /api/session/accounts/{id}/login-cancel.
+func (h *Handler) LoginCancel(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid account id")
+		return
+	}
+	h.svc.CancelLogin(id)
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true})
+}
+
 // PublishPlan handles GET /api/publish/plan.
 func (h *Handler) PublishPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": h.svc.PublishPlan(time.Now())})
@@ -226,88 +335,6 @@ func (h *Handler) ReloginQueue(w http.ResponseWriter, r *http.Request) {
 		items = []*ReloginItem{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-// ListSlots handles GET /api/session/slots.
-func (h *Handler) ListSlots(w http.ResponseWriter, r *http.Request) {
-	items := h.svc.ListSlots()
-	if items == nil {
-		items = []*Slot{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"slots": items})
-}
-
-type slotRequest struct {
-	Label     string `json:"label"`
-	AgentName string `json:"agentName"`
-}
-
-// AddSlot handles POST /api/session/slots.
-func (h *Handler) AddSlot(w http.ResponseWriter, r *http.Request) {
-	var req slotRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	sl, err := h.svc.AddSlot(strings.TrimSpace(req.Label), strings.TrimSpace(req.AgentName))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusCreated, sl)
-}
-
-// UpdateSlot handles PATCH /api/session/slots/{id}.
-func (h *Handler) UpdateSlot(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid slot id")
-		return
-	}
-	var req struct {
-		Label     *string `json:"label"`
-		AgentName *string `json:"agentName"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	trimmed := func(s *string) *string {
-		if s == nil {
-			return nil
-		}
-		v := strings.TrimSpace(*s)
-		return &v
-	}
-	sl, err := h.svc.UpdateSlot(id, trimmed(req.Label), trimmed(req.AgentName))
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrNoSlot):
-			writeError(w, http.StatusNotFound, err.Error())
-		default:
-			writeError(w, http.StatusBadRequest, err.Error())
-		}
-		return
-	}
-	writeJSON(w, http.StatusOK, sl)
-}
-
-// DeleteSlot handles DELETE /api/session/slots/{id}.
-func (h *Handler) DeleteSlot(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid slot id")
-		return
-	}
-	if err := h.svc.DeleteSlot(id); err != nil {
-		if errors.Is(err, ErrNoSlot) {
-			writeError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "cannot delete slot")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
 }
 
 func pathID(r *http.Request) (int64, error) {

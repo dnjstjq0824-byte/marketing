@@ -7,11 +7,11 @@
       <label>상태
         <select v-model="filter" @change="load">
           <option value="">전체</option>
-          <option value="draft">draft</option>
-          <option value="review">review</option>
-          <option value="approved">approved</option>
-          <option value="queued">queued</option>
-          <option value="published">published</option>
+          <option value="draft">초안 (draft)</option>
+          <option value="review">검수 (review)</option>
+          <option value="approved">승인 (approved)</option>
+          <option value="queued">대기 (queued)</option>
+          <option value="published">발행됨 (published)</option>
         </select>
       </label>
       <label>사업
@@ -30,21 +30,25 @@
         <ul class="picklist">
           <li v-for="c in items" :key="c.id">
             <button :class="{ active: selected === c.id }" @click="select(c.id)">
-              <span :class="'pill p-' + c.status">{{ c.status }}</span>
-              #{{ c.id }} [{{ c.channel }}] {{ c.title || '(제목 없음)' }}
+              <span :class="'pill p-' + c.status">{{ statusLabel(c.status) }}</span>
+              #{{ c.id }} {{ c.title || '(제목 없음)' }}
               <span v-if="c.held" class="badge">보류</span>
+              <span class="sub">{{ channelLabel(c.channel) }} · {{ c.targetAccount || '미지정' }}</span>
             </button>
           </li>
         </ul>
-        <p v-if="!items.length" class="empty">해당 상태의 콘텐츠가 없습니다.</p>
+        <EmptyArt v-if="!items.length" art="lens" title="해당 상태의 콘텐츠가 없습니다" />
       </div>
 
       <div v-if="detail" class="card grow2">
         <div class="sect-head">
           <h3>#{{ detail.id }} {{ detail.title || '(제목 없음)' }}</h3>
-          <span :class="'pill p-' + detail.status">{{ detail.status }}</span>
+          <span :class="'pill p-' + detail.status">{{ statusLabel(detail.status) }}</span>
         </div>
-        <p class="muted small">채널 {{ detail.channel }} · 상품 #{{ detail.productId }}<span v-if="detail.isSponsored"> · 제휴</span></p>
+        <p class="muted small">{{ channelLabel(detail.channel) }} · 상품 #{{ detail.productId }}<span v-if="detail.isSponsored"> · 제휴</span><span v-if="detail.held"> · 보류: {{ detail.holdReason || '사유 미기재' }}</span></p>
+        <p v-if="detail.revisions && detail.revisions.length" class="muted small">개정본
+          <button v-for="(r, i) in detail.revisions" :key="r" class="ghost small" @click="select(r)">개정본 #{{ i + 1 }}</button>
+        </p>
 
         <div v-if="detail.disclosure" class="disclosure">
           <strong>대가 표시 (자동 삽입 · 삭제 불가)</strong>
@@ -72,18 +76,18 @@
         <h4>상태 전이</h4>
         <div class="btnrow">
           <button v-for="to in nextStates(detail.status)" :key="to" @click="move(to)">
-            → {{ to }}
+            → {{ statusLabel(to) }}
           </button>
           <span v-if="detail.status === 'queued'" class="muted small">발행(published)은 트랜치 2에서 열립니다.</span>
         </div>
-        <p v-if="msg" class="ok">{{ msg }}</p>
+        <p v-if="msg" class="banner okk">{{ msg }}</p>
         <h4>삭제</h4>
         <button class="ghost" @click="confirmDel = true">이 콘텐츠 삭제</button>
         <h4>판정 이력</h4>
         <ul v-if="reviews.length" class="speclist">
           <li v-for="r in reviews" :key="r.id">
             <span class="k">{{ r.decider }}</span>
-            <span><span :class="r.decision === 'approved' ? 'pill p-approved' : 'pill p-failed'">{{ r.decision }}</span> {{ r.reason || '' }}</span>
+            <span><span :class="r.decision === 'approved' ? 'pill p-approved' : 'pill p-rejected'">{{ r.decision === 'approved' ? '승인' : '반려' }}</span> {{ r.reason || '' }}</span>
           </li>
         </ul>
         <p v-else class="muted small">판정 이력이 없습니다.</p>
@@ -98,7 +102,7 @@
         <h3>콘텐츠 #{{ selected }} 삭제</h3>
         <p>발행 기록·지표가 함께 지워집니다. 되돌릴 수 없습니다.</p>
         <div class="btnrow">
-          <button @click="doDelete">삭제</button>
+          <button class="danger" @click="doDelete">삭제</button>
           <button class="ghost" @click="confirmDel = false">취소</button>
         </div>
       </div>
@@ -109,6 +113,16 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { apiFetch } from '../stores/auth.js'
+import { CHANNEL, CONTENT_STATUS, label } from '../stores/labels.js'
+import EmptyArt from '../components/EmptyArt.vue'
+
+function statusLabel(s) {
+  return label(CONTENT_STATUS, s)
+}
+
+function channelLabel(c) {
+  return label(CHANNEL, c, '미지정 채널')
+}
 
 const filter = ref('')
 const bizFilter = ref('')

@@ -292,14 +292,14 @@ func TestResultRequiresClaim(t *testing.T) {
 	}
 }
 
-// Only analyze|strategy|generate are accepted job types.
+// Only the five specified types are accepted (publish joined in P1-0).
 func TestJobTypeValidation(t *testing.T) {
-	for _, bad := range []string{"", "publish", "check", "metrics"} {
+	for _, bad := range []string{"", "check", "metrics"} {
 		if err := ValidateJobType(bad); !errors.Is(err, ErrBadJobType) {
 			t.Fatalf("type %q err = %v, want ErrBadJobType", bad, err)
 		}
 	}
-	for _, good := range []string{JobAnalyze, JobStrategy, JobGenerate, JobReview} {
+	for _, good := range []string{JobAnalyze, JobStrategy, JobGenerate, JobReview, JobPublish} {
 		if err := ValidateJobType(good); err != nil {
 			t.Fatalf("type %q err = %v", good, err)
 		}

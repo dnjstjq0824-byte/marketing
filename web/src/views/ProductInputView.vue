@@ -6,8 +6,9 @@
     <form class="card" @submit.prevent="submit">
       <h3>새 상품 등록</h3>
       <div class="form-grid">
-        <label class="full">상품 링크 (http/https)
+        <label class="full">상품 링크 <span class="req">*</span>
           <input v-model="form.sourceUrl" placeholder="https://…" required />
+          <span class="hint">http/https로 시작해야 합니다.</span>
         </label>
         <label>사업 <input v-model="form.business" placeholder="예: 글로우사인" /></label>
         <fieldset>
@@ -17,16 +18,18 @@
           <p class="muted small">기본값은 A입니다. 자체·파트너 상품이 우선입니다.</p>
         </fieldset>
         <div>
-          <label>우선순위 (숫자, 클수록 먼저)
+          <label>우선순위
             <input v-model.number="form.priority" type="number" min="0" />
+            <span class="hint">숫자가 클수록 먼저 처리됩니다.</span>
           </label>
-          <label>이미지 (최대 10장, 장당 10MB)
+          <label>이미지
             <input ref="fileInput" type="file" accept="image/*" multiple @change="onFiles" />
+            <span class="hint">최대 10장 · 장당 10MB · jpg/png/gif/webp</span>
           </label>
         </div>
       </div>
-      <p v-if="error" class="error">{{ error }}</p>
-      <p v-if="done" class="ok">{{ done }}</p>
+      <p v-if="error" class="banner err">{{ error }}</p>
+      <p v-if="done" class="banner okk">{{ done }}</p>
       <button type="submit" :disabled="busy">{{ busy ? '등록 중…' : '상품 등록' }}</button>
     </form>
 
@@ -40,24 +43,24 @@
           </select>
         </label>
       </div>
-      <p v-if="loading" class="muted">불러오는 중…</p>
+      <p v-if="loading" class="muted"><span class="skel">불러오는 중입니다</span></p>
       <div v-else-if="products.length" class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>사업</th><th>이름</th><th>링크</th><th>출구</th><th>등록</th><th>삭제</th></tr></thead>
+          <thead><tr><th class="id">ID</th><th>사업</th><th>이름</th><th>링크</th><th>출구</th><th>등록</th><th></th></tr></thead>
           <tbody>
             <tr v-for="p in products" :key="p.id">
-              <td>{{ p.id }}</td>
+              <td class="id">{{ p.id }}</td>
               <td>{{ p.business || '(미지정)' }}</td>
               <td>{{ p.name || '(판독 전)' }}</td>
               <td class="ellipsis"><a :href="p.sourceUrl" target="_blank" rel="noreferrer">{{ p.sourceUrl }}</a></td>
-              <td><span :class="p.exitType === 'B' ? 'pill p-review' : 'pill p-approved'">{{ p.exitType === 'B' ? 'B · 제휴' : 'A · 파트너' }}</span></td>
+              <td><span :class="p.exitType === 'B' ? 'pill p-review' : 'pill p-approved'">{{ exitLabel(p.exitType) }}</span></td>
               <td>{{ shortDate(p.createdAt) }}</td>
-              <td><button class="ghost" @click="confirmDel = p.id">삭제</button></td>
+              <td><button class="ghost small" @click="confirmDel = p.id">삭제</button></td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p v-else class="empty">아직 등록된 상품이 없습니다.</p>
+      <EmptyArt v-else art="plant" title="아직 등록된 상품이 없습니다" hint="위 폼에서 첫 상품을 등록하세요." />
     </div>
 
     <div v-if="confirmDel !== null" class="modal-back" @click.self="confirmDel = null">
@@ -65,7 +68,7 @@
         <h3>상품 #{{ confirmDel }} 삭제</h3>
         <p>판독 결과·이미지·콘텐츠·작업·제휴 링크가 함께 지워집니다. 되돌릴 수 없습니다.</p>
         <div class="btnrow">
-          <button @click="doDelete">삭제</button>
+          <button class="danger" @click="doDelete">삭제</button>
           <button class="ghost" @click="confirmDel = null">취소</button>
         </div>
       </div>
@@ -76,6 +79,12 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { apiFetch } from '../stores/auth.js'
+import { EXIT_TYPE, label } from '../stores/labels.js'
+import EmptyArt from '../components/EmptyArt.vue'
+
+function exitLabel(e) {
+  return label(EXIT_TYPE, e)
+}
 
 const form = ref({ sourceUrl: '', exitType: 'A', priority: 0, business: '' })
 const files = ref([])

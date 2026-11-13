@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"somun/internal/agent"
 	"somun/internal/store"
 )
 
@@ -28,7 +29,8 @@ func openHandlerStore(t *testing.T) *store.Store {
 }
 
 func testHandler(st *store.Store) *Handler {
-	return NewHandler(NewService(st), testWorkerToken)
+	agentSvc := agent.NewService(st, agent.NewHub(), 600, 25)
+	return NewHandler(NewService(st), agentSvc, testWorkerToken, true)
 }
 
 func authed(req *http.Request) {
@@ -79,7 +81,7 @@ func TestNextEmptyMessage(t *testing.T) {
 func TestNextBadType(t *testing.T) {
 	st := openHandlerStore(t)
 	h := testHandler(st)
-	req := httptest.NewRequest("GET", "/api/worker/jobs/next?type=publish", nil)
+	req := httptest.NewRequest("GET", "/api/worker/jobs/next?type=check", nil)
 	authed(req)
 	rec := httptest.NewRecorder()
 	h.Next(rec, req)

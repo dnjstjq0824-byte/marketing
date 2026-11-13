@@ -7,14 +7,15 @@ import (
 	"somun/internal/store"
 )
 
-// Job types: analyze, strategy, generate, review.
-// Chain: analyze -> strategy -> generate -> review (A, B, then C chief).
-// Never add publish/check/metric jobs.
+// Job types: analyze, strategy, generate, review, publish.
+// Chain: analyze -> strategy -> generate -> review (A, B, then C chief);
+// publish (P lane) carries session posts in P1-2.
 const (
 	JobAnalyze  = "analyze"
 	JobStrategy = "strategy"
 	JobGenerate = "generate"
 	JobReview   = "review"
+	JobPublish  = "publish"
 )
 
 // Job statuses: pending -> claimed -> done/failed.
@@ -83,6 +84,12 @@ type ReviewResult struct {
 	Decisions []ReviewDecisionItem `json:"decisions"`
 }
 
+// PublishResult is the adapter's session-post report.
+type PublishResult struct {
+	URL      string `json:"url"`
+	Evidence string `json:"evidence"`
+}
+
 // AllowedChannels are the only 4 generate channels. Anything else is dropped.
 var AllowedChannels = map[string]bool{
 	"instagram": true,
@@ -103,13 +110,19 @@ type JobView struct {
 	ClaimedAt  string `json:"claimedAt"`
 	FinishedAt string `json:"finishedAt"`
 	Error      string `json:"error"`
+	AgentID    int64  `json:"agentId"`
+	Business   string `json:"business"`
+	Priority   int    `json:"priority"`
+	Attempts   int    `json:"attempts"`
+	LeaseUntil string `json:"leaseUntil"`
 }
 
 func toView(j *store.Job) *JobView {
 	return &JobView{
 		ID: j.ID, Type: j.Type, RefID: j.RefID, Status: j.Status, WorkerName: j.WorkerName,
 		Payload: rawMessage(j.Payload), CreatedAt: j.CreatedAt, ClaimedAt: j.ClaimedAt,
-		FinishedAt: j.FinishedAt, Error: j.Error,
+		FinishedAt: j.FinishedAt, Error: j.Error, AgentID: j.AgentID, Business: j.Business,
+		Priority: j.Priority, Attempts: j.Attempts, LeaseUntil: j.LeaseUntil,
 	}
 }
 

@@ -9,11 +9,12 @@
         <ul class="picklist">
           <li v-for="p in products" :key="p.id">
             <button :class="{ active: selected === p.id }" @click="select(p.id)">
-              #{{ p.id }} {{ p.name || p.sourceUrl }}
+              #{{ p.id }} {{ p.name || '(판독 전)' }}
+              <span class="sub">{{ p.business || '(미지정)' }} · 출구 {{ p.exitType }}</span>
             </button>
           </li>
         </ul>
-        <p v-if="!products.length" class="empty">등록된 상품이 없습니다.</p>
+        <EmptyArt v-if="!products.length" art="plant" title="등록된 상품이 없습니다" hint="상품 투입 화면에서 등록하세요." />
       </div>
 
       <div class="card grow2">
@@ -118,8 +119,8 @@
           <h4>작업 이력</h4>
           <ul v-if="detail.jobs && detail.jobs.length" class="speclist">
             <li v-for="j in detail.jobs" :key="j.id">
-              <span class="k">#{{ j.id }} {{ j.type }}</span>
-              <span><span :class="'pill p-' + j.status">{{ j.status }}</span> {{ j.workerName || '—' }}
+              <span class="k">#{{ j.id }} {{ jobTypeLabel(j.type) }}</span>
+              <span><span :class="'pill p-' + j.status">{{ jobStatusLabel(j.status) }}</span> {{ j.workerName || '—' }}
                 <span v-if="j.error" class="error">· {{ j.error }}</span></span>
             </li>
           </ul>
@@ -134,7 +135,7 @@
         <h3>제휴 링크 삭제</h3>
         <p>이 링크만 지워집니다. 되돌릴 수 없습니다.</p>
         <div class="btnrow">
-          <button @click="doDeleteLink">삭제</button>
+          <button class="danger" @click="doDeleteLink">삭제</button>
           <button class="ghost" @click="confirmDelLink = null">취소</button>
         </div>
       </div>
@@ -145,6 +146,16 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { apiFetch } from '../stores/auth.js'
+import { JOB_STATUS, JOB_TYPE, label } from '../stores/labels.js'
+import EmptyArt from '../components/EmptyArt.vue'
+
+function jobTypeLabel(t) {
+  return label(JOB_TYPE, t)
+}
+
+function jobStatusLabel(s) {
+  return label(JOB_STATUS, s)
+}
 
 const products = ref([])
 const selected = ref(null)

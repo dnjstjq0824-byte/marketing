@@ -1,12 +1,16 @@
-"""SOMUN worker runtime: polling, atomic claim, result/fail registration.
+"""SOMUN worker runtime: polling, routed claim, result/fail registration.
 
-Protocol (§5):
-  GET  /api/worker/jobs/next?type=analyze|generate   claim oldest pending job
-  POST /api/worker/jobs/<id>/result                  register result (not idempotent)
-  POST /api/worker/jobs/<id>/fail   {"error": ...}   register failure (never requeues)
-  GET  /api/worker/jobs                              newest 100
+Protocol (§5, D22-D26):
+  GET  /api/worker/jobs/next?type=&wait=   routed claim (type optional for agents)
+  POST /api/worker/jobs/<id>/result        register result (not idempotent)
+  POST /api/worker/jobs/<id>/fail          register failure (never requeues)
+  POST /api/worker/heartbeat               agent liveness (agents only)
+  POST /api/worker/jobs/<id>/heartbeat     extend own claim lease (agents only)
+  GET  /api/worker/jobs                    newest 100
 
-Auth: Authorization: Bearer <WORKER_TOKEN>, name via X-Worker-Name.
+Auth: Authorization: Bearer <AGENT_TOKEN> (agents) or <WORKER_TOKEN>
+(shared dev fallback; production refuses it). Agent identity comes from the
+token; X-Worker-Name is ignored for agents.
 Chain: analyze -> strategy -> generate -> review (A, B, then C chief).
 
 This runtime only moves jobs. Job-type handlers are injected, so the flow
@@ -15,12 +19,15 @@ No real-agent connection code lives here.
 """
 
 import json
+import threading
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import config
+import ai_tasks
 
 
 class WorkerError(Exception):
@@ -28,13 +35,100 @@ class WorkerError(Exception):
 
 
 class WorkerClient:
-    def __init__(self, server_url=None, token=None, name=None, timeout=None):
+    def __init__(self, server_url=None, token=None, name=None, timeout=None,
+                 longpoll_wait=None, heartbeat_sec=None, job_heartbeat_sec=None):
         self.server_url = (server_url or config.SERVER_URL).rstrip("/")
-        self.token = token or config.WORKER_TOKEN
+        self.token = token or config.AGENT_TOKEN or config.WORKER_TOKEN
         self.name = name or config.WORKER_NAME
         self.timeout = timeout or config.REQUEST_TIMEOUT_SEC
+        self.agent_mode = bool(token or config.AGENT_TOKEN)
+        self.longpoll_wait = config.LONGPOLL_WAIT_SEC if longpoll_wait is None else longpoll_wait
+        self.heartbeat_sec = config.HEARTBEAT_SEC if heartbeat_sec is None else heartbeat_sec
+        self.job_heartbeat_sec = config.JOB_HEARTBEAT_SEC if job_heartbeat_sec is None else job_heartbeat_sec
 
     def _request(self, method, path, body=None):
+        _, payload = self._request_with_status(method, path, body)
+        return _, payload
+
+    def next_job(self, job_type=None, wait=0):
+        """Claim the best fitting job; None when the queue stays empty.
+
+        Agents may omit the type (whole lane) and long-poll with wait>0.
+        """
+        params = {}
+        if job_type:
+            params["type"] = job_type
+        if wait:
+            params["wait"] = str(wait)
+        path = "/api/worker/jobs/next"
+        if params:
+            path += "?" + urllib.parse.urlencode(params)
+        if wait:
+            old_timeout, self.timeout = self.timeout, wait + 10
+            try:
+                _, payload = self._request("GET", path)
+            finally:
+                self.timeout = old_timeout
+        else:
+            _, payload = self._request("GET", path)
+        return payload.get("job")
+
+    def submit_result(self, job_id, result):
+        _, payload = self._request("POST", "/api/worker/jobs/%s/result" % job_id, result)
+        return payload.get("job")
+
+    def submit_fail(self, job_id, reason):
+        _, payload = self._request("POST", "/api/worker/jobs/%s/fail" % job_id,
+                                   {"error": reason})
+        return payload.get("job")
+
+    def list_jobs(self):
+        _, payload = self._request("GET", "/api/worker/jobs")
+        return payload.get("jobs", [])
+
+    def heartbeat(self, active_jobs=0, version=""):
+        """Agent liveness ping; returns the enabled flag."""
+        _, payload = self._request("POST", "/api/worker/heartbeat",
+                                   {"activeJobs": active_jobs, "version": version})
+        return payload.get("enabled", True)
+
+    def job_heartbeat(self, job_id):
+        """Extend one own claim's lease; returns the new leaseUntil."""
+        _, payload = self._request("POST", "/api/worker/jobs/%s/heartbeat" % job_id, {})
+        return payload.get("leaseUntil")
+
+    def chat(self, account_id, message):
+        """Send one message through a connected AI account; return the reply.
+
+        Slow runs answer 202; this polls the pending handle until the reply
+        lands or CHAT_TIMEOUT_SEC passes.
+        """
+        old_timeout, self.timeout = self.timeout, config.CHAT_TIMEOUT_SEC
+        try:
+            code, payload = self._request_with_status(
+                "POST", "/api/worker/chat/send",
+                {"accountId": account_id, "message": message})
+        finally:
+            self.timeout = old_timeout
+        if code != 202:
+            return payload.get("reply", "")
+        after_id = payload.get("afterId", 0)
+        if not after_id:
+            raise WorkerError("chat accepted without a pending handle")
+        end = time.time() + config.CHAT_TIMEOUT_SEC
+        while time.time() < end:
+            time.sleep(5)
+            _, st = self._request(
+                "GET", "/api/worker/chat/pending?afterId=%d" % after_id)
+            if not st.get("done"):
+                continue
+            if st.get("failed"):
+                raise WorkerError("chat failed: %s" % st.get("message", ""))
+            return st.get("reply", "")
+        raise WorkerError("chat timed out waiting for the reply")
+
+    def _request_with_status(self, method, path, body=None):
+        """Same as _request but also returns the HTTP status code."""
         data = None
         headers = {
             "Authorization": "Bearer %s" % self.token,
@@ -57,84 +151,169 @@ class WorkerClient:
             raise WorkerError("HTTP %s: %s" % (exc.code, payload.get("error", "")))
         except urllib.error.URLError as exc:
             raise WorkerError("unreachable %s: %s" % (self.server_url, exc.reason))
+        except OSError as exc:
+            # Raw socket errors (e.g. ConnectionResetError mid-restart)
+            # escape urllib unwrapped: convert them too.
+            raise WorkerError("unreachable %s: %s" % (self.server_url, exc))
 
-    def next_job(self, job_type):
-        """Claim the oldest pending job of a type; None when the queue is empty."""
-        _, payload = self._request("GET", "/api/worker/jobs/next?type=" + job_type)
-        return payload.get("job")
 
-    def submit_result(self, job_id, result):
-        _, payload = self._request("POST", "/api/worker/jobs/%s/result" % job_id, result)
-        return payload.get("job")
+def _run_with_lease(client, job_id, handler, payload):
+    """Run one handler while a daemon thread extends the claim lease."""
+    stop = threading.Event()
+    errors = []
 
-    def submit_fail(self, job_id, reason):
-        _, payload = self._request("POST", "/api/worker/jobs/%s/fail" % job_id,
-                                   {"error": reason})
-        return payload.get("job")
+    def pump():
+        while not stop.wait(client.job_heartbeat_sec):
+            try:
+                client.job_heartbeat(job_id)
+            except WorkerError as exc:
+                errors.append(exc)
+                return
 
-    def list_jobs(self):
-        _, payload = self._request("GET", "/api/worker/jobs")
-        return payload.get("jobs", [])
+    thread = None
+    if client.agent_mode:
+        thread = threading.Thread(target=pump, daemon=True)
+        thread.start()
+    try:
+        return handler(payload)
+    finally:
+        stop.set()
+        if thread is not None:
+            thread.join(timeout=5)
 
 
 def run_loop(client, handlers, poll_interval=None, once=False):
-    """Poll analyze then generate; dispatch claimed jobs to handlers.
+    """Claim and dispatch jobs; agents long-poll their whole lane.
 
-    handlers: {"analyze": callable(payload)->result, "generate": callable(...)}.
+    handlers: {"analyze": callable(payload)->result, ...}.
     A handler exception registers a failure with its message; failures never
     requeue, so the loop simply continues with the next job.
+    Agents heartbeat on the loop and extend each claim's lease while it runs.
     """
     interval = config.POLL_INTERVAL_SEC if poll_interval is None else poll_interval
-    for job_type in ("analyze", "strategy", "generate", "review"):
-        handler = handlers.get(job_type)
-        if handler is None:
-            continue
-        while True:
-            try:
-                job = client.next_job(job_type)
-            except WorkerError as exc:
-                print("poll %s failed: %s" % (job_type, exc), flush=True)
-                break
-            if not job:
-                print("no pending %s jobs" % job_type, flush=True)
-                break
-            job_id = job["id"]
-            print("[%s] claimed #%s" % (job_type, job_id), flush=True)
-            try:
-                result = handler(job.get("payload") or {})
-            except Exception as exc:  # noqa: BLE001 - must convert to fail record
-                reason = "%s: %s" % (type(exc).__name__, exc)
-                traceback.print_exc()
-                try:
-                    client.submit_fail(job_id, reason)
-                    print("[%s] #%s failed: %s" % (job_type, job_id, reason), flush=True)
-                except WorkerError as fail_exc:
-                    print("fail registration lost: %s" % fail_exc, flush=True)
+    if client.agent_mode:
+        _agent_loop(client, handlers, once)
+    else:
+        for job_type in ("analyze", "strategy", "generate", "review"):
+            handler = handlers.get(job_type)
+            if handler is None:
+                continue
+            if not _drain_type(client, handlers, job_type, handler, once):
                 if once:
                     return
-                continue
-            try:
-                client.submit_result(job_id, result)
-                print("[%s] #%s done" % (job_type, job_id), flush=True)
-            except WorkerError as exc:
-                print("result registration failed: %s" % exc, flush=True)
-            if once:
-                return
-            time.sleep(0.2)
     if not once:
         time.sleep(interval)
+
+
+def _drain_type(client, handlers, job_type, handler, once):
+    """Claim one legacy type until empty. Returns False when `once` finished."""
+    while True:
+        try:
+            job = client.next_job(job_type)
+        except WorkerError as exc:
+            print("poll %s failed: %s" % (job_type, exc), flush=True)
+            return True
+        if not job:
+            print("no pending %s jobs" % job_type, flush=True)
+            return True
+        _process_job(client, handlers, job, job["id"])
+        if once:
+            return False
+        time.sleep(0.2)
+    return True
+
+
+def _agent_loop(client, handlers, once):
+    """Long-poll the agent's lane and dispatch by claimed type."""
+    try:
+        if not client.heartbeat():
+            print("agent paused by operator; idling", flush=True)
+            return
+    except WorkerError as exc:
+        print("heartbeat failed: %s" % exc, flush=True)
+        return
+    while True:
+        try:
+            job = client.next_job(None, client.longpoll_wait)
+        except WorkerError as exc:
+            print("poll failed: %s" % exc, flush=True)
+            return
+        if not job:
+            return
+        handler = handlers.get(job["type"])
+        if handler is None:
+            try:
+                client.submit_fail(job["id"], "no handler for type %s" % job["type"])
+            except WorkerError as exc:
+                print("fail registration lost: %s" % exc, flush=True)
+            if once:
+                return
+            continue
+        _process_job(client, handlers, job, job["id"])
+        if once:
+            return
+
+
+def _process_job(client, handlers, job, job_id):
+    job_type = job["type"]
+    print("[%s] claimed #%s" % (job_type, job_id), flush=True)
+    try:
+        result = _run_with_lease(client, job_id, handlers[job_type], job.get("payload") or {})
+    except Exception as exc:  # noqa: BLE001 - must convert to fail record
+        reason = "%s: %s" % (type(exc).__name__, exc)
+        traceback.print_exc()
+        try:
+            client.submit_fail(job_id, reason)
+            print("[%s] #%s failed: %s" % (job_type, job_id, reason), flush=True)
+        except WorkerError as fail_exc:
+            print("fail registration lost: %s" % fail_exc, flush=True)
+        return
+    try:
+        client.submit_result(job_id, result)
+        print("[%s] #%s done" % (job_type, job_id), flush=True)
+    except WorkerError as exc:
+        print("result registration failed: %s" % exc, flush=True)
+
+
+def make_real_handlers(client, account_id):
+    """Handlers that execute jobs through a connected AI account."""
+
+    def run(job_type, payload):
+        facts = dict(payload or {})
+        if job_type == "analyze" and facts.get("source_url"):
+            facts["page_text"] = ai_tasks.fetch_page_text(facts["source_url"])
+        prompt = ai_tasks.build_prompt(job_type, facts)
+        reply = client.chat(account_id, prompt)
+        return ai_tasks.parse_reply(job_type, reply)
+
+    return {
+        "analyze": lambda payload: run("analyze", payload),
+        "strategy": lambda payload: run("strategy", payload),
+        "generate": lambda payload: run("generate", payload),
+        "review": lambda payload: run("review", payload),
+    }
 
 
 def main():
     from test_worker import ANALYZE_HANDLER, GENERATE_HANDLER, REVIEW_HANDLER, STRATEGY_HANDLER
 
     client = WorkerClient()
-    print("worker %s -> %s (test handlers)" % (client.name, client.server_url), flush=True)
-    handlers = {"analyze": ANALYZE_HANDLER, "strategy": STRATEGY_HANDLER,
-                "generate": GENERATE_HANDLER, "review": REVIEW_HANDLER}
+    if config.REAL_AI and config.CHAT_ACCOUNT_ID > 0:
+        print("worker %s -> %s (REAL AI via account %d)"
+              % (client.name, client.server_url, config.CHAT_ACCOUNT_ID),
+              flush=True)
+        handlers = make_real_handlers(client, config.CHAT_ACCOUNT_ID)
+    else:
+        print("worker %s -> %s (test handlers)" % (client.name, client.server_url), flush=True)
+        handlers = {"analyze": ANALYZE_HANDLER, "strategy": STRATEGY_HANDLER,
+                    "generate": GENERATE_HANDLER, "review": REVIEW_HANDLER}
     try:
         while True:
-            run_loop(client, handlers)
+            try:
+                run_loop(client, handlers)
+            except Exception:
+                traceback.print_exc()
+                time.sleep(5)
     except KeyboardInterrupt:
         print("worker stopped", flush=True)
 

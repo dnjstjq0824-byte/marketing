@@ -9,15 +9,15 @@ import (
 var (
 	ErrEmptyContents  = errors.New("contents must not be empty")
 	ErrNoValidItems   = errors.New("no contents with an allowed channel")
-	ErrBadJobType     = errors.New("type must be analyze, strategy, generate, or review")
+	ErrBadJobType     = errors.New("type must be analyze, strategy, generate, review, or publish")
 	ErrEmptyAngle     = errors.New("angle must not be empty")
 	ErrEmptyDecisions = errors.New("decisions must not be empty")
 	ErrBadDecision    = errors.New("invalid review decision")
 )
 
-// ValidateJobType accepts only the four specified job types.
+// ValidateJobType accepts only the five specified job types.
 func ValidateJobType(t string) error {
-	if t != JobAnalyze && t != JobStrategy && t != JobGenerate && t != JobReview {
+	if t != JobAnalyze && t != JobStrategy && t != JobGenerate && t != JobReview && t != JobPublish {
 		return ErrBadJobType
 	}
 	return nil

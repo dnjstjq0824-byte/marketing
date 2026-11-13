@@ -53,6 +53,9 @@ func (h *Handler) Detail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "cannot load content")
 		return
 	}
+	if revs, err := h.store.ListRevisionIDs(id); err == nil && len(revs) > 0 {
+		c.Revisions = revs
+	}
 	writeJSON(w, http.StatusOK, c)
 }
 
