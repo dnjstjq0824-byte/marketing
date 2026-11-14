@@ -57,7 +57,7 @@ var (
 	ErrBadKind       = errors.New("kind must be channel or agent_service")
 	ErrCredentials   = errors.New("login ID and password are both required")
 	ErrDuplicate     = errors.New("account name already exists")
-	ErrVault         = errors.New("credential vault unavailable")
+	ErrVault = errors.New("credential vault unavailable")
 )
 
 // Account is one agent/channel account with session liveness.
@@ -230,6 +230,50 @@ func (s *Service) RegisterAccount(name, platform, owner, role, business string) 
 	return toView(row), nil
 }
 
+// MaxBulkCount bounds one multi-account registration (UI_DESIGN S5).
+const MaxBulkCount = 50
+
+var (
+	ErrNoPrefix = errors.New("prefix is required")
+	ErrBadCount = errors.New("count must be 1..50")
+)
+
+// RegisterAccounts creates count accounts named <prefix>01..<prefix>NN.
+// Duplicates are skipped (reported in failures) so a half-done batch can
+// simply be re-run; other errors abort the batch.
+func (s *Service) RegisterAccounts(prefix, platform, owner, role, business string, count int) ([]*Account, []string, error) {
+	if prefix == "" {
+		return nil, nil, ErrNoPrefix
+	}
+	if count < 1 || count > MaxBulkCount {
+		return nil, nil, ErrBadCount
+	}
+	if role == "" {
+		role = RoleWorker
+	}
+	if role != RoleChief && role != RoleWorker {
+		return nil, nil, ErrBadRole
+	}
+	var out []*Account
+	var failures []string
+	for i := 1; i <= count; i++ {
+		name := fmt.Sprintf("%s%02d", prefix, i)
+		row, err := s.store.CreateAccountRow(&store.ChannelAccount{
+			Name: name, Platform: platform, Owner: owner, Role: role, Business: business,
+			SessionState: StatePending, PostingMode: PostingManual,
+		})
+		if err != nil {
+			if errors.Is(err, store.ErrDuplicate) {
+				failures = append(failures, name+": already exists")
+				continue
+			}
+			return out, failures, err
+		}
+		out = append(out, toView(row))
+	}
+	return out, failures, nil
+}
+
 // SetCredentials encrypts and stores an account's login ID and password.
 func (s *Service) SetCredentials(id int64, loginID, password string) (*Account, error) {
 	if loginID == "" || password == "" {
@@ -255,6 +299,31 @@ func (s *Service) SetCredentials(id int64, loginID, password string) (*Account, 
 		return nil, err
 	}
 	return s.GetAccount(id)
+}
+
+// NextLogin returns the next account needing login for the S5 queue
+// banner, preferring the same platform. Nil when the queue is empty.
+func (s *Service) NextLogin(platform string) (*Account, error) {
+	rows, err := s.store.ListAccountRows()
+	if err != nil {
+		return nil, err
+	}
+	var fallback *store.ChannelAccount
+	for _, row := range rows {
+		if row.SessionState != StatePending && row.SessionState != StateExpired && row.SessionState != StateLimited {
+			continue
+		}
+		if platform != "" && row.Platform == platform {
+			return toView(row), nil
+		}
+		if fallback == nil {
+			fallback = row
+		}
+	}
+	if fallback == nil {
+		return nil, nil
+	}
+	return toView(fallback), nil
 }
 
 // Credentials decrypts an account's login pair for internal executor use only.

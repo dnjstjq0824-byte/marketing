@@ -8,6 +8,13 @@ import PublishQueueView from '../views/PublishQueueView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import ConnectViews from '../views/ConnectViews.vue'
 import OpsViews from '../views/OpsViews.vue'
+import NewWorkView from '../views/NewWorkView.vue'
+import WorksView from '../views/WorksView.vue'
+import WorkDetailView from '../views/WorkDetailView.vue'
+import MediaView from '../views/MediaView.vue'
+import ConnectView from '../views/ConnectView.vue'
+import TeamsView from '../views/TeamsView.vue'
+import TeamDetailView from '../views/TeamDetailView.vue'
 
 // 15 views in 6 groups (§8). Names are stable for menu wiring.
 const routes = [
@@ -26,6 +33,13 @@ const routes = [
   { path: '/system', name: 'system', component: OpsViews, props: { view: 'system' } },
   { path: '/mobile', name: 'mobile', component: OpsViews, props: { view: 'mobile' } },
   { path: '/settings', name: 'settings', component: SettingsView },
+  { path: '/new', name: 'new-work', component: NewWorkView },
+  { path: '/works', name: 'works', component: WorksView },
+  { path: '/works/:id', name: 'work-detail', component: WorkDetailView },
+  { path: '/media', name: 'media', component: MediaView },
+  { path: '/connect', name: 'connect', component: ConnectView },
+  { path: '/teams', name: 'teams', component: TeamsView },
+  { path: '/teams/:id', name: 'team-detail', component: TeamDetailView },
 ]
 
 export const menuGroups = [
@@ -33,6 +47,7 @@ export const menuGroups = [
   {
     label: '작업',
     items: [
+      { to: '/new', label: '새 작업' },
       { to: '/chat', label: '대화' },
       { to: '/products', label: '상품 투입' },
       { to: '/readings', label: '상품 판독' },

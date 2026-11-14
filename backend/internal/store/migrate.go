@@ -13,7 +13,7 @@ import (
 )
 
 // SchemaVersion is the current DDL version recorded in app_meta.
-const SchemaVersion = "10"
+const SchemaVersion = "14"
 
 // schema is the whole Tranche-1 data model: 9 entities (§6).
 // No order/payment/delivery/personal-data tables: this system never takes orders.
@@ -206,6 +206,18 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateToV10(db); err != nil {
+		return err
+	}
+	if err := migrateToV11(db); err != nil {
+		return err
+	}
+	if err := migrateToV12(db); err != nil {
+		return err
+	}
+	if err := migrateToV13(db); err != nil {
+		return err
+	}
+	if err := migrateToV14(db); err != nil {
 		return err
 	}
 	if _, err := db.Exec(
@@ -500,6 +512,120 @@ func migrateToV10(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_chat_account ON chat_messages(account_id,id)`); err != nil {
 		return fmt.Errorf("migrate v10 index: %w", err)
+	}
+	return nil
+}
+
+// migrateToV11 adds API-key columns to channel accounts. The key itself is
+// stored sealed (session vault); the model name stays plaintext. Idempotent.
+func migrateToV11(db *sql.DB) error {
+	for _, col := range []string{"enc_api_token", "api_model"} {
+		var n int
+		q := `SELECT COUNT(*) FROM pragma_table_info('channel_accounts') WHERE name='` + col + `'`
+		if err := db.QueryRow(q).Scan(&n); err != nil {
+			return fmt.Errorf("migrate v11 check: %w", err)
+		}
+		if n == 0 {
+			stmt := `ALTER TABLE channel_accounts ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`
+			if _, err := db.Exec(stmt); err != nil {
+				return fmt.Errorf("migrate v11: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// migrateToV12 adds the S2 work brief to products (the JSON the new-work
+// screen collects: channels, versions, affiliate disclosure, start time,
+// team; workers and the W4 scheduler read it) and the media library table
+// for chunked uploads (S2/S4). Idempotent.
+func migrateToV12(db *sql.DB) error {
+	var n int
+	q := `SELECT COUNT(*) FROM pragma_table_info('products') WHERE name='brief_json'`
+	if err := db.QueryRow(q).Scan(&n); err != nil {
+		return fmt.Errorf("migrate v12 check: %w", err)
+	}
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE products ADD COLUMN brief_json TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate v12: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS media (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
+		kind TEXT NOT NULL DEFAULT 'upload',
+		path TEXT NOT NULL DEFAULT '',
+		bytes INTEGER NOT NULL DEFAULT 0,
+		mime TEXT NOT NULL DEFAULT '',
+		sha256 TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("migrate v12 media: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_media_product ON media(product_id)`); err != nil {
+		return fmt.Errorf("migrate v12 media idx: %w", err)
+	}
+	return nil
+}
+
+// migrateToV13 adds marketing teams (W16): teams, team_members,
+// team_channels, plus the seeded default team. Idempotent.
+func migrateToV13(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS teams (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL UNIQUE,
+		description TEXT NOT NULL DEFAULT '',
+		is_default INTEGER NOT NULL DEFAULT 0,
+		businesses TEXT NOT NULL DEFAULT '',
+		max_concurrency INTEGER NOT NULL DEFAULT 0,
+		role_mode TEXT NOT NULL DEFAULT 'auto',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		leader_account_id INTEGER REFERENCES channel_accounts(id) ON DELETE SET NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("migrate v13 teams: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS team_members (
+		team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+		account_id INTEGER NOT NULL REFERENCES channel_accounts(id) ON DELETE CASCADE,
+		fixed_role TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (team_id, account_id)
+	)`); err != nil {
+		return fmt.Errorf("migrate v13 members: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS team_channels (
+		team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+		account_id INTEGER NOT NULL REFERENCES channel_accounts(id) ON DELETE CASCADE,
+		PRIMARY KEY (team_id, account_id)
+	)`); err != nil {
+		return fmt.Errorf("migrate v13 channels: %w", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM teams WHERE is_default=1`).Scan(&n); err != nil {
+		return fmt.Errorf("migrate v13 check: %w", err)
+	}
+	if n == 0 {
+		if _, err := db.Exec(`INSERT INTO teams(name,description,is_default,businesses,max_concurrency,role_mode,enabled,created_at,updated_at)
+			VALUES('기본 팀','',1,'',0,'auto',1,?,?)`, nowUTC(), nowUTC()); err != nil {
+			return fmt.Errorf("migrate v13 seed: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToV14 adds the per-team brand card (S7-D): intro, tone,
+// banned words, default buy link. One row per team. Idempotent.
+func migrateToV14(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS team_brands (
+		team_id INTEGER PRIMARY KEY REFERENCES teams(id) ON DELETE CASCADE,
+		intro TEXT NOT NULL DEFAULT '',
+		tone TEXT NOT NULL DEFAULT '',
+		banned_words TEXT NOT NULL DEFAULT '',
+		buy_link TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("migrate v14 brands: %w", err)
 	}
 	return nil
 }

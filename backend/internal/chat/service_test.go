@@ -2,6 +2,7 @@ package chat
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -155,6 +156,103 @@ func TestPendingUnknown(t *testing.T) {
 	svc := NewService(st)
 	if _, done, failed, _ := svc.Pending(424242); !done || !failed {
 		t.Fatal("unknown run should report failed")
+	}
+}
+
+// Same-account sends run one at a time; other accounts are unaffected.
+func TestAccountSerialization(t *testing.T) {
+	st := openChatStore(t)
+	svc := NewService(st)
+	svc.grace = 20 * time.Millisecond
+	id := seedChatAccount(t, st, "chat-ser", "connected")
+	entered := make(chan string, 4)
+	release := make(chan struct{})
+	svc.sendRunner = func(account, platform, message string) (string, error) {
+		entered <- message
+		<-release
+		entered <- "done:" + message
+		return "ok", nil
+	}
+	res1, err := svc.Send(id, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2, err := svc.Send(id, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res1.Pending || !res2.Pending {
+		t.Fatalf("results = %+v %+v", res1, res2)
+	}
+	// Only the first send may enter; the second waits for the lock.
+	select {
+	case got := <-entered:
+		if got != "first" {
+			t.Fatalf("first enter = %q", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("first send never entered")
+	}
+	select {
+	case got := <-entered:
+		t.Fatalf("second entered early: %q", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r1, d1, f1, _ := svc.Pending(res1.UserMessage)
+		r2, d2, f2, _ := svc.Pending(res2.UserMessage)
+		if d1 && d2 {
+			if f1 || f2 || r1 != "ok" || r2 != "ok" {
+				t.Fatalf("replies = %q,%q failed=%v,%v", r1, r2, f1, f2)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("runs never finished")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestResetThread(t *testing.T) {
+	st := openChatStore(t)
+	svc := NewService(st)
+	svc.dataDir = t.TempDir()
+	id := seedChatAccount(t, st, "chat-reset", "connected")
+	dir := filepath.Join(svc.dataDir, "profiles", "chat-reset")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"thread.json", "thread_chain9.json", "keep.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := svc.ResetThread(id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "thread.json")); !os.IsNotExist(err) {
+		t.Fatal("default thread kept")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "thread_chain9.json")); err != nil {
+		t.Fatal("named thread wrongly dropped")
+	}
+	if err := svc.ResetThread(id, "*"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "thread_chain9.json")); !os.IsNotExist(err) {
+		t.Fatal("named thread kept")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep.txt")); err != nil {
+		t.Fatal("non-thread file touched")
+	}
+	if err := svc.ResetThread(id, "../x"); !errors.Is(err, ErrBadThread) {
+		t.Fatalf("traversal: %v", err)
+	}
+	if err := svc.ResetThread(9999, ""); !errors.Is(err, ErrNoAccount) {
+		t.Fatalf("unknown: %v", err)
 	}
 }
 

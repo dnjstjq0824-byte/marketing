@@ -1,0 +1,43 @@
+/* SOMUN base: reset, type, utilities (UI_DESIGN §2-1). */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4 { margin: 0; line-height: 1.35; }
+p { margin: 0; }
+a { color: var(--accent-dark); }
+button { font: inherit; cursor: pointer; }
+input, select, textarea { font: inherit; color: var(--ink); }
+.num, .stat b { font-variant-numeric: tabular-nums; }
+
+.page-title { font-size: 22px; line-height: 28px; }
+.section-title { font-size: 16px; line-height: 24px; font-weight: 700; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; line-height: 20px; }
+.micro { font-size: 12px; line-height: 16px; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--panel);
+  padding: var(--s2) var(--s4);
+  z-index: 200;
+}
+.skip:focus { left: var(--s2); top: var(--s2); }
+
+@media (max-width: 900px) {
+  .page-title { font-size: 20px; }
+  input, select, textarea { font-size: 16px; }
+}

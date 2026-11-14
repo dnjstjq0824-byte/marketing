@@ -25,6 +25,7 @@ type registerRequest struct {
 	Business string `json:"business"`
 	LoginID  string `json:"loginId"`
 	Password string `json:"password"`
+	Kind     string `json:"kind"`
 }
 
 // RegisterAccount handles POST /api/session/accounts.
@@ -57,7 +58,60 @@ func (h *Handler) RegisterAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if strings.TrimSpace(req.Kind) != "" {
+		kind := strings.TrimSpace(req.Kind)
+		a, err = h.svc.SetKindFields(a.ID, &kind, nil)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusCreated, a)
+}
+
+type bulkRegisterRequest struct {
+	Prefix   string `json:"prefix"`
+	Platform string `json:"platform"`
+	Owner    string `json:"owner"`
+	Role     string `json:"role"`
+	Business string `json:"business"`
+	Count    int    `json:"count"`
+	Kind     string `json:"kind"`
+}
+
+// RegisterBulk handles POST /api/session/accounts/bulk: creates Count
+// accounts named <prefix>01..<prefix>NN for multi-account login queues.
+func (h *Handler) RegisterBulk(w http.ResponseWriter, r *http.Request) {
+	var req bulkRegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	accounts, failures, err := h.svc.RegisterAccounts(
+		strings.TrimSpace(req.Prefix), strings.TrimSpace(req.Platform),
+		strings.TrimSpace(req.Owner), strings.TrimSpace(req.Role),
+		strings.TrimSpace(req.Business), req.Count)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if accounts == nil {
+		accounts = []*Account{}
+	}
+	if failures == nil {
+		failures = []string{}
+	}
+	if kind := strings.TrimSpace(req.Kind); kind != "" {
+		for i, a := range accounts {
+			updated, err := h.svc.SetKindFields(a.ID, &kind, nil)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			accounts[i] = updated
+		}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"accounts": accounts, "failures": failures})
 }
 
 // ListAccounts handles GET /api/session/accounts.
@@ -253,23 +307,25 @@ func (h *Handler) Wake(w http.ResponseWriter, r *http.Request) {
 
 // LoginStart handles POST /api/session/accounts/{id}/login-start: opens the
 // headed login browser for the operator. Optional body {"realProfile": true}
-// uses the operator's own Chrome profile (Chrome must be fully closed).
+// uses the operator's own Chrome profile (Chrome must be fully closed);
+// {"incognito": true} opens a fresh incognito window instead (multi-account).
 func (h *Handler) LoginStart(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid account id")
 		return
 	}
-	realProfile := false
+	realProfile, incognito := false, false
 	if r.Body != nil {
 		var req struct {
 			RealProfile bool `json:"realProfile"`
+			Incognito   bool `json:"incognito"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-			realProfile = req.RealProfile
+			realProfile, incognito = req.RealProfile, req.Incognito
 		}
 	}
-	pid, err := h.svc.StartLogin(id, realProfile)
+	pid, err := h.svc.StartLogin(id, realProfile, incognito)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrNoAccount):
@@ -310,6 +366,24 @@ func (h *Handler) LoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a)
+}
+
+// NextLogin handles POST /api/session/login-queue/next {platform?}.
+func (h *Handler) NextLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Platform string `json:"platform"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	account, err := h.svc.NextLogin(strings.TrimSpace(req.Platform))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load queue")
+		return
+	}
+	if account == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"account": nil})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"account": account})
 }
 
 // LoginCancel handles POST /api/session/accounts/{id}/login-cancel.

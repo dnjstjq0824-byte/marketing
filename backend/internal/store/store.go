@@ -207,15 +207,16 @@ type Product struct {
 	ExitType  string `json:"exitType"`
 	Priority  int    `json:"priority"`
 	Business  string `json:"business"`
+	BriefJSON string `json:"-"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
 }
 
-const productCols = `id,name,source_url,exit_type,priority,business,created_at,updated_at`
+const productCols = `id,name,source_url,exit_type,priority,business,brief_json,created_at,updated_at`
 
 func scanProduct(row interface{ Scan(...any) error }) (*Product, error) {
 	p := &Product{}
-	err := row.Scan(&p.ID, &p.Name, &p.SourceURL, &p.ExitType, &p.Priority, &p.Business, &p.CreatedAt, &p.UpdatedAt)
+	err := row.Scan(&p.ID, &p.Name, &p.SourceURL, &p.ExitType, &p.Priority, &p.Business, &p.BriefJSON, &p.CreatedAt, &p.UpdatedAt)
 	return p, err
 }
 
@@ -270,6 +271,12 @@ func (s *Store) ListProducts(limit int, business string) ([]*Product, error) {
 // SetProductName fills the product name from a reading result.
 func (s *Store) SetProductName(id int64, name string) error {
 	_, err := s.db.Exec(`UPDATE products SET name=?, updated_at=? WHERE id=?`, name, nowUTC(), id)
+	return err
+}
+
+// SetProductBrief stores the S2 work brief JSON on the product.
+func (s *Store) SetProductBrief(id int64, briefJSON string) error {
+	_, err := s.db.Exec(`UPDATE products SET brief_json=?, updated_at=? WHERE id=?`, briefJSON, nowUTC(), id)
 	return err
 }
 
@@ -918,6 +925,16 @@ func (s *Store) UpdateContentFlags(id int64, persona bool, aiLabel string) error
 	return err
 }
 
+// SetContentHeld holds or releases one content item.
+func (s *Store) SetContentHeld(id int64, held bool) error {
+	flag := 0
+	if held {
+		flag = 1
+	}
+	_, err := s.db.Exec(`UPDATE contents SET held=?, updated_at=? WHERE id=?`, flag, nowUTC(), id)
+	return err
+}
+
 // ScheduleContent sets the publish reservation of a queued item and stamps it
 // with a fresh reservation sequence so same-account/same-time ties execute in
 // the order reservations were loaded onto the queue (짠9).
@@ -1549,19 +1566,25 @@ type ChannelAccount struct {
 	LastWakeAt    string `json:"lastWakeAt"`
 	Usage         string `json:"usage"`
 	LastJobAt     string `json:"lastJobAt"`
-	Kind          string `json:"kind"`
-	PlatformUser  string `json:"platformUserId"`
-	CreatedAt     string `json:"createdAt"`
-	UpdatedAt     string `json:"updatedAt"`
+	Kind         string `json:"kind"`
+	PlatformUser string `json:"platformUserId"`
+	// EncAPIToken/ApiModel are v11 residue. The API-key chat path was
+	// retired 2026-11-14 (paid billing); columns stay for existing DBs
+	// but nothing reads them for sending.
+	EncAPIToken string `json:"-"`
+	ApiModel    string `json:"-"`
+	CreatedAt   string `json:"createdAt"`
+	UpdatedAt   string `json:"updatedAt"`
 }
 
-const accountCols = `id,name,platform,owner,role,business,session_state,posting_mode,enc_id,enc_pw,last_checked_at,last_wake_at,usage,last_job_at,kind,platform_user_id,created_at,updated_at`
+const accountCols = `id,name,platform,owner,role,business,session_state,posting_mode,enc_id,enc_pw,last_checked_at,last_wake_at,usage,last_job_at,kind,platform_user_id,enc_api_token,api_model,created_at,updated_at`
 
 func scanAccount(row interface{ Scan(...any) error }) (*ChannelAccount, error) {
 	a := &ChannelAccount{}
 	err := row.Scan(&a.ID, &a.Name, &a.Platform, &a.Owner, &a.Role, &a.Business,
 		&a.SessionState, &a.PostingMode, &a.EncID, &a.EncPW, &a.LastCheckedAt,
-		&a.LastWakeAt, &a.Usage, &a.LastJobAt, &a.Kind, &a.PlatformUser, &a.CreatedAt, &a.UpdatedAt)
+		&a.LastWakeAt, &a.Usage, &a.LastJobAt, &a.Kind, &a.PlatformUser,
+		&a.EncAPIToken, &a.ApiModel, &a.CreatedAt, &a.UpdatedAt)
 	return a, err
 }
 
@@ -1622,9 +1645,10 @@ func (s *Store) ListAccountRows() ([]*ChannelAccount, error) {
 // UpdateAccountRow rewrites one account row by id.
 func (s *Store) UpdateAccountRow(a *ChannelAccount) error {
 	res, err := s.db.Exec(`UPDATE channel_accounts SET platform=?,owner=?,role=?,business=?,
-		session_state=?,posting_mode=?,enc_id=?,enc_pw=?,last_checked_at=?,last_wake_at=?,usage=?,last_job_at=?,kind=?,platform_user_id=?,updated_at=?
+		session_state=?,posting_mode=?,enc_id=?,enc_pw=?,last_checked_at=?,last_wake_at=?,usage=?,last_job_at=?,kind=?,platform_user_id=?,enc_api_token=?,api_model=?,updated_at=?
 		WHERE id=?`, a.Platform, a.Owner, a.Role, a.Business, a.SessionState, a.PostingMode,
-		a.EncID, a.EncPW, a.LastCheckedAt, a.LastWakeAt, a.Usage, a.LastJobAt, a.Kind, a.PlatformUser, nowUTC(), a.ID)
+		a.EncID, a.EncPW, a.LastCheckedAt, a.LastWakeAt, a.Usage, a.LastJobAt, a.Kind, a.PlatformUser,
+		a.EncAPIToken, a.ApiModel, nowUTC(), a.ID)
 	if err != nil {
 		return err
 	}

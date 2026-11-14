@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,11 +17,14 @@ import (
 	"somun/internal/config"
 	"somun/internal/content"
 	"somun/internal/executor"
+	"somun/internal/media"
 	"somun/internal/notify"
 	"somun/internal/product"
 	"somun/internal/queue"
 	"somun/internal/session"
 	"somun/internal/store"
+	"somun/internal/teams"
+	"somun/internal/works"
 )
 
 func init() {
@@ -55,6 +59,9 @@ func New(d *Deps) http.Handler {
 	notifyH := notify.NewHandler(d.Notify)
 	execH := executor.NewHandler(d.Executor)
 	chatH := chat.NewHandler(d.Chat)
+	mediaH := media.NewHandler(media.NewService(d.Store, d.Config.UploadDir))
+	worksH := works.NewHandler(works.NewService(d.Store), d.Store, d.Config.UploadDir)
+	teamsH := teams.NewHandler(teams.NewService(d.Store), d.Store)
 
 	// Public.
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +110,8 @@ func New(d *Deps) http.Handler {
 
 	mux.Handle("GET /api/session/accounts", op(http.HandlerFunc(sessionH.ListAccounts)))
 	mux.Handle("POST /api/session/accounts", op(http.HandlerFunc(sessionH.RegisterAccount)))
+	mux.Handle("POST /api/session/accounts/bulk", op(http.HandlerFunc(sessionH.RegisterBulk)))
+	mux.Handle("POST /api/session/login-queue/next", op(http.HandlerFunc(sessionH.NextLogin)))
 	mux.Handle("PATCH /api/session/accounts/{id}", op(http.HandlerFunc(sessionH.UpdateAccount)))
 	mux.Handle("POST /api/session/check", op(http.HandlerFunc(sessionH.CheckNow)))
 	mux.Handle("GET /api/session/relogin-queue", op(http.HandlerFunc(sessionH.ReloginQueue)))
@@ -126,6 +135,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("POST /api/agents/{id}/rotate-token", op(http.HandlerFunc(agentH.Rotate)))
 
 	mux.Handle("GET /api/dashboard", op(http.HandlerFunc(d.dashboard)))
+	mux.Handle("GET /api/overview", op(http.HandlerFunc(d.overview)))
 	mux.Handle("GET /api/notifications", op(http.HandlerFunc(notifyH.List)))
 	mux.Handle("POST /api/notifications/{id}/read", op(http.HandlerFunc(notifyH.Read)))
 	mux.Handle("POST /api/notifications/read-all", op(http.HandlerFunc(notifyH.ReadAll)))
@@ -149,6 +159,41 @@ func New(d *Deps) http.Handler {
 	mux.Handle("POST /api/chat/send", op(http.HandlerFunc(chatH.Send)))
 	mux.Handle("GET /api/chat/pending", op(http.HandlerFunc(chatH.Pending)))
 	mux.Handle("GET /api/chat/history", op(http.HandlerFunc(chatH.History)))
+	mux.Handle("POST /api/chat/threads/reset", op(http.HandlerFunc(chatH.ResetThread)))
+
+	mux.Handle("POST /api/works", op(http.HandlerFunc(worksH.Create)))
+	mux.Handle("GET /api/works", op(http.HandlerFunc(worksH.List)))
+	mux.Handle("GET /api/works/{id}", op(http.HandlerFunc(worksH.Detail)))
+	mux.Handle("POST /api/works/{id}/pause", op(http.HandlerFunc(worksH.Pause)))
+	mux.Handle("POST /api/works/{id}/resume", op(http.HandlerFunc(worksH.Resume)))
+	mux.Handle("DELETE /api/works/{id}", op(http.HandlerFunc(worksH.DeleteWork)))
+	mux.Handle("GET /api/works/{id}/ai-log", op(http.HandlerFunc(worksH.AILog)))
+	mux.Handle("POST /api/works/{id}/posts/{postId}/hold", op(http.HandlerFunc(worksH.HoldPost)))
+	mux.Handle("POST /api/works/{id}/posts:generate", op(http.HandlerFunc(worksH.RegeneratePost)))
+
+	mux.Handle("POST /api/media/uploads", op(http.HandlerFunc(mediaH.Init)))
+	mux.Handle("PUT /api/media/uploads/{id}/parts/{n}", op(http.HandlerFunc(mediaH.PutPart)))
+	mux.Handle("POST /api/media/uploads/{id}/complete", op(http.HandlerFunc(mediaH.Complete)))
+	mux.Handle("GET /api/media", op(http.HandlerFunc(mediaH.List)))
+	mux.Handle("GET /api/media/{id}", op(http.HandlerFunc(mediaH.Detail)))
+	mux.Handle("GET /api/media/{id}/file", op(http.HandlerFunc(mediaH.File)))
+	mux.Handle("POST /api/media/zip", op(http.HandlerFunc(mediaH.Zip)))
+	mux.Handle("DELETE /api/media/{id}", op(http.HandlerFunc(mediaH.Delete)))
+
+	mux.Handle("GET /api/teams", op(http.HandlerFunc(teamsH.List)))
+	mux.Handle("POST /api/teams", op(http.HandlerFunc(teamsH.Create)))
+	mux.Handle("GET /api/teams/{id}", op(http.HandlerFunc(teamsH.Detail)))
+	mux.Handle("PATCH /api/teams/{id}", op(http.HandlerFunc(teamsH.Update)))
+	mux.Handle("DELETE /api/teams/{id}", op(http.HandlerFunc(teamsH.Delete)))
+	mux.Handle("PUT /api/teams/{id}/members", op(http.HandlerFunc(teamsH.PutMembers)))
+	mux.Handle("POST /api/teams/{id}/members", op(http.HandlerFunc(teamsH.AddMember)))
+	mux.Handle("DELETE /api/teams/{id}/members/{accountId}", op(http.HandlerFunc(teamsH.RemoveMember)))
+	mux.Handle("POST /api/teams/{id}/members/{accountId}/roles", op(http.HandlerFunc(teamsH.SetMemberRole)))
+	mux.Handle("POST /api/teams/{id}/leader", op(http.HandlerFunc(teamsH.SetLeader)))
+	mux.Handle("PUT /api/teams/{id}/channels", op(http.HandlerFunc(teamsH.PutChannels)))
+	mux.Handle("POST /api/teams/{id}/channels", op(http.HandlerFunc(teamsH.AddChannel)))
+	mux.Handle("DELETE /api/teams/{id}/channels/{accountId}", op(http.HandlerFunc(teamsH.RemoveChannel)))
+	mux.Handle("PUT /api/teams/{id}/brand", op(http.HandlerFunc(teamsH.PutBrand)))
 
 	// Uploaded images (read-only).
 	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(d.Config.UploadDir))))
@@ -183,6 +228,103 @@ func (d *Deps) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"counts": counts, "today": items, "byBusiness": byBiz, "reloginNeeded": relogin})
+}
+
+func (d *Deps) overview(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	fromUTC := midnight.UTC().Format(time.RFC3339)
+	weekUTC := midnight.Add(-7 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	today, err := d.Store.OverviewToday(fromUTC, weekUTC)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load overview")
+		return
+	}
+	running, err := d.Store.OverviewRunning(5)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load overview")
+		return
+	}
+	posts, err := d.Store.OverviewRecentPosts(6)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load overview")
+		return
+	}
+	media, err := d.Store.OverviewRecentMedia(12)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load overview")
+		return
+	}
+	aiConnected, channelConnected, hasWork, err := d.Store.OverviewFirstRun()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load overview")
+		return
+	}
+	actions := d.overviewActions()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"today": today, "running": running, "recentPosts": posts, "recentMedia": media,
+		"actions": actions, "teams": []any{},
+		"firstRun": map[string]bool{"aiConnected": aiConnected, "channelConnected": channelConnected, "hasWork": hasWork},
+	})
+}
+
+// overviewActions builds the S1 action banner (UI_DESIGN S1). Automation-off
+// and per-platform gaps arrive with W0/W21; teams with W16.
+func (d *Deps) overviewActions() []any {
+	actions := []any{}
+	for _, item := range d.Session.ReloginQueue() {
+		actions = append(actions, map[string]string{
+			"kind": "login", "account": item.AccountName,
+			"message": item.AccountName + " 로그인이 풀렸습니다",
+			"href":    "/connect",
+		})
+	}
+	if n, err := d.Store.OverviewUnassignedQueued(); err == nil && n > 0 {
+		actions = append(actions, map[string]string{
+			"kind": "account",
+			"message": "연결 계정 없는 발행 " + strconv.Itoa(n) + "건",
+			"href":    "/connect",
+		})
+	}
+	if logs, err := d.Store.OverviewFailedPublishes(5); err == nil {
+		for range logs {
+			actions = append(actions, map[string]string{
+				"kind": "failed",
+				"message": "발행 실패: 확인이 필요합니다",
+				"href":    "/works",
+			})
+		}
+	}
+	if same, err := d.sameReviewerAccount(); err == nil && same {
+		actions = append(actions, map[string]string{
+			"kind": "reviewer",
+			"message": "만든 AI와 검수 AI가 같습니다. AI를 추가하세요",
+			"href":    "/connect",
+		})
+	}
+	return actions
+}
+
+func (d *Deps) sameReviewerAccount() (bool, error) {
+	gen, err := d.Store.ListAgents(store.AgentFilter{Lane: "B"}, 10, 0)
+	if err != nil {
+		return false, err
+	}
+	rev, err := d.Store.ListAgents(store.AgentFilter{Lane: "C"}, 10, 0)
+	if err != nil {
+		return false, err
+	}
+	for _, g := range gen {
+		if !g.Enabled || g.AccountID == nil {
+			continue
+		}
+		for _, r := range rev {
+			if r.Enabled && r.AccountID != nil && *r.AccountID == *g.AccountID {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (d *Deps) backup(w http.ResponseWriter, r *http.Request) {

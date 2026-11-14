@@ -507,8 +507,9 @@ API 키 방식으로 바꾸지 않는다(종량 과금 금지, 비용 0원).
 
 - 내용:
   1. **팀 데이터.** 스키마에 추가:
-     - `teams(id, name, description, is_default, businesses, max_concurrency, role_mode[auto|manual], enabled, created_at)`
+     - `teams(id, name, description, is_default, businesses, max_concurrency, role_mode[auto|manual], enabled, leader_account_id, created_at)`
        — `businesses`가 그 팀의 전담 사업(브랜드). 예: 마케팅1팀 = `LUNO`. 한 사업은 한 팀만 전담할 수 있다(배정 모호성 방지).
+       — `leader_account_id`는 팀장(비우면 없음). 팀원 중 1기만 지정 가능하고, 종류는 무관하다. 지정·해제는 사람이 자유롭게 한다.
      - `team_brand(team_id, intro, tone, banned_words, default_link, sample_posts)` — 브랜드 정보. 분석·전략·제작·검수
        프롬프트에 자동 삽입되고, 검수 기준에 "브랜드 말투·금칙어 준수"가 추가된다.
      - `team_members(team_id, account_id UNIQUE, fixed_role, joined_at)` — **에이전트 1기는 한 번에 한 팀에만 속한다**
@@ -526,6 +527,7 @@ API 키 방식으로 바꾸지 않는다(종량 과금 금지, 비용 0원).
      - `role_mode=auto`(기본): 역할 고정 없이 서버가 작업마다 팀원을 고른다.
        ① 검수는 그 게시물을 쓴 팀원 제외, 가능하면 다른 AI 종류 우선 ② 같은 작업의 앞 단계를 맡은 팀원 우선(W13 대화 이어짐)
        ③ 쉬고 있는 팀원 중 마지막 사용이 가장 오래된 팀원 ④ 하루 상한·간격 초과 팀원 제외.
+     - 팀장이 지정돼 있으면 검수는 팀장이 맡는다(위 ①·④는 그대로 적용: 자기가 쓴 글·상한 초과면 팀장이 아닌 다른 팀원).
      - `role_mode=manual`: 팀원마다 역할(분석·전략·제작·검수 중 1개 이상)을 지정. 예: 3기 팀 = 분석·전략 1 / 제작 1 / 검수 1.
        역할에 해당하는 팀원이 없으면 그 단계는 auto 규칙으로 팀 안 다른 팀원이 맡는다.
      - **기능·요금제 고려**: 이미지·영상 생성 작업(W14)은 해당 기능이 있는 에이전트에게만, 같은 조건이면 유료 요금제 에이전트 우선.

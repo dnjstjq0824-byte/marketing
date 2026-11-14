@@ -108,11 +108,11 @@ def has_session(account):
     return os.path.isfile(state_path(account))
 
 
-def _chrome_installed():
-    """True when a system Google Chrome exists for channel="chrome"."""
+def _chrome_path():
+    """System Google Chrome binary path or "" when absent."""
     override = (config.CHROME_PATH or "").strip()
     if override:
-        return os.path.isfile(override)
+        return override if os.path.isfile(override) else ""
     candidates = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -125,7 +125,67 @@ def _chrome_installed():
         "/usr/bin/google-chrome",
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     ]
-    return any(os.path.isfile(p) for p in candidates)
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
+def _chrome_installed():
+    """True when a system Google Chrome exists for channel="chrome"."""
+    return bool(_chrome_path())
+
+
+_chrome_version_cache = {}
+
+
+def chrome_version(binary=""):
+    """Installed Chrome major version (e.g. "157") or "" when unknown.
+
+    Result is cached per binary path; used to build the headed UA.
+    """
+    path = binary or _chrome_path()
+    if not path:
+        return ""
+    if path in _chrome_version_cache:
+        return _chrome_version_cache[path]
+    version = ""
+    try:
+        import re
+        import subprocess
+        out = subprocess.run(
+            [path, "--version"], capture_output=True, text=True,
+            timeout=15).stdout or ""
+        match = re.search(r"(\d+)\.", out)
+        if match:
+            version = match.group(1)
+    except Exception:
+        version = ""
+    _chrome_version_cache[path] = version
+    return version
+
+
+def headed_user_agent():
+    """Headed-Chrome UA for the installed browser or "" when unknown.
+
+    Headless contexts send a HeadlessChrome UA token that invalidates
+    session-bound security clearances (Cloudflare cf_clearance) issued to
+    the headed browser, so every headless navigation lands on an
+    interactive challenge. Presenting the installed browser's own headed
+    UA (same engine, same version) lets those clearances validate.
+    """
+    version = chrome_version()
+    if not version:
+        return ""
+    import sys
+    if sys.platform == "darwin":
+        plat = "(Macintosh; Intel Mac OS X 10_15_7)"
+    elif sys.platform.startswith("linux"):
+        plat = "(X11; Linux x86_64)"
+    else:
+        plat = "(Windows NT 10.0; Win64; x64)"
+    return ("Mozilla/5.0 %s AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/%s.0.0.0 Safari/537.36" % (plat, version))
 
 
 def select_channel(pref):
@@ -190,6 +250,10 @@ class BrowserSession:
             kwargs["args"] = list(kwargs.get("args", [])) + extra_args
             if has_session(self.account) and not real:
                 kwargs["storage_state"] = state_path(self.account)
+            if self.headless:
+                ua = headed_user_agent()
+                if ua:
+                    kwargs["user_agent"] = ua
             try:
                 self.context = self._pw.chromium.launch_persistent_context(
                     user_dir, **kwargs)
@@ -208,6 +272,10 @@ class BrowserSession:
             kwargs = {}
             if has_session(self.account):
                 kwargs["storage_state"] = state_path(self.account)
+            if self.headless:
+                ua = headed_user_agent()
+                if ua:
+                    kwargs["user_agent"] = ua
             self.context = self.browser.new_context(**kwargs)
         self.context.add_init_script(HIDE_WEBDRIVER_JS)
         self.context.set_default_timeout(config.NAV_TIMEOUT_SEC * 1000)

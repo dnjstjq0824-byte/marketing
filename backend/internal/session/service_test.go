@@ -54,6 +54,70 @@ func TestUpdateAccountFields(t *testing.T) {
 	}
 }
 
+// Bulk registration creates prefix01..NN; duplicates are skipped so a
+// half-done batch can be re-run.
+func TestRegisterAccounts(t *testing.T) {
+	svc := newTestService(t)
+	got, failures, err := svc.RegisterAccounts("luno_meta_", "meta_ai", "me", "worker", "", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || len(failures) != 0 {
+		t.Fatalf("created=%d failures=%v", len(got), failures)
+	}
+	for i, want := range []string{"luno_meta_01", "luno_meta_02", "luno_meta_03"} {
+		if got[i].Name != want {
+			t.Fatalf("name[%d] = %q, want %q", i, got[i].Name, want)
+		}
+		if got[i].SessionState != StatePending || got[i].PostingMode != PostingManual {
+			t.Fatalf("account[%d] = %+v", i, got[i])
+		}
+	}
+	// Re-run: all duplicates, nothing created, nothing aborted.
+	got, failures, err = svc.RegisterAccounts("luno_meta_", "meta_ai", "me", "worker", "", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 || len(failures) != 3 {
+		t.Fatalf("rerun created=%d failures=%v", len(got), failures)
+	}
+	if _, _, err := svc.RegisterAccounts("", "meta_ai", "me", "", "", 2); !errors.Is(err, ErrNoPrefix) {
+		t.Fatalf("empty prefix: %v", err)
+	}
+	if _, _, err := svc.RegisterAccounts("x_", "meta_ai", "me", "", "", 0); !errors.Is(err, ErrBadCount) {
+		t.Fatalf("count 0: %v", err)
+	}
+	if _, _, err := svc.RegisterAccounts("x_", "meta_ai", "me", "", "", 51); !errors.Is(err, ErrBadCount) {
+		t.Fatalf("count 51: %v", err)
+	}
+	if _, _, err := svc.RegisterAccounts("x_", "meta_ai", "me", "ceo", "", 2); !errors.Is(err, ErrBadRole) {
+		t.Fatalf("bad role: %v", err)
+	}
+}
+
+func TestNextLogin(t *testing.T) {
+	svc := newTestService(t)
+	if next, err := svc.NextLogin(""); err != nil || next != nil {
+		t.Fatalf("empty = %+v %v", next, err)
+	}
+	ok := mustRegister(t, svc, "fine", "meta_ai")
+	a, err := svc.SetSessionState(ok, StateConnected, "")
+	_ = a
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustRegister(t, svc, "wait-meta", "meta_ai")
+	mustRegister(t, svc, "wait-gem", "gemini")
+	next, err := svc.NextLogin("gemini")
+	if err != nil || next == nil || next.Name != "wait-gem" {
+		t.Fatalf("prefer = %+v %v", next, err)
+	}
+	next, err = svc.NextLogin("muse")
+	if err != nil || next == nil || next.Name != "wait-meta" {
+		t.Fatalf("fallback = %+v %v", next, err)
+	}
+}
+
 // Posting mode defaults to manual; only auto/manual are accepted.
 func TestPostingMode(t *testing.T) {
 	svc := newTestService(t)

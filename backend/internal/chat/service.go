@@ -20,13 +20,14 @@ import (
 
 // Errors for chat failures.
 var (
-	ErrNoAccount     = errors.New("account not found")
-	ErrNotConnected  = errors.New("연결되지 않은 계정입니다")
-	ErrEmptyMessage  = errors.New("message is required")
-	ErrMessageTooBig = errors.New("message exceeds 4000 characters")
-	ErrChatFailed    = errors.New("AI가 답하지 않았습니다")
+	ErrNoAccount      = errors.New("account not found")
+	ErrNotConnected   = errors.New("연결되지 않은 계정입니다")
+	ErrEmptyMessage   = errors.New("message is required")
+	ErrMessageTooBig  = errors.New("message exceeds 4000 characters")
+	ErrChatFailed     = errors.New("AI가 답하지 않았습니다")
 	ErrChatNoSession = errors.New("저장된 세션이 없습니다. 다시 로그인하세요")
 	ErrUnavailable   = errors.New("이 플랫폼의 실채팅은 아직 준비 중입니다")
+	ErrBadThread     = errors.New("invalid thread")
 )
 
 // MaxMessageRunes bounds one chat message.
@@ -56,7 +57,8 @@ type Service struct {
 	store   *store.Store
 	dataDir string
 	python  string
-	// sessionSvc marks accounts expired when their session file is gone.
+	// sessionSvc marks accounts expired when their session file is gone,
+	// and decrypts API keys for the key-based path.
 	sessionSvc *session.Service
 	// sendRunner replaces the adapter.chat subprocess in tests.
 	// It returns the reply or a typed error.
@@ -65,6 +67,24 @@ type Service struct {
 	mu      sync.Mutex
 	pending map[int64]*pendingRun
 	grace   time.Duration
+	// Per-account send locks (W13-5): overlapping sends to one account
+	// tangle replies; the second waiter goes after the first finishes.
+	lockMu    sync.Mutex
+	acctLocks map[int64]*sync.Mutex
+}
+
+func (s *Service) lockFor(id int64) *sync.Mutex {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	if s.acctLocks == nil {
+		s.acctLocks = map[int64]*sync.Mutex{}
+	}
+	m, ok := s.acctLocks[id]
+	if !ok {
+		m = &sync.Mutex{}
+		s.acctLocks[id] = m
+	}
+	return m
 }
 
 // NewService builds the chat service.
@@ -125,6 +145,9 @@ func (s *Service) gracePeriod() time.Duration {
 
 func (s *Service) deliver(accountID, userMsgID int64, name, platform, text string, run *pendingRun) {
 	defer close(run.done)
+	mu := s.lockFor(accountID)
+	mu.Lock()
+	defer mu.Unlock()
 	reply, err := s.runAdapter(name, platform, text)
 	if err == nil {
 		_, err = s.store.AppendChatMessage(accountID, "assistant", reply)
@@ -187,6 +210,49 @@ func (s *Service) Configure(dataDir, pythonPath string) {
 func (s *Service) AttachSession(svc *session.Service) { s.sessionSvc = svc }
 
 // History returns recorded turns, oldest first.
+// ResetThread deletes one account's saved thread URL(s). Empty thread drops
+// the default thread; "*" drops all named threads of the account.
+func (s *Service) ResetThread(accountID int64, thread string) error {
+	row, err := s.store.GetAccountRow(accountID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrNoAccount
+		}
+		return err
+	}
+	dir := filepath.Join(s.dataDir, "profiles", row.Name)
+	names := []string{"thread.json"}
+	if thread == "*" {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil
+		}
+		names = names[:0]
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "thread") && strings.HasSuffix(e.Name(), ".json") {
+				names = append(names, e.Name())
+			}
+		}
+	} else if thread != "" {
+		safe := strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+				return r
+			}
+			return -1
+		}, thread)
+		if safe == "" || safe != thread {
+			return ErrBadThread
+		}
+		names = []string{"thread_" + safe + ".json"}
+	}
+	for _, name := range names {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) History(accountID int64, limit int) ([]*store.ChatMessage, error) {
 	if _, err := s.store.GetAccountRow(accountID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

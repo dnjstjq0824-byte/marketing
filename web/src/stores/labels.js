@@ -23,6 +23,10 @@ export const PLATFORM = {
 export const KIND = { agent_service: 'AI 서비스', channel: '채널' }
 // AI service platforms (kind=agent_service). Everything else is a channel.
 export const AI_PLATFORMS = ['meta_ai', 'claude_app', 'chatgpt', 'gemini', 'muse']
+// Platforms where Google SSO is a primary login path: the real-profile
+// login option is shown only for these (fresh driven-browser Google SSO
+// stalls at the post-identifier risk check).
+export const GOOGLE_SSO_PLATFORMS = ['gemini', 'chatgpt', 'claude_app']
 // Login order: AI services first, channels last.
 export const PLATFORM_GROUPS = [
   { label: 'AI 서비스', options: AI_PLATFORMS },
@@ -41,3 +45,17 @@ export const LOGIN_HINT = {
 export function label(map, value, fallback) {
   return map[value] || fallback || value || '—'
 }
+
+// UI_DESIGN §6 screen vocabulary. API values stay English; display text only.
+export const WORK_STAGE = { intake: '접수', analyze: '분석', research: '조사', strategy: '전략', generate: '제작', review: '검수', publish: '발행', collect: '성과' }
+export const POST_STATE = {
+  draft: '만드는 중', review: '검수 중', approved: '승인됨',
+  queued: '발행 대기', unassigned: '연결 계정 없음', published: '발행됨',
+  held: '멈춤', failed: '발행 실패', archived: '폐기',
+  drafting: '만드는 중', reviewing: '검수 중', rewriting: '다시 쓰는 중',
+}
+export const ACCOUNT_STATE = { connected: '연결됨', login_required: '로그인 필요', limited: '사용 한도', checking: '확인 중', off: '꺼둠' }
+export const MEDIA_KIND = { upload: '업로드', gen_image: 'AI 이미지', gen_video: 'AI 영상', card: '카드뉴스' }
+export const TEAM_ROLE = { analyze: '분석', strategy: '전략', generate: '제작', review: '검수' }
+export const TEAM_ROLE_MODE = { auto: '자동', manual: '직접 지정' }
+export const INPUT_KIND = { url: '링크', image: '사진·파일', topic: '주제' }

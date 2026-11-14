@@ -46,7 +46,7 @@ class PureUnitTest(unittest.TestCase):
         gemini = platforms.get_platform("gemini")
         self.assertTrue(gemini.login_path.startswith("https://"))
         self.assertFalse(platforms.is_configured(gemini))
-        self.assertFalse(chat.is_chattable(gemini))
+        self.assertTrue(chat.is_chattable(gemini))
         with self.assertRaises(KeyError):
             platforms.get_platform("nope")
 
@@ -59,15 +59,97 @@ class PureUnitTest(unittest.TestCase):
         self.assertTrue(platforms.get_platform("meta_ai").logged_out_markers)
         self.assertTrue(platforms.get_platform("claude_app").logged_out_markers)
 
+    def test_verify_matcher_exact_visible(self):
+        markers = ("Log in", "로그인")
+        # Exact login CTAs match.
+        self.assertEqual(verify.match_logged_out(["Log in"], markers), "Log in")
+        self.assertEqual(verify.match_logged_out(["로그인"], markers), "로그인")
+        self.assertEqual(verify.match_logged_out(["  Log\nin  "], markers), "Log in")
+        # History titles merely containing the word must NOT match
+        # (Muse false negative: chat titles about "로그인").
+        self.assertEqual(verify.match_logged_out(
+            ["SOMUN Muse 로그인 및 피클 브라우저 확인", "대화 내용 요약"], markers), "")
+        self.assertEqual(verify.match_logged_out(
+            ["Log in to continue with email"], markers), "")
+        self.assertEqual(verify.match_logged_out([], markers), "")
+
     def test_chat_gating(self):
-        meta = platforms.get_platform("meta_ai")
-        self.assertTrue(chat.is_chattable(meta))
-        for name in ("claude_app", "chatgpt", "naver_blog", "tistory"):
+        for name in ("meta_ai", "claude_app", "chatgpt", "muse", "gemini"):
+            self.assertTrue(chat.is_chattable(platforms.get_platform(name)))
+        for name in ("naver_blog", "tistory"):
             self.assertFalse(chat.is_chattable(platforms.get_platform(name)))
         self.assertEqual(chat.main(["chat"]), 2)
         self.assertEqual(chat.main(["chat", "a", "nope", "hi"]), 2)
         self.assertEqual(chat.main(["chat", "ghost-acct-xyz", "meta_ai", "hi"]), 2)
         self.assertEqual(chat.main(["chat", "a", "claude_app", "hi"]), 2)
+        self.assertEqual(chat.main(["chat", "a", "gemini", "hi"]), 2)
+
+    def test_chat_args(self):
+        account, platform, message, fresh, thread = chat.parse_chat_args(
+            ["chat", "a", "meta_ai", "hello", "world"])
+        self.assertEqual((account, platform, message, fresh, thread),
+                         ("a", "meta_ai", "hello world", False, ""))
+        account, platform, message, fresh, thread = chat.parse_chat_args(
+            ["chat", "a", "meta_ai", "--fresh", "hi"])
+        self.assertEqual((message, fresh, thread), ("hi", True, ""))
+        account, platform, message, fresh, thread = chat.parse_chat_args(
+            ["chat", "a", "meta_ai", "--thread", "chain-9", "hi", "there"])
+        self.assertEqual((message, fresh, thread), ("hi there", False, "chain-9"))
+        with self.assertRaises(ValueError):
+            chat.parse_chat_args(["chat", "a"])
+        with self.assertRaises(ValueError):
+            chat.parse_chat_args(["chat", "a", "meta_ai", "--thread"])
+        with self.assertRaises(ValueError):
+            chat.parse_chat_args(["chat", "a", "meta_ai", "--thread", "--fresh"])
+
+    def test_thread_rotation_and_lock(self):
+        import tempfile
+        prev = config.PROFILES_DIR
+        tmp = tempfile.mkdtemp()
+        try:
+            config.PROFILES_DIR = tmp
+            self.assertEqual(chat.load_thread("a", ""), {})
+            self.assertEqual(chat._thread_start_url(
+                platforms.get_platform("meta_ai"), "a", "", True), "")
+            chat.save_thread("a", "", "https://www.meta.ai/c/abc", 3)
+            self.assertEqual(chat.load_thread("a", "")["url"],
+                             "https://www.meta.ai/c/abc")
+            self.assertEqual(chat._thread_start_url(
+                platforms.get_platform("meta_ai"), "a", "", False),
+                             "https://www.meta.ai/c/abc")
+            chat.save_thread("a", "", "https://www.meta.ai/c/abc",
+                             chat.THREAD_MAX_MESSAGES)
+            self.assertEqual(chat._thread_start_url(
+                platforms.get_platform("meta_ai"), "a", "", False), "")
+            self.assertEqual(chat.load_thread("a", ""), {})
+            first = chat.ThreadLock("a", "")
+            self.assertTrue(first.__enter__())
+            try:
+                second = chat.ThreadLock("a", "", timeout_sec=0.3)
+                self.assertFalse(second.__enter__())
+                second.__exit__()
+            finally:
+                first.__exit__()
+            third = chat.ThreadLock("a", "")
+            self.assertTrue(third.__enter__())
+            third.__exit__()
+        finally:
+            config.PROFILES_DIR = prev
+
+    def test_headed_user_agent(self):
+        ua = browser.headed_user_agent()
+        if not ua:
+            self.assertEqual(browser.chrome_version(), "")
+            return
+        self.assertIn("Chrome/", ua)
+        self.assertNotIn("Headless", ua)
+        self.assertTrue(browser.chrome_version().isdigit())
+
+    def test_challenge_title(self):
+        self.assertTrue(verify.is_challenge_title("잠시만 기다리십시오…"))
+        self.assertTrue(verify.is_challenge_title("Just a moment..."))
+        self.assertFalse(verify.is_challenge_title("Chat — Muse"))
+        self.assertFalse(verify.is_challenge_title(""))
 
     def test_channel_select(self):
         self.assertEqual(browser.select_channel("bundled"), "")

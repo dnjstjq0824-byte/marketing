@@ -29,6 +29,51 @@ class Platform:
     composer_selector: str = "TBD"
     send_selector: str = "TBD"
     reply_selector: str = "TBD"
+    # Reply body CSS inside the last reply element ("" = current behavior:
+    # .markdown-content, else whole element minus buttons).
+    reply_body_selector: str = ""
+    # Page-level busy signal ("" = no extra signal; Stop labels still apply).
+    busy_selector: str = ""
+    # Completion row inside the last reply element ("" = settle rounds only).
+    done_selector: str = ""
+    # Full JS extractor returning a JSON array of reply texts, newest last.
+    # Set when replies have no per-message DOM hook (ChatGPT turns, Gemini
+    # virtualized messages). Count and text both come from it.
+    reply_extract_js: str = ""
+    # False keeps a pinned platform out of chat (e.g. generation stalls).
+    chat_enabled: bool = True
+
+
+# ChatGPT turns carry no per-message DOM hook: the assistant header
+# ([data-conversation-role='assistant']) holds only a label, the body follows
+# as siblings. Returns a JSON array of reply texts, newest last.
+_CHATGPT_EXTRACT_JS = """() => {
+    const out = [];
+    const heads = document.querySelectorAll("[data-conversation-role='assistant']");
+    heads.forEach((head) => {
+        const texts = [];
+        let el = head.nextElementSibling, guard = 0;
+        while (el && guard < 30) {
+            if (el.matches && el.matches("[data-conversation-role],[data-turn-key]")) break;
+            const t = ((el.innerText || '').split(String.fromCharCode(160)).join(' ').trim());
+            if (t) texts.push(t);
+            el = el.nextElementSibling; guard++;
+        }
+        out.push(texts.join('\\n'));
+    });
+    return JSON.stringify(out);
+}"""
+
+# Gemini virtualizes messages (empty shells render for off-screen turns).
+# Returns a JSON array of non-empty message texts, newest last.
+_GEMINI_EXTRACT_JS = """() => {
+    const out = [];
+    document.querySelectorAll('message-content').forEach((el) => {
+        const t = ((el.innerText || '').split(String.fromCharCode(160)).join(' ').trim());
+        if (t) out.push(t);
+    });
+    return JSON.stringify(out);
+}"""
 
 
 PLATFORMS = {
@@ -60,6 +105,7 @@ PLATFORMS = {
         composer_selector="[data-testid='composer-input']:visible",
         send_selector="button[data-testid='composer-send-button']",
         reply_selector="[data-testid='assistant-message']",
+        done_selector="[class*='assistant-message-actions']",
     ),
     "chatgpt": Platform(
         name="chatgpt",
@@ -72,6 +118,14 @@ PLATFORMS = {
         posted_url_hint="chatgpt.com",
         notes=("Manual login; confirm in the console when done.",),
         logged_out_markers=("Log in", "Sign up", "로그인"),
+        chat_path="https://chatgpt.com/",
+        composer_selector="[contenteditable='true'][role='textbox']:visible",
+        send_selector=("button[aria-label='보내기'], "
+                       "button[aria-label='Send message'], "
+                       "button[aria-label='Send']"),
+        reply_selector="[data-conversation-role='assistant']",
+        busy_selector="[data-talvt-turn-state='in_progress']",
+        reply_extract_js=_CHATGPT_EXTRACT_JS,
     ),
     "gemini": Platform(
         name="gemini",
@@ -84,6 +138,20 @@ PLATFORMS = {
         posted_url_hint="gemini.google.com",
         notes=("Manual login; confirm in the console when done.",),
         logged_out_markers=("Sign in", "로그인"),
+        chat_path="https://gemini.google.com/app",
+        composer_selector="[role='textbox'][contenteditable='true']:visible",
+        send_selector=(".input-area button[aria-label='메시지 보내기'], "
+                       ".input-area button[aria-label='Send message']"),
+        reply_selector="message-content",
+        busy_selector=(".input-area button[aria-label='대답 생성 중지'], "
+                       ".input-area button[aria-label='Stop generating']"),
+        reply_extract_js=_GEMINI_EXTRACT_JS,
+        # Live-verified 2026-11-14 (3/3 real-path replies). Gemini stalls
+        # when sends race hydration; the hardened path (_click_composer,
+        # stable baseline, _click_send verification) is required. If stalls
+        # recur, fall back to a persistent headed context per community
+        # practice for Google targets.
+        chat_enabled=True,
     ),
     "claude_app": Platform(
         name="claude_app",
@@ -96,6 +164,13 @@ PLATFORMS = {
         posted_url_hint="claude.ai",
         notes=("Manual login; confirm in the console when done.",),
         logged_out_markers=("Log in", "Continue with Google", "로그인"),
+        chat_path="https://claude.ai/new",
+        composer_selector="[data-testid='chat-input']:visible",
+        send_selector="[data-testid='chat-input-send']",
+        reply_selector="[data-testid='assistant-message']",
+        reply_body_selector="[data-cds='Prose']",
+        busy_selector="[data-testid='assistant-message'][data-is-streaming='true']",
+        done_selector="[data-testid='message-actions']",
     ),
     # Meta's personal AI agent (C lane: review + publish decision, D37).
     # Public pages say US/Canada 18+ only; the first real login confirms
@@ -112,6 +187,11 @@ PLATFORMS = {
         notes=("Press Log in on the opened page, sign in, then confirm in "
                "the console.",),
         logged_out_markers=("Log in", "로그인"),
+        chat_path="https://muse.ai/",
+        composer_selector="textarea[aria-label='메시지 보내기']:visible",
+        send_selector="button[aria-label='보내기']",
+        reply_selector="[data-message-role='assistant']",
+        reply_body_selector="[data-hatch-assistant-message-body]",
     ),
     # Channels last. Real selectors below are placeholders until P0-1 accounts exist.
     "naver_blog": Platform(

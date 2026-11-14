@@ -1,158 +1,143 @@
 <template>
-  <section class="page">
-    <h2>대시보드</h2>
-    <p class="muted">기능 나열이 아니라 오늘의 상태 요약입니다.</p>
-    <p v-if="error" class="banner err">{{ error }} <button class="ghost small" @click="load">다시 시도</button></p>
-
-    <div class="hero">
-      <div class="kick">{{ todayLine }}</div>
-      <h3>오늘의 판</h3>
-      <p class="lede">{{ lede }}</p>
-      <ul class="hero-stats">
-        <li :class="{ gold: counts.reviewWaiting > 0 }"><b>{{ counts.reviewWaiting }}</b><span>검수 대기</span></li>
-        <li><b>{{ counts.jobsPending }}</b><span>대기 작업</span></li>
-        <li><b>{{ counts.jobsClaimed }}</b><span>처리 중</span></li>
-        <li :class="{ alert: counts.heldTotal > 0 }"><b>{{ counts.queuedTotal }}</b><span>발행 큐</span></li>
-        <li><b>{{ counts.scheduledToday }}</b><span>오늘 일정</span></li>
-      </ul>
+  <div class="home">
+    <ActionBanner :actions="data.actions" />
+    <section v-if="showChecklist" class="card check" aria-label="시작 체크리스트">
+      <h2 class="section-title">시작하기</h2>
+      <ol>
+        <li><RouterLink to="/connect">AI 계정 연결하기</RouterLink><StatusChip :kind="data.firstRun.aiConnected ? 'ok' : 'hold'">{{ data.firstRun.aiConnected ? '됨' : '안 됨' }}</StatusChip></li>
+        <li><RouterLink to="/connect">발행 채널 연결하기</RouterLink><StatusChip :kind="data.firstRun.channelConnected ? 'ok' : 'hold'">{{ data.firstRun.channelConnected ? '됨' : '안 됨' }}</StatusChip></li>
+        <li><RouterLink to="/new">첫 작업 만들기</RouterLink><StatusChip :kind="data.firstRun.hasWork ? 'ok' : 'hold'">{{ data.firstRun.hasWork ? '됨' : '안 됨' }}</StatusChip></li>
+      </ol>
+    </section>
+    <Skeleton v-if="loading && !data.today" :rows="4" />
+    <div v-else-if="loadError" class="card center">
+      <p>불러오지 못했습니다.</p>
+      <button @click="load">다시 시도</button>
     </div>
-
-    <div class="card">
-      <div class="sect-head"><h3>에이전트</h3><RouterLink to="/agents">연결 화면</RouterLink></div>
-      <div class="statgrid">
-        <div class="stat good"><b>{{ agentStats.online }}</b><span>온라인</span></div>
-        <div class="stat" :class="{ bad: agentStats.offline > 0 }"><b>{{ agentStats.offline }}</b><span>오프라인</span></div>
-        <div class="stat"><b>{{ agentStats.paused }}</b><span>중지</span></div>
-        <div class="stat tone"><b>{{ agentStats.done1h }}</b><span>1시간 완료</span></div>
-        <div class="stat" :class="{ bad: agentStats.failed1h > 0 }"><b>{{ agentStats.failed1h }}</b><span>1시간 실패</span></div>
-      </div>
-      <p v-if="topFailing.length" class="muted small">실패 상위:
-        <span v-for="(f, i) in topFailing" :key="f.agentId">{{ i ? ' · ' : '' }}{{ f.label }} {{ f.failed }}건</span>
-      </p>
-    </div>
-
-    <div class="card">
-      <div class="sect-head"><h3>사업별 현황</h3><span class="count">{{ byBusiness.length }}개 사업</span></div>
-      <div v-if="byBusiness.length" class="table-wrap">
-        <table>
-          <thead><tr><th>사업</th><th class="num">상품</th><th class="num">검수 대기</th><th class="num">발행 큐</th></tr></thead>
-          <tbody>
-            <tr v-for="b in byBusiness" :key="b.business">
-              <td><strong>{{ b.business || '(미지정)' }}</strong></td>
-              <td class="num">{{ b.products }}</td>
-              <td class="num">{{ b.review }}</td>
-              <td class="num">{{ b.queued }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <p v-else class="empty">등록된 사업이 없습니다.</p>
-    </div>
-
-    <div class="card">
-      <div class="sect-head"><h3>이상 알림</h3><span class="count">{{ alerts.length }}건</span></div>
-      <ul v-if="alerts.length" class="speclist">
-        <li v-for="(a, i) in alerts" :key="i">
-          <span :class="a.tone === 'warn' ? 'pill p-limited' : 'pill p-failed'">{{ a.tone === 'warn' ? '주의' : '알림' }}</span>
-          <span>{{ a.text }} <RouterLink :to="a.to">바로 가기</RouterLink></span>
-        </li>
-      </ul>
-      <EmptyArt v-else art="plant" title="이상이 없습니다" hint="평온합니다." />
-    </div>
-
-    <div class="card">
-      <div class="sect-head"><h3>오늘 일정</h3><span class="count">{{ today.length }}건</span></div>
-      <ul v-if="today.length" class="speclist">
-        <li v-for="c in today" :key="c.id">
-          <span class="k">{{ shortTime(c.scheduledAt) }}</span>
-          <span>#{{ c.id }} {{ c.title || '(제목 없음)' }} · {{ c.targetAccount || '미지정' }}
-            <span v-if="c.held" class="pill p-held">보류</span></span>
-        </li>
-      </ul>
-      <EmptyArt v-else art="tray" title="오늘 예정된 발행이 없습니다" />
-    </div>
-
-    <div class="row">
-      <div class="card grow">
-        <h3>큐 요약</h3>
-        <ul class="speclist">
-          <li><span class="k">실패한 작업</span><span><strong>{{ counts.jobsFailed }}</strong>건 — 상주 관리 화면에서 확인</span></li>
-          <li><span class="k">지연된 작업</span><span><strong>{{ counts.jobsStuck }}</strong>건 — 30분 넘게 처리 중</span></li>
-          <li><span class="k">보류된 발행</span><span><strong>{{ counts.heldTotal }}</strong>건 — 발행 큐에서 확인</span></li>
-        </ul>
-      </div>
-      <div class="card grow">
-        <div class="sect-head"><h3>재로그인 필요</h3><span class="count">{{ relogin.length }}건</span></div>
-        <ul v-if="relogin.length" class="speclist">
-          <li v-for="r in relogin" :key="r.accountId">
-            <span class="k">{{ r.accountName }}</span><span>보류 {{ r.heldCount }}건</span>
-          </li>
-        </ul>
-        <p v-else class="empty">없음</p>
-      </div>
-    </div>
-  </section>
+    <template v-else-if="data.today">
+      <section class="stats" aria-label="오늘 현황">
+        <RouterLink to="/works" class="stat"><b class="num">{{ data.today.running }}</b><span>진행 중</span></RouterLink>
+        <RouterLink to="/works?tab=published" class="stat"><b class="num">{{ data.today.publishedToday }}</b><span>오늘 발행</span></RouterLink>
+        <RouterLink to="/works?tab=queued" class="stat"><b class="num">{{ data.today.queued }}</b><span>발행 대기</span></RouterLink>
+        <div class="stat"><b class="num">{{ data.today.weekViews }}</b><span>이번 주 조회</span></div>
+        <RouterLink to="/works?tab=failed" class="stat"><b class="num">{{ data.today.failed }}</b><span>실패</span></RouterLink>
+      </section>
+      <section aria-label="진행 중인 작업">
+        <div class="sect-head"><h2 class="section-title">진행 중</h2><RouterLink to="/works" class="more">전체 보기</RouterLink></div>
+        <div v-if="data.running.length" class="cards">
+          <WorkCard v-for="w in data.running" :key="w.id" :work="w" />
+        </div>
+        <EmptyState v-else title="진행 중인 작업이 없습니다" hint="새 작업을 만들면 여기서 진행됩니다" to="/new" actionLabel="새 작업" />
+      </section>
+      <section v-if="data.recentPosts.length" aria-label="최근 발행">
+        <div class="sect-head"><h2 class="section-title">최근 발행</h2><RouterLink to="/works?tab=published" class="more">전체 보기</RouterLink></div>
+        <div class="cards">
+          <PostCard v-for="p in data.recentPosts" :key="p.id" :post="p" />
+        </div>
+      </section>
+      <section v-if="data.recentMedia.length" aria-label="최근 미디어">
+        <div class="sect-head"><h2 class="section-title">최근 미디어</h2><RouterLink to="/media" class="more">전체 보기</RouterLink></div>
+        <div class="tiles">
+          <MediaTile v-for="m in data.recentMedia" :key="m.id" :item="m" />
+        </div>
+      </section>
+    </template>
+  </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { apiFetch } from '../stores/auth.js'
-import EmptyArt from '../components/EmptyArt.vue'
+import { usePoll } from '../stores/poll.js'
+import ActionBanner from '../components/ActionBanner.vue'
+import EmptyState from '../components/EmptyState.vue'
+import MediaTile from '../components/MediaTile.vue'
+import PostCard from '../components/PostCard.vue'
+import Skeleton from '../components/Skeleton.vue'
+import StatusChip from '../components/StatusChip.vue'
+import WorkCard from '../components/WorkCard.vue'
 
-const counts = ref({ reviewWaiting: 0, jobsPending: 0, jobsClaimed: 0, jobsFailed: 0, jobsStuck: 0, queuedTotal: 0, heldTotal: 0, scheduledToday: 0 })
-const alerts = ref([])
-const agentStats = ref({ online: 0, offline: 0, paused: 0, done1h: 0, failed1h: 0 })
-const topFailing = ref([])
-const relogin = ref([])
-const today = ref([])
-const byBusiness = ref([])
-const error = ref('')
+const data = ref({ actions: [], today: null, running: [], recentPosts: [], recentMedia: [], firstRun: {} })
+const loading = ref(true)
+const loadError = ref(false)
 
-function shortTime(iso) {
-  return iso ? iso.slice(11, 16) : '—'
-}
-
-const todayLine = computed(() => {
-  const d = new Date()
-  const week = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()]
-  const p = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} (${week}) · 1인 운영 중`
-})
-
-const lede = computed(() => {
-  const c = counts.value
-  const bad = c.jobsFailed + c.jobsStuck + c.heldTotal
-  if (bad > 0) return `확인할 일 ${bad}건이 있습니다. 아래 이상 알림부터 보세요.`
-  if (c.reviewWaiting > 0) return `평온합니다. 검수 ${c.reviewWaiting}건만 보면 됩니다.`
-  return '평온합니다. 오늘 볼일은 발행 큐 확인뿐입니다.'
+const showChecklist = computed(() => {
+  const f = data.value.firstRun
+  return f && (!f.aiConnected || !f.channelConnected || !f.hasWork)
 })
 
 async function load() {
-  error.value = ''
+  loadError.value = false
   try {
-    const data = await apiFetch('/api/dashboard')
-    counts.value = data.counts || counts.value
-    relogin.value = data.reloginNeeded || []
-    today.value = data.today || []
-    byBusiness.value = data.byBusiness || []
-    try {
-      const stats = await apiFetch('/api/agents/stats')
-      agentStats.value = stats
-      topFailing.value = stats.topFailing || []
-    } catch {
-      agentStats.value = { online: 0, offline: 0, paused: 0, done1h: 0, failed1h: 0 }
-      topFailing.value = []
+    const res = await apiFetch('/api/overview')
+    data.value = {
+      actions: res.actions || [],
+      today: res.today,
+      running: res.running || [],
+      recentPosts: res.recentPosts || [],
+      recentMedia: res.recentMedia || [],
+      firstRun: res.firstRun || {},
     }
-    const a = []
-    if (counts.value.jobsFailed > 0) a.push({ tone: 'err', to: '/resident', text: `실패한 작업 ${counts.value.jobsFailed}건이 확인을 기다립니다.` })
-    if (counts.value.jobsStuck > 0) a.push({ tone: 'err', to: '/resident', text: `30분 넘게 처리 중인 작업 ${counts.value.jobsStuck}건이 있습니다. 작업자가 멈췄는지 확인하세요.` })
-    if (counts.value.heldTotal > 0) a.push({ tone: 'warn', to: '/queue', text: `보류된 발행 ${counts.value.heldTotal}건이 있습니다.` })
-    for (const r of relogin.value) a.push({ tone: 'warn', to: '/channels', text: `계정 ${r.accountName}: 세션 ${r.sessionState} — 재로그인 필요` })
-    alerts.value = a
-  } catch (e) {
-    error.value = e.message || '불러오기 실패'
+  } catch {
+    loadError.value = true
+  } finally {
+    loading.value = false
   }
 }
 
-onMounted(load)
+const poll = usePoll(load, { isBusy: () => (data.value.today?.running || 0) > 0 })
+onMounted(() => poll.start())
 </script>
+
+<style scoped>
+.home { display: flex; flex-direction: column; gap: var(--s5); }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-lg);
+  padding: var(--s4);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.check { display: block; text-align: left; }
+.check ol { margin: var(--s2) 0 0; padding-left: var(--s5); display: flex; flex-direction: column; gap: var(--s2); }
+.check li { display: flex; align-items: center; gap: var(--s3); }
+.sect-head { display: flex; align-items: center; margin-bottom: var(--s3); }
+.sect-head h2 { flex: 1; }
+.more { font-size: 13px; }
+.center { text-align: center; }
+.center button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-md);
+  padding: var(--s2) var(--s4);
+  margin-top: var(--s2);
+}
+.stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--s3); }
+.stat {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-lg);
+  padding: var(--s4) var(--s2);
+  text-align: center;
+  text-decoration: none;
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+.stat b { font-size: 24px; }
+.stat span { font-size: 13px; color: var(--muted); }
+.cards { display: flex; flex-direction: column; gap: var(--s3); }
+.tiles { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--s2); }
+@media (max-width: 900px) {
+  .stats { grid-template-columns: repeat(5, 1fr); gap: var(--s2); }
+  .stat { padding: var(--s3) var(--s1); }
+  .stat b { font-size: 18px; }
+  .tiles { grid-template-columns: repeat(3, 1fr); }
+}
+</style>

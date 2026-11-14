@@ -212,6 +212,30 @@
     </div>
 
     <div class="card">
+      <h3>계정 여러 개 등록</h3>
+      <p class="muted small">같은 플랫폼 계정을 한 번에 만듭니다. 이름은 접두사+번호로 자동 생성됩니다. 만든 뒤 계정 목록에서 차례로 로그인하세요.</p>
+      <div class="form-grid">
+        <label>이름 접두사 <input v-model="bulkForm.prefix" placeholder="예: luno_meta_" /></label>
+        <label>플랫폼
+          <select v-model="bulkForm.platform">
+            <option value="">선택</option>
+            <optgroup v-for="g in PLATFORM_GROUPS" :key="g.label" :label="g.label">
+              <option v-for="p in g.options" :key="p" :value="p">{{ platformLabel(p) }}</option>
+            </optgroup>
+          </select>
+        </label>
+        <label>개수 (1~50) <input v-model.number="bulkForm.count" type="number" min="1" max="50" /></label>
+        <label>주인 <input v-model="bulkForm.owner" /></label>
+        <label>역할
+          <select v-model="bulkForm.role"><option value="chief">총괄</option><option value="worker">작업자</option></select>
+        </label>
+        <label>담당 사업 <input v-model="bulkForm.business" /></label>
+        <div class="full"><button @click="addBulkAccounts">등록</button> <span class="muted small">{{ bulkPreview }}</span></div>
+      </div>
+      <p v-if="bulkMsg" :class="bulkOk ? 'banner okk' : 'error'">{{ bulkMsg }}</p>
+    </div>
+
+    <div class="card">
       <h3>계정 정보 수정</h3>
       <p class="muted small">계정명은 큐 연결 키라 바꿀 수 없습니다. 주인·역할·사업만 수정합니다.</p>
       <div class="form-grid">
@@ -245,8 +269,8 @@
           <li>뜬 창에서 직접 로그인</li>
           <li>완료 확인</li>
         </ol>
-        <label v-if="loginDlg.phase === 'ask'" class="check"><input v-model="loginDlg.realProfile" type="checkbox" /> 내 Chrome 프로필로 열기 (Google 로그인용, Chrome 완전 종료 필요)</label>
-        <p v-if="loginDlg.phase === 'ask'" class="muted small">브라우저가 안 뜨면: 파워셸에서 <code>adapter\.venv\Scripts\python -m adapter.login {{ loginDlg.name }} {{ loginDlg.platform }}</code> 실행 후 직접 로그인하고, 아래 바로 확인을 누르세요.</p>
+        <label v-if="loginDlg.phase === 'ask' && needsGoogleLogin(loginDlg.platform)" class="check"><input v-model="loginDlg.realProfile" type="checkbox" /> 내 크롬으로 열기 (Google 로그인이 막힐 때만, 크롬 완전 종료 필요)</label>
+        <p v-if="loginDlg.phase === 'ask'" class="muted small">브라우저 열기를 누르면 새 시크릿 창으로 열립니다. 브라우저가 안 뜨면: 파워셸에서 <code>adapter\.venv\Scripts\python -m adapter.login {{ loginDlg.name }} {{ loginDlg.platform }} --incognito</code> 실행 후 직접 로그인하고, 아래 바로 확인을 누르세요.</p>
         <p v-if="loginDlg.phase === 'waiting'" class="banner warn">브라우저가 열렸습니다. 로그인을 끝낸 뒤 아래 완료 확인을 누르세요.</p>
         <p v-if="loginDlg.phase === 'busy'" class="banner warn">확인 중입니다. 잠시 기다리세요.</p>
         <p v-if="loginDlg.msg" :class="loginDlg.ok ? 'banner okk' : 'error'">{{ loginDlg.msg }}</p>
@@ -254,11 +278,13 @@
           <button v-if="loginDlg.phase === 'ask'" @click="startLogin">브라우저 열기</button>
           <button v-if="loginDlg.phase === 'ask'" class="ghost" @click="finishLogin">터미널 로그인 후 바로 확인</button>
           <button v-if="loginDlg.phase === 'waiting'" @click="finishLogin">로그인 완료 확인</button>
+          <button v-if="loginDlg.phase === 'done' && nextPending" @click="openLogin(nextPending)">다음 계정 로그인 ({{ nextPending.name }})</button>
           <button class="ghost" @click="closeLogin">{{ loginDlg.phase === 'waiting' || loginDlg.phase === 'busy' ? '취소' : '닫기' }}</button>
         </div>
       </div>
     </div>
-  </section>
+
+      </section>
 
   <section v-else-if="view === 'channels'" class="page">
     <h2>채널 계정</h2>
@@ -324,8 +350,8 @@
           <li>뜬 창에서 직접 로그인</li>
           <li>완료 확인</li>
         </ol>
-        <label v-if="loginDlg.phase === 'ask'" class="check"><input v-model="loginDlg.realProfile" type="checkbox" /> 내 Chrome 프로필로 열기 (Google 로그인용, Chrome 완전 종료 필요)</label>
-        <p v-if="loginDlg.phase === 'ask'" class="muted small">브라우저가 안 뜨면: 파워셸에서 <code>adapter\.venv\Scripts\python -m adapter.login {{ loginDlg.name }} {{ loginDlg.platform }}</code> 실행 후 직접 로그인하고, 아래 바로 확인을 누르세요.</p>
+        <label v-if="loginDlg.phase === 'ask' && needsGoogleLogin(loginDlg.platform)" class="check"><input v-model="loginDlg.realProfile" type="checkbox" /> 내 크롬으로 열기 (Google 로그인이 막힐 때만, 크롬 완전 종료 필요)</label>
+        <p v-if="loginDlg.phase === 'ask'" class="muted small">브라우저 열기를 누르면 새 시크릿 창으로 열립니다. 브라우저가 안 뜨면: 파워셸에서 <code>adapter\.venv\Scripts\python -m adapter.login {{ loginDlg.name }} {{ loginDlg.platform }} --incognito</code> 실행 후 직접 로그인하고, 아래 바로 확인을 누르세요.</p>
         <p v-if="loginDlg.phase === 'waiting'" class="banner warn">브라우저가 열렸습니다. 로그인을 끝낸 뒤 아래 완료 확인을 누르세요.</p>
         <p v-if="loginDlg.phase === 'busy'" class="banner warn">확인 중입니다. 잠시 기다리세요.</p>
         <p v-if="loginDlg.msg" :class="loginDlg.ok ? 'banner okk' : 'error'">{{ loginDlg.msg }}</p>
@@ -333,11 +359,13 @@
           <button v-if="loginDlg.phase === 'ask'" @click="startLogin">브라우저 열기</button>
           <button v-if="loginDlg.phase === 'ask'" class="ghost" @click="finishLogin">터미널 로그인 후 바로 확인</button>
           <button v-if="loginDlg.phase === 'waiting'" @click="finishLogin">로그인 완료 확인</button>
+          <button v-if="loginDlg.phase === 'done' && nextPending" @click="openLogin(nextPending)">다음 계정 로그인 ({{ nextPending.name }})</button>
           <button class="ghost" @click="closeLogin">{{ loginDlg.phase === 'waiting' || loginDlg.phase === 'busy' ? '취소' : '닫기' }}</button>
         </div>
       </div>
     </div>
-  </section>
+
+      </section>
 
   <section v-else class="page">
     <h2>자체 채널</h2>
@@ -356,7 +384,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { apiFetch } from '../stores/auth.js'
-import { AI_PLATFORMS, JOB_STATUS, JOB_TYPE, KIND, LOGIN_HINT, PLATFORM, PLATFORM_GROUPS, POSTING_MODE, ROLE, SESSION_STATE, label } from '../stores/labels.js'
+import { AI_PLATFORMS, GOOGLE_SSO_PLATFORMS, JOB_STATUS, JOB_TYPE, KIND, LOGIN_HINT, PLATFORM, PLATFORM_GROUPS, POSTING_MODE, ROLE, SESSION_STATE, label } from '../stores/labels.js'
 import EmptyArt from '../components/EmptyArt.vue'
 
 const props = defineProps({ view: { type: String, default: 'agents' } })
@@ -368,6 +396,9 @@ const roleFilter = ref('')
 const bizFilter = ref('')
 const alertOnly = ref(false)
 const accForm = ref({ name: '', platform: '', owner: '', role: 'worker', business: '', loginId: '', password: '' })
+const bulkForm = ref({ prefix: '', platform: '', owner: '', role: 'worker', business: '', count: 10 })
+const bulkMsg = ref('')
+const bulkOk = ref(false)
 const accEdit = ref({ id: '', owner: '', role: 'worker', business: '', kind: 'channel', platformUserId: '', loginId: '', password: '' })
 const confirmUnreg = ref(null)
 const loginDlg = ref(null) // { id, name, platform, phase, msg, ok }
@@ -579,12 +610,56 @@ function openLogin(a) {
   loginDlg.value = { id: a.id, name: a.name, platform: a.platform, phase: 'ask', msg: '', ok: false, realProfile: false }
 }
 
+function needsGoogleLogin(p) {
+  return GOOGLE_SSO_PLATFORMS.includes(p)
+}
+
+const nextPending = computed(() => {
+  const dlg = loginDlg.value
+  if (!dlg) return null
+  const pool = accounts.value.filter((a) => a.id !== dlg.id && ['pending', 'expired', 'limited'].includes(a.sessionState))
+  return pool.find((a) => a.platform === dlg.platform) || pool[0] || null
+})
+
+const bulkPreview = computed(() => {
+  const p = bulkForm.value.prefix
+  const n = bulkForm.value.count
+  if (!p || !n || n < 1) return ''
+  const pad = (i) => String(i).padStart(2, '0')
+  return n === 1 ? `→ ${p}01` : `→ ${p}01 ~ ${p}${pad(Math.min(n, 50))}`
+})
+
+async function addBulkAccounts() {
+  error.value = ''
+  bulkMsg.value = ''
+  try {
+    const data = await apiFetch('/api/session/accounts/bulk', {
+      method: 'POST',
+      body: JSON.stringify({
+        prefix: bulkForm.value.prefix, platform: bulkForm.value.platform,
+        owner: bulkForm.value.owner, role: bulkForm.value.role,
+        business: bulkForm.value.business, count: bulkForm.value.count,
+      }),
+    })
+    const made = (data.accounts || []).length
+    const fails = data.failures || []
+    bulkOk.value = true
+    bulkMsg.value = `${made}개 등록됨` +
+      (fails.length ? ` (건너뜀 ${fails.length}개: ${fails.slice(0, 3).join(', ')}${fails.length > 3 ? '…' : ''})` : '') +
+      '. 계정 목록에서 차례로 로그인하세요.'
+    await load()
+  } catch (e) {
+    bulkOk.value = false
+    bulkMsg.value = e.message
+  }
+}
+
 async function startLogin() {
   const dlg = loginDlg.value
   if (!dlg) return
   dlg.msg = ''
   try {
-    await apiFetch(`/api/session/accounts/${dlg.id}/login-start`, { method: 'POST', body: JSON.stringify({ realProfile: !!dlg.realProfile }) })
+    await apiFetch(`/api/session/accounts/${dlg.id}/login-start`, { method: 'POST', body: JSON.stringify({ realProfile: !!dlg.realProfile, incognito: !dlg.realProfile }) })
     dlg.phase = 'waiting'
   } catch (e) {
     dlg.msg = e.message

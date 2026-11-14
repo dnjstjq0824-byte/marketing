@@ -83,7 +83,7 @@ func waitLogin(cmd *exec.Cmd, p *loginProc) {
 type LoginManager struct {
 	mu    sync.Mutex
 	procs map[int64]*loginProc
-	spawn func(python, name, platform, confirmFile string, env []string, log *os.File, realProfile bool) (*exec.Cmd, error)
+	spawn func(python, name, platform, confirmFile string, env []string, log *os.File, realProfile, incognito bool) (*exec.Cmd, error)
 }
 
 // repoRootFromPython derives the repo root from the venv python path
@@ -96,11 +96,22 @@ func repoRootFromPython(python string) string {
 	return root
 }
 
-func defaultSpawn(python, name, platform, confirmFile string, env []string, log *os.File, realProfile bool) (*exec.Cmd, error) {
+// loginArgs builds the adapter.login command line. Incognito wins over
+// real-profile: a fresh incognito window (NCSOFT-style) shares no profile
+// state, so multi-account logins never contaminate each other.
+func loginArgs(name, platform, confirmFile string, realProfile, incognito bool) []string {
 	args := []string{"-m", "adapter.login", name, platform, "--confirm-file", confirmFile}
-	if realProfile {
+	if realProfile && !incognito {
 		args = append(args, "--real-profile")
 	}
+	if incognito {
+		args = append(args, "--incognito")
+	}
+	return args
+}
+
+func defaultSpawn(python, name, platform, confirmFile string, env []string, log *os.File, realProfile, incognito bool) (*exec.Cmd, error) {
+	args := loginArgs(name, platform, confirmFile, realProfile, incognito)
 	cmd := exec.Command(python, args...)
 	// adapter.login is a repo-root module: run it from the repo root.
 	cmd.Dir = repoRootFromPython(python)
@@ -134,8 +145,9 @@ const startFailWait = 8 * time.Second
 
 // StartLogin opens the headed login browser for one account. With
 // realProfile the operator's own Chrome profile is used (Chrome must be
-// fully closed or the start fails fast with the reason).
-func (s *Service) StartLogin(id int64, realProfile bool) (int, error) {
+// fully closed or the start fails fast with the reason). With incognito a
+// fresh incognito window opens instead (wins over realProfile).
+func (s *Service) StartLogin(id int64, realProfile, incognito bool) (int, error) {
 	row, err := s.store.GetAccountRow(id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -179,7 +191,7 @@ func (s *Service) StartLogin(id int64, realProfile bool) (int, error) {
 	profiles, _ := filepath.Abs(filepath.Join(s.loginDataDir, "profiles"))
 	evidence, _ := filepath.Abs(filepath.Join(s.loginDataDir, "uploads", "evidence"))
 	cmd, err := s.logins.spawn(s.loginPython, row.Name, platform, confirm,
-		[]string{"PROFILES_DIR=" + profiles, "EVIDENCE_DIR=" + evidence}, logFile, realProfile)
+		[]string{"PROFILES_DIR=" + profiles, "EVIDENCE_DIR=" + evidence}, logFile, realProfile, incognito)
 	logFile.Close() // the child keeps its own descriptor
 	if err != nil {
 		os.Remove(confirm)
@@ -275,7 +287,9 @@ func (s *Service) FinishLogin(id int64) (*Account, error) {
 }
 
 // concludeLogin runs the login-state check on a structurally valid session.
-// A file that fails the check is deleted so retries start clean.
+// A file that fails the check is quarantined aside (not deleted) so a
+// false-negative verify never destroys evidence; retries start clean
+// because only statePath itself counts as a session.
 func (s *Service) concludeLogin(id int64, row *store.ChannelAccount, p *loginProc) (*Account, error) {
 	verdict, message := s.runVerify(row.Name, strings.TrimSpace(row.Platform))
 	if p != nil {
@@ -284,9 +298,10 @@ func (s *Service) concludeLogin(id int64, row *store.ChannelAccount, p *loginPro
 	statePath := SessionStatePath(s.loginDataDir, row.Name)
 	switch verdict {
 	case verifyOK:
+		os.Remove(statePath + ".invalid")
 		return s.SetSessionState(id, StateConnected, "")
 	case verifyLoggedOut:
-		os.Remove(statePath)
+		quarantineSession(statePath)
 		if message != "" {
 			return nil, fmt.Errorf("%w (%s)", ErrNotLoggedIn, message)
 		}
@@ -389,6 +404,13 @@ func readLogTail(path string) string {
 		}
 	}
 	return ""
+}
+
+// quarantineSession moves a failed session aside for forensics.
+func quarantineSession(path string) {
+	backup := path + ".invalid"
+	os.Remove(backup)
+	_ = os.Rename(path, backup)
 }
 
 // validSessionFile reports a plausible Playwright storage_state.

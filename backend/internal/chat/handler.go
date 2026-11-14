@@ -42,6 +42,31 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 }
 
 // Pending handles GET /api/chat/pending?afterId= and the worker twin.
+// ResetThread handles POST /api/chat/threads/reset: drops the saved thread
+// URLs so the next message starts a fresh conversation (S5-C 새 대화).
+func (h *Handler) ResetThread(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AccountID int64  `json:"accountId"`
+		Thread    string `json:"thread"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := h.svc.ResetThread(req.AccountID, req.Thread); err != nil {
+		switch {
+		case errors.Is(err, ErrNoAccount):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrBadThread):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "cannot reset thread")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (h *Handler) Pending(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.URL.Query().Get("afterId"), 10, 64)
 	if err != nil || id <= 0 {
