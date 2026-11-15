@@ -97,7 +97,11 @@ type UpdateInput struct {
 	ExitType  string
 	Priority  int
 	Business  string
+	Industry  string
 }
+
+// validIndustries bounds the W18-2 industry tag ("" keeps stored).
+var validIndustries = map[string]bool{"": true, "cosmetics": true, "health": true, "food": true}
 
 // Update validates and rewrites a product.
 func (s *Service) Update(id int64, in UpdateInput) (*store.Product, error) {
@@ -111,10 +115,18 @@ func (s *Service) Update(id int64, in UpdateInput) (*store.Product, error) {
 	if in.Priority < 0 {
 		return nil, ErrBadPriority
 	}
-	if _, err := s.store.GetProduct(id); err != nil {
+	industry := strings.ToLower(strings.TrimSpace(in.Industry))
+	if !validIndustries[industry] {
+		return nil, ErrBadIndustry
+	}
+	p, err := s.store.GetProduct(id)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.store.UpdateProduct(id, in.Name, in.SourceURL, exit, in.Priority, strings.TrimSpace(in.Business)); err != nil {
+	if industry == "" {
+		industry = p.Industry
+	}
+	if err := s.store.UpdateProductFull(id, in.Name, in.SourceURL, exit, in.Priority, strings.TrimSpace(in.Business), industry); err != nil {
 		return nil, err
 	}
 	return s.store.GetProduct(id)

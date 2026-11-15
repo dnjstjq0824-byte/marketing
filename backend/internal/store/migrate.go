@@ -13,7 +13,7 @@ import (
 )
 
 // SchemaVersion is the current DDL version recorded in app_meta.
-const SchemaVersion = "14"
+const SchemaVersion = "24"
 
 // schema is the whole Tranche-1 data model: 9 entities (§6).
 // No order/payment/delivery/personal-data tables: this system never takes orders.
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS contents (
 	is_sponsored INTEGER NOT NULL DEFAULT 0,
 	is_virtual_persona INTEGER NOT NULL DEFAULT 0,
 	ai_label TEXT NOT NULL DEFAULT '',
-	status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','review','approved','queued','published')),
+	status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','review','approved','queued','published','archived')),
 	target_account TEXT NOT NULL DEFAULT '',
 	scheduled_at TEXT NOT NULL DEFAULT '',
 	reserve_seq INTEGER NOT NULL DEFAULT 0,
@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS channel_accounts (
 	last_wake_at TEXT NOT NULL DEFAULT '',
 	usage TEXT NOT NULL DEFAULT '',
 	last_job_at TEXT NOT NULL DEFAULT '',
+	daily_cap INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -218,6 +219,36 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateToV14(db); err != nil {
+		return err
+	}
+	if err := migrateToV15(db); err != nil {
+		return err
+	}
+	if err := migrateToV16(db); err != nil {
+		return err
+	}
+	if err := migrateToV17(db); err != nil {
+		return err
+	}
+	if err := migrateToV18(db); err != nil {
+		return err
+	}
+	if err := migrateToV19(db); err != nil {
+		return err
+	}
+	if err := migrateToV20(db); err != nil {
+		return err
+	}
+	if err := migrateToV21(db); err != nil {
+		return err
+	}
+	if err := migrateToV22(db); err != nil {
+		return err
+	}
+	if err := migrateToV23(db); err != nil {
+		return err
+	}
+	if err := migrateToV24(db); err != nil {
 		return err
 	}
 	if _, err := db.Exec(
@@ -337,7 +368,7 @@ func migrateToV6Notifications(db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS notifications (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			kind TEXT NOT NULL CHECK (kind IN ('job_failed','job_stuck','lease_expired','session_expired','session_limited','publish_failed','backup_failed','overdue_hold','review_human')),
+			kind TEXT NOT NULL CHECK (kind IN ('job_failed','job_stuck','lease_expired','session_expired','session_limited','publish_failed','backup_failed','overdue_hold','review_human','team_handoff')),
 			severity TEXT NOT NULL DEFAULT 'warn' CHECK (severity IN ('info','warn','error')),
 			ref_type TEXT NOT NULL DEFAULT '',
 			ref_id INTEGER NOT NULL DEFAULT 0,
@@ -407,7 +438,7 @@ func migrateToV7(db *sql.DB) error {
 			`CREATE TABLE agents (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				label TEXT NOT NULL UNIQUE,
-				lane TEXT NOT NULL CHECK (lane IN ('A','B','C','P')),
+				lane TEXT NOT NULL CHECK (lane IN ('A','B','C','P','T')),
 				host TEXT NOT NULL DEFAULT '',
 				businesses TEXT NOT NULL DEFAULT '',
 				platforms TEXT NOT NULL DEFAULT '',
@@ -626,6 +657,469 @@ func migrateToV14(db *sql.DB) error {
 		updated_at TEXT NOT NULL
 	)`); err != nil {
 		return fmt.Errorf("migrate v14 brands: %w", err)
+	}
+	return nil
+}
+
+// migrateToV15 adds channel_accounts.daily_cap (W0). 0 means "follow the
+// global settings cap"; existing rows keep behavior via the default.
+func migrateToV15(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('channel_accounts') WHERE name='daily_cap'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE channel_accounts ADD COLUMN daily_cap INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migrate v15 daily_cap: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToV16 adds the chat_threads mirror (W13). The adapter thread files
+// stay the source of truth; this table is server-side observability only.
+func migrateToV16(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS chat_threads (
+		account_id INTEGER NOT NULL,
+		thread_key TEXT NOT NULL DEFAULT '',
+		message_count INTEGER NOT NULL DEFAULT 0,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (account_id, thread_key)
+	)`); err != nil {
+		return fmt.Errorf("migrate v16 chat_threads: %w", err)
+	}
+	return nil
+}
+
+// channelPlatformSeed is the W21-1 registry. All rows start preparing:
+// publishing flips to ready only after selectors/flows are proven on real
+// sessions (W5-1). Compose selectors live in adapter/platforms.py (single
+// source); the registry tracks readiness, not selector text.
+var channelPlatformSeed = []string{
+	"('naver_blog','네이버 블로그','manual','https://nid.naver.com/nidlogin.login','{\"minLen\":1500,\"subheads\":true}','{\"imagesMax\":10}','preparing')",
+	"('tistory','티스토리','manual','https://www.tistory.com/auth/login','{\"minLen\":1500,\"subheads\":true}','{\"imagesMax\":10}','preparing')",
+	"('instagram','인스타그램','manual','https://www.instagram.com/accounts/login/','{\"captionMax\":2200,\"hashtagsMax\":30,\"links\":false}','{\"imagesMin\":1,\"imagesMax\":10}','preparing')",
+	"('threads','스레드','manual','https://www.threads.com/login','{\"lenMax\":500}','{\"imagesMax\":4}','preparing')",
+	"('facebook','페이스북 페이지','manual','https://www.facebook.com/','{\"lenMax\":2000}','{\"imagesMax\":10}','preparing')",
+	"('youtube','유튜브 쇼츠','manual','https://www.youtube.com/','{\"lenMax\":150}','{\"video\":\"vertical\"}','preparing')",
+	"('tiktok','틱톡','manual','https://www.tiktok.com/','{\"lenMax\":150}','{\"video\":\"vertical\"}','preparing')",
+	"('x','X(트위터)','manual','https://x.com/i/flow/login','{\"lenMax\":280}','{\"imagesMax\":4}','preparing')",
+	"('blogger','블로거','manual','https://www.blogger.com/','{\"minLen\":800}','{\"imagesMax\":10}','preparing')",
+	"('wordpress','워드프레스','manual','https://wordpress.com/log-in','{\"minLen\":800}','{\"imagesMax\":10}','preparing')",
+}
+
+// aiSeedRow is one builtin AI registry row (W15-1). Values mirror
+// adapter/platforms.py exactly; the adapter keeps its constants for the
+// builtin five, and the server hands JSON only to custom (builtin=0) rows.
+type aiSeedRow struct {
+	key, name, login, chat, markers              string
+	composer, send, reply, replyBody, busy, done string
+}
+
+var aiPlatformSeed = []aiSeedRow{
+	{"meta_ai", "Meta AI", "https://www.meta.ai/", "https://www.meta.ai/",
+		`["Log in","로그인"]`,
+		"[data-testid='composer-input']:visible", "button[data-testid='composer-send-button']",
+		"[data-testid='assistant-message']", "", "", "[class*='assistant-message-actions']"},
+	{"chatgpt", "ChatGPT", "https://chatgpt.com/", "https://chatgpt.com/",
+		`["Log in","Sign up","로그인"]`,
+		"[contenteditable='true'][role='textbox']:visible",
+		"button[aria-label='보내기'], button[aria-label='Send message'], button[aria-label='Send']",
+		"[data-conversation-role='assistant']", "", "[data-talvt-turn-state='in_progress']", ""},
+	{"gemini", "Gemini", "https://gemini.google.com/", "https://gemini.google.com/app",
+		`["Sign in","로그인"]`,
+		"[role='textbox'][contenteditable='true']:visible",
+		".input-area button[aria-label='메시지 보내기'], .input-area button[aria-label='Send message']",
+		"message-content", "",
+		".input-area button[aria-label='대답 생성 중지'], .input-area button[aria-label='Stop generating']", ""},
+	{"claude_app", "Claude", "https://claude.ai/login", "https://claude.ai/new",
+		`["Log in","Continue with Google","로그인"]`,
+		"[data-testid='chat-input']:visible", "[data-testid='chat-input-send']",
+		"[data-testid='assistant-message']", "[data-cds='Prose']",
+		"[data-testid='assistant-message'][data-is-streaming='true']", "[data-testid='message-actions']"},
+	{"muse", "Muse", "https://muse.ai/", "https://muse.ai/",
+		`["Log in","로그인"]`,
+		"textarea[aria-label='메시지 보내기']:visible", "button[aria-label='보내기']",
+		"[data-message-role='assistant']", "[data-hatch-assistant-message-body]", "", ""},
+}
+
+// migrateToV24 tags works with an industry for the W18-2 wordlists.
+// Empty means "common list only"; works.Create auto-detects from the
+// business/brief text and the API accepts an explicit override.
+func migrateToV24(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('products') WHERE name='industry'`).Scan(&n); err != nil {
+		return fmt.Errorf("migrate v24 check: %w", err)
+	}
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE products ADD COLUMN industry TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate v24: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToV23 adds work input typing (W1), the research job type (W1),
+// and the media-spec passthrough (W3-4).
+func migrateToV23(db *sql.DB) error {
+	for _, stmt := range []struct{ table, col, ddl string }{
+		{"products", "input_kind", `ALTER TABLE products ADD COLUMN input_kind TEXT NOT NULL DEFAULT ''`},
+		{"products", "topic", `ALTER TABLE products ADD COLUMN topic TEXT NOT NULL DEFAULT ''`},
+		{"products", "target_platforms", `ALTER TABLE products ADD COLUMN target_platforms TEXT NOT NULL DEFAULT '[]'`},
+		{"contents", "media_spec", `ALTER TABLE contents ADD COLUMN media_spec TEXT NOT NULL DEFAULT ''`},
+		{"contents", "want_platform", `ALTER TABLE contents ADD COLUMN want_platform TEXT NOT NULL DEFAULT ''`},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, stmt.table, stmt.col).Scan(&n); err != nil {
+			return fmt.Errorf("migrate v23 check: %w", err)
+		}
+		if n == 0 {
+			if _, err := db.Exec(stmt.ddl); err != nil {
+				return fmt.Errorf("migrate v23: %w", err)
+			}
+		}
+	}
+	var ddl string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'`).Scan(&ddl); err != nil {
+		return fmt.Errorf("migrate v23 inspect: %w", err)
+	}
+	if strings.Contains(ddl, "'research'") {
+		return nil
+	}
+	cols := `id,type,ref_id,status,worker_name,payload,result,error,created_at,claimed_at,finished_at,agent_id,business,priority,attempts,lease_until,team_id`
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("migrate v23 begin: %w", err)
+	}
+	defer tx.Rollback()
+	for _, s := range []string{
+		`CREATE TABLE jobs_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			type TEXT NOT NULL CHECK (type IN ('analyze','strategy','generate','review','publish','research','collect','media')),
+			ref_id INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','claimed','done','failed')),
+			worker_name TEXT NOT NULL DEFAULT '',
+			payload TEXT NOT NULL DEFAULT '',
+			result TEXT NOT NULL DEFAULT '',
+			error TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			claimed_at TEXT NOT NULL DEFAULT '',
+			finished_at TEXT NOT NULL DEFAULT '',
+			agent_id INTEGER NOT NULL DEFAULT 0,
+			business TEXT NOT NULL DEFAULT '',
+			priority INTEGER NOT NULL DEFAULT 0,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			lease_until TEXT NOT NULL DEFAULT '',
+			team_id INTEGER NULL REFERENCES teams(id)
+		)`,
+		`INSERT INTO jobs_new (` + cols + `) SELECT ` + cols + ` FROM jobs`,
+		`DROP TABLE jobs`,
+		`ALTER TABLE jobs_new RENAME TO jobs`,
+		`CREATE INDEX idx_jobs_routing ON jobs(status, type, priority DESC, id)`,
+		`CREATE INDEX idx_jobs_ref ON jobs(type, ref_id)`,
+		`CREATE INDEX idx_jobs_agent ON jobs(agent_id, status)`,
+		`CREATE INDEX idx_jobs_lease ON jobs(status, lease_until)`,
+	} {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("migrate v23 rebuild: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v23 commit: %w", err)
+	}
+	return nil
+}
+
+// migrateToV22 adds per-team distribution controls (W21-4): all accounts
+// vs one account, plus a version cap.
+func migrateToV22(db *sql.DB) error {
+	for _, stmt := range []struct{ table, col, ddl string }{
+		{"teams", "distribution_mode", `ALTER TABLE teams ADD COLUMN distribution_mode TEXT NOT NULL DEFAULT 'all'`},
+		{"teams", "distribution_cap", `ALTER TABLE teams ADD COLUMN distribution_cap INTEGER NOT NULL DEFAULT 5`},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, stmt.table, stmt.col).Scan(&n); err != nil {
+			return fmt.Errorf("migrate v22 check: %w", err)
+		}
+		if n == 0 {
+			if _, err := db.Exec(stmt.ddl); err != nil {
+				return fmt.Errorf("migrate v22: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// migrateToV21 stamps team ownership on works and jobs (W16) and adds the
+// team_handoff notice kind. Legacy NULL team ids resolve to the default
+// team at read time, so old rows keep flowing without backfill.
+func migrateToV21(db *sql.DB) error {
+	for _, stmt := range []struct{ table, col, ddl string }{
+		{"products", "team_id", `ALTER TABLE products ADD COLUMN team_id INTEGER NULL REFERENCES teams(id)`},
+		{"jobs", "team_id", `ALTER TABLE jobs ADD COLUMN team_id INTEGER NULL REFERENCES teams(id)`},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, stmt.table, stmt.col).Scan(&n); err != nil {
+			return fmt.Errorf("migrate v21 check: %w", err)
+		}
+		if n == 0 {
+			if _, err := db.Exec(stmt.ddl); err != nil {
+				return fmt.Errorf("migrate v21: %w", err)
+			}
+		}
+	}
+	if err := migrateV21AgentsLane(db); err != nil {
+		return err
+	}
+	var ddl string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='notifications'`).Scan(&ddl); err != nil {
+		return fmt.Errorf("migrate v21 inspect: %w", err)
+	}
+	if strings.Contains(ddl, "'team_handoff'") {
+		return nil
+	}
+	// No FK points at notifications: plain rebuild inside one transaction.
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("migrate v21 begin: %w", err)
+	}
+	defer tx.Rollback()
+	cols := `id,kind,severity,ref_type,ref_id,dedup_key,message,created_at,read_at`
+	stmts := []string{
+		`CREATE TABLE notifications_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			kind TEXT NOT NULL CHECK (kind IN ('job_failed','job_stuck','lease_expired','session_expired','session_limited','publish_failed','backup_failed','overdue_hold','review_human','team_handoff')),
+			severity TEXT NOT NULL DEFAULT 'warn' CHECK (severity IN ('info','warn','error')),
+			ref_type TEXT NOT NULL DEFAULT '',
+			ref_id INTEGER NOT NULL DEFAULT 0,
+			dedup_key TEXT NOT NULL,
+			message TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			read_at TEXT NOT NULL DEFAULT ''
+		)`,
+		`INSERT INTO notifications_new (` + cols + `) SELECT ` + cols + ` FROM notifications`,
+		`DROP TABLE notifications`,
+		`ALTER TABLE notifications_new RENAME TO notifications`,
+		`CREATE UNIQUE INDEX idx_notifications_dedup_unread ON notifications(dedup_key) WHERE read_at=''`,
+		`CREATE INDEX idx_notifications_read ON notifications(read_at, id)`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("migrate v21 rebuild: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v21 commit: %w", err)
+	}
+	return nil
+}
+
+// migrateV21AgentsLane widens the agents lane CHECK with 'T' (W16 team
+// executor). No FK points at agents: plain rebuild, idempotent.
+func migrateV21AgentsLane(db *sql.DB) error {
+	var ddl string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='agents'`).Scan(&ddl); err != nil {
+		return fmt.Errorf("migrate v21 agents inspect: %w", err)
+	}
+	if strings.Contains(ddl, "'T'") {
+		return nil
+	}
+	cols := `id,label,lane,host,businesses,platforms,capacity,enabled,token_hash,token_prefix,account_id,last_seen_at,created_at,updated_at`
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("migrate v21 agents begin: %w", err)
+	}
+	defer tx.Rollback()
+	for _, s := range []string{
+		`CREATE TABLE agents_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			label TEXT NOT NULL UNIQUE,
+			lane TEXT NOT NULL CHECK (lane IN ('A','B','C','P','T')),
+			host TEXT NOT NULL DEFAULT '',
+			businesses TEXT NOT NULL DEFAULT '',
+			platforms TEXT NOT NULL DEFAULT '',
+			capacity INTEGER NOT NULL DEFAULT 1,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			token_hash TEXT NOT NULL UNIQUE,
+			token_prefix TEXT NOT NULL,
+			account_id INTEGER REFERENCES channel_accounts(id) ON DELETE SET NULL,
+			last_seen_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`INSERT INTO agents_new (` + cols + `) SELECT ` + cols + ` FROM agents`,
+		`DROP TABLE agents`,
+		`ALTER TABLE agents_new RENAME TO agents`,
+		`CREATE INDEX idx_agents_lane ON agents(lane)`,
+	} {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("migrate v21 agents rebuild: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v21 agents commit: %w", err)
+	}
+	return nil
+}
+
+// migrateToV20 adds the ai_platforms registry plus per-account plan,
+// capabilities, and profile mode (W15).
+func migrateToV20(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ai_platforms (
+		key TEXT PRIMARY KEY,
+		name TEXT NOT NULL DEFAULT '',
+		login_url TEXT NOT NULL DEFAULT '',
+		chat_url TEXT NOT NULL DEFAULT '',
+		logged_out_markers TEXT NOT NULL DEFAULT '[]',
+		composer_selector TEXT NOT NULL DEFAULT '',
+		send_selector TEXT NOT NULL DEFAULT '',
+		reply_selector TEXT NOT NULL DEFAULT '',
+		reply_body_selector TEXT NOT NULL DEFAULT '',
+		busy_selector TEXT NOT NULL DEFAULT '',
+		done_selector TEXT NOT NULL DEFAULT '',
+		thread_url_pattern TEXT NOT NULL DEFAULT '',
+		icon TEXT NOT NULL DEFAULT '',
+		color TEXT NOT NULL DEFAULT '',
+		builtin INTEGER NOT NULL DEFAULT 0,
+		chat_status TEXT NOT NULL DEFAULT 'unlinked',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("migrate v20 platforms: %w", err)
+	}
+	for _, row := range aiPlatformSeed {
+		if _, err := db.Exec(`INSERT INTO ai_platforms
+			(key,name,login_url,chat_url,logged_out_markers,composer_selector,send_selector,
+			reply_selector,reply_body_selector,busy_selector,done_selector,thread_url_pattern,
+			icon,color,builtin,chat_status,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,'ok',datetime('now'),datetime('now')) ON CONFLICT(key) DO NOTHING`,
+			row.key, row.name, row.login, row.chat, row.markers, row.composer, row.send,
+			row.reply, row.replyBody, row.busy, row.done, "", "", ""); err != nil {
+			return fmt.Errorf("migrate v20 seed: %w", err)
+		}
+	}
+	for _, col := range []string{
+		`plan_tier TEXT NOT NULL DEFAULT ''`,
+		`capabilities TEXT NOT NULL DEFAULT '[]'`,
+		`profile_mode TEXT NOT NULL DEFAULT 'incognito'`,
+	} {
+		name := strings.Split(col, " ")[0]
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('channel_accounts') WHERE name=?`, name).Scan(&n); err != nil {
+			return fmt.Errorf("migrate v20 check: %w", err)
+		}
+		if n == 0 {
+			if _, err := db.Exec(`ALTER TABLE channel_accounts ADD COLUMN ` + col); err != nil {
+				return fmt.Errorf("migrate v20: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// migrateToV19 widens the contents status CHECK with 'archived' (W6
+// disposal). SQLite cannot alter a CHECK in place, so pre-v19 tables are
+// rebuilt; FKs pointing at contents force the toggle-FKs procedure.
+// Idempotent: fresh v19 tables (whose DDL already lists archived) skip.
+func migrateToV19(db *sql.DB) error {
+	var ddl string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='contents'`).Scan(&ddl); err != nil {
+		return fmt.Errorf("migrate v19 inspect: %w", err)
+	}
+	if strings.Contains(ddl, "'archived'") {
+		return nil
+	}
+	cols := `id,product_id,channel,target_platform,channel_group,title,body,disclosure,` +
+		`is_sponsored,is_virtual_persona,ai_label,status,target_account,scheduled_at,` +
+		`reserve_seq,held,hold_reason,created_at,updated_at,` +
+		`revision_of,revision_root_id,generated_by_account_id`
+	if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		return fmt.Errorf("migrate v19 fk off: %w", err)
+	}
+	defer db.Exec(`PRAGMA foreign_keys=ON`)
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("migrate v19 begin: %w", err)
+	}
+	defer tx.Rollback()
+	stmts := []string{
+		`CREATE TABLE contents_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+			channel TEXT NOT NULL DEFAULT '' CHECK (channel IN ('','instagram','shortform','cardnews','blog')),
+			target_platform TEXT NOT NULL DEFAULT '',
+			channel_group TEXT NOT NULL DEFAULT '' CHECK (channel_group IN ('','official_api','manual')),
+			title TEXT NOT NULL DEFAULT '',
+			body TEXT NOT NULL DEFAULT '',
+			disclosure TEXT NOT NULL DEFAULT '',
+			is_sponsored INTEGER NOT NULL DEFAULT 0,
+			is_virtual_persona INTEGER NOT NULL DEFAULT 0,
+			ai_label TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','review','approved','queued','published','archived')),
+			target_account TEXT NOT NULL DEFAULT '',
+			scheduled_at TEXT NOT NULL DEFAULT '',
+			reserve_seq INTEGER NOT NULL DEFAULT 0,
+			held INTEGER NOT NULL DEFAULT 0,
+			hold_reason TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			revision_of INTEGER NOT NULL DEFAULT 0,
+			revision_root_id INTEGER NOT NULL DEFAULT 0,
+			generated_by_account_id INTEGER NULL REFERENCES channel_accounts(id)
+		)`,
+		`INSERT INTO contents_new (` + cols + `) SELECT ` + cols + ` FROM contents`,
+		`DROP TABLE contents`,
+		`ALTER TABLE contents_new RENAME TO contents`,
+		`CREATE INDEX idx_contents_status ON contents(status)`,
+		`CREATE INDEX idx_contents_product ON contents(product_id)`,
+		`CREATE INDEX idx_contents_account ON contents(target_account)`,
+		`CREATE INDEX idx_contents_revision_root ON contents(revision_root_id)`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("migrate v19 rebuild: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v19 commit: %w", err)
+	}
+	return nil
+}
+
+// migrateToV18 stamps draft authorship for W6 writer≠reviewer routing.
+// Legacy rows keep NULL (unknown author, never excluded).
+func migrateToV18(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('contents') WHERE name='generated_by_account_id'`).Scan(&n); err != nil {
+		return fmt.Errorf("migrate v18 check: %w", err)
+	}
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE contents ADD COLUMN generated_by_account_id INTEGER NULL REFERENCES channel_accounts(id)`); err != nil {
+			return fmt.Errorf("migrate v18: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToV17 adds the channel_platforms registry (W21-1).
+func migrateToV17(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS channel_platforms (
+		key TEXT PRIMARY KEY,
+		name TEXT NOT NULL DEFAULT '',
+		grp TEXT NOT NULL DEFAULT 'manual',
+		login_url TEXT NOT NULL DEFAULT '',
+		text_rules TEXT NOT NULL DEFAULT '{}',
+		media_rules TEXT NOT NULL DEFAULT '{}',
+		status TEXT NOT NULL DEFAULT 'preparing'
+	)`); err != nil {
+		return fmt.Errorf("migrate v17 platforms: %w", err)
+	}
+	for _, row := range channelPlatformSeed {
+		if _, err := db.Exec(`INSERT INTO channel_platforms
+			(key,name,grp,login_url,text_rules,media_rules,status)
+			VALUES ` + row + ` ON CONFLICT(key) DO NOTHING`); err != nil {
+			return fmt.Errorf("migrate v17 seed: %w", err)
+		}
 	}
 	return nil
 }

@@ -43,8 +43,8 @@ npm run build
 ```powershell
 # 3. 테스트 작업자 (큐 흐름 검증용. 상주는 아래 install-workers)
 cd worker
-python worker.py
-```
+python worker.py --fake
+# --fake 없이 실AI 환경변수 없으면 기동 거부(종료 코드 2). 운영에서는 가짜 결과 거부.
 
 ```powershell
 # 3b. 상주 작업자 등록 (A/B/C 레인, 실AI 실행, 로그온 자동 시작)
@@ -153,30 +153,16 @@ production에서는 공유 토큰 경로가 닫힌다(에이전트 토큰만).
 | GET/POST /api/products | 운영자 | 상품 목록(?business=)·등록(등록 시 analyze 자동 생성) |
 | GET /api/products/{id} | 운영자 | 상품+이미지+판독+작업+제휴링크 |
 | PATCH /api/products/{id} | 운영자 | 상품 수정 |
-| PATCH /api/products/{id}/reading | 운영자 | 판독 결과 수정 |
-| PATCH /api/products/{id}/strategy | 운영자 | 전략(A 산출물) 수정 |
 | DELETE /api/products/{id} | 운영자 | 상품 하드 삭제(하위 전체+업로드 파일) |
 | DELETE /api/products/{id}/images/{imageId} | 운영자 | 이미지 1장 삭제 |
-| POST /api/products/{id}/affiliate-links | 운영자 | 제휴 링크 등록 |
-| PATCH /api/products/{id}/affiliate-links/{linkId} | 운영자 | 제휴 링크 수정 |
-| DELETE /api/products/{id}/affiliate-links/{linkId} | 운영자 | 제휴 링크 1건 삭제 |
 | DELETE /api/contents/{id} | 운영자 | 콘텐츠 하드 삭제(기록·지표 포함) |
 | GET /api/contents/{id}/reviews | 운영자 | 판정 이력 조회 |
 | GET /api/contents?status=&business= | 운영자 | 콘텐츠 목록 |
-| GET/PATCH /api/contents/{id} | 운영자 | 조회·본문수정·상태전이·가상인물 표시 |
-| POST /api/contents/{id}/schedule | 운영자 | 발행 예약(과거 시각 거부) |
-| POST /api/contents/{id}/publish-record | 운영자 | 수동 발행 완료 기록(URL 증거 필수) |
-| GET /api/publish/plan | 운영자 | 항목별 실행 판정(읽기 전용) |
-| GET /api/publish-queue?group= | 운영자 | 군별 발행 큐(official_api·manual 분리) |
-| GET/POST /api/publish-logs | 운영자 | 발행 기록(중복 삼중항 거부) |
-| PATCH /api/publish-logs/{id} | 운영자 | 기록 상태·메모 수정 |
-| DELETE /api/publish-logs/{id} | 운영자 | 기록 삭제 |
-| GET/POST /api/metrics | 운영자 | 지표 기록·목록(0·누락은 원인 미분류) |
-| PATCH /api/metrics/{id} | 운영자 | 3단계 판정 흐름 체크 |
-| DELETE /api/metrics/{id} | 운영자 | 지표 삭제 |
+| GET /api/contents/{id} | 운영자 | 조회 |
+| POST /api/works/{id}/posts/{postId}/confirm-published | 운영자 | 올라가 있음/안 올라감 확인 |
+| GET /api/publish-logs | 운영자 | 발행 기록 목록 |
+| GET /api/metrics | 운영자 | 지표 목록 |
 | GET /api/jobs | 운영자 | 작업 최근 100건(실패 확인용) |
-| POST /api/jobs/{id}/cancel | 운영자 | 작업 취소(실패 처리, 재등록 없음) |
-| DELETE /api/jobs/{id} | 운영자 | 작업 삭제 |
 | GET /api/dashboard | 운영자 | 집계+오늘 일정+사업별 현황+재로그인 큐 |
 | GET /api/notifications?unread=&limit=&offset= | 운영자 | 알림 발신함 + 미읽음 수 |
 | POST /api/notifications/{id}/read | 운영자 | 알림 1건 읽음(없으면 404) |
@@ -185,9 +171,10 @@ production에서는 공유 토큰 경로가 닫힌다(에이전트 토큰만).
 | GET /api/system/backups | 운영자 | 백업 세대 목록(최신순) |
 | POST /api/system/purge | 운영자 | 보관 정리 수동 실행(완료 작업 90일·지표 180일) |
 | GET/POST /api/session/accounts | 운영자 | 세션 계정 목록·등록(ID·비번 암호화 저장) |
-| PATCH /api/session/accounts/{id} | 운영자 | 세션 상태(보류·재개)·발행 모드·주인·역할·사업·자격증명·종류·플랫폼ID 변경 |
-| GET/POST /api/executor/config | 운영자 | 실행기 설정 조회·저장(심박·최소간격·최대처리) |
-| POST /api/session/accounts/{id}/wake | 운영자 | 배정 세션 깨우기 |
+| PATCH /api/session/accounts/{id} | 운영자 | 세션 상태(보류·재개)·발행 모드·일일상한·주인·역할·사업·자격증명·종류·플랫폼ID 변경 |
+| GET/PUT /api/settings/automation | 운영자 | 자동화 설정 조회·저장(간격·상한·시간대·분량·기본값·보관) |
+| GET/PUT /api/automation | 운영자 | 자동화 켜기/끄기(셸 칩) |
+| GET /api/system/version | 운영자 | 앱·DB 스키마 버전 |
 | POST /api/session/accounts/{id}/login-start | 운영자 | 로그인 브라우저 열기(이미 진행 중이면 409) |
 | POST /api/session/accounts/{id}/login-finish | 운영자 | 로그인 확정·세션 검증·연결 전환 |
 | POST /api/session/accounts/{id}/login-cancel | 운영자 | 진행 중 로그인 취소(멱등) |
@@ -196,7 +183,6 @@ production에서는 공유 토큰 경로가 닫힌다(에이전트 토큰만).
 | GET /api/chat/history?accountId=&limit= | 운영자 | 대화 기록(오래된 순) |
 | POST /api/worker/chat/send | 작업자 | 작업자용 전송(같은 본문, 202 시 폴링) |
 | GET /api/worker/chat/pending?afterId= | 작업자 | 작업자용 결과 폴링 |
-| POST /api/session/check | 운영자 | 경량 점검 수동 실행 |
 | GET /api/session/relogin-queue | 운영자 | 재로그인 필요 목록 |
 | DELETE /api/session/accounts/{id} | 운영자 | 계정 해제(큐 참조 있으면 거부) |
 | GET/POST /api/agents | 운영자 | 에이전트 목록(필터·페이지)·등록(토큰 1회 표시) |
@@ -204,7 +190,6 @@ production에서는 공유 토큰 경로가 닫힌다(에이전트 토큰만).
 | POST /api/agents/{id}/rotate-token | 운영자 | 토큰 순환(새 토큰 1회 표시) |
 | POST /api/agents/bulk | 운영자 | 일괄 일시중지·재개·레인 변경 |
 | GET /api/agents/stats | 운영자 | 온라인·오프라인·중지·시간당 완료·실패·실패 상위 |
-| POST /api/jobs/{id}/requeue | 운영자 | 실패 작업 대기 복귀(시도 초기화) |
 | GET /api/worker/jobs/next?type=&wait= | 작업자 | 레인 라우팅 claim(에이전트는 타입 생략·롱폴 가능) |
 | GET /api/worker/jobs | 작업자 | 작업 최근 100건 |
 | POST /api/worker/jobs/{id}/result | 작업자 | 결과 등록(비멱등, 완료건 재등록 400, 타인 claim 409) |

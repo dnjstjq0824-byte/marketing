@@ -121,6 +121,9 @@ type WorkPost struct {
 	UpdatedAt      string `json:"updatedAt"`
 	Views          int    `json:"views"`
 	URL            string `json:"url"`
+	// LastNote is the latest rejection reason (chief or W18 guard), so the
+	// work detail shows why a post went back for rewrite.
+	LastNote string `json:"lastNote"`
 }
 
 // WorkImage is attached media (legacy uploads + library).
@@ -192,6 +195,8 @@ func (s *Store) WorkPosts(productID int64) ([]*WorkPost, error) {
 		if strings.HasPrefix(note, "http") {
 			p.URL = note
 		}
+		_ = s.ro.QueryRow(`SELECT decider || ': ' || reason FROM review_decisions
+			WHERE content_id=? AND decision='rejected' ORDER BY id DESC LIMIT 1`, p.ID).Scan(&p.LastNote)
 		out = append(out, &p)
 	}
 	return out, rows.Err()
@@ -220,6 +225,7 @@ func (s *Store) WorkImages(productID int64) ([]*WorkImage, error) {
 var jobStage = map[string]string{
 	"analyze": "analyze", "strategy": "strategy", "generate": "generate",
 	"review": "review", "publish": "publish", "collect": "collect",
+	"research": "research",
 }
 
 // WorkAILog lists AI turns for one product, oldest first.

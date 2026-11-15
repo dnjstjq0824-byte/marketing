@@ -68,6 +68,9 @@ func (s *Store) ClaimRoutedJob(agent *Agent, types []string, leaseSec int) (*Job
 	if len(types) == 0 {
 		return nil, nil
 	}
+	if !s.AutomationEnabled() {
+		return nil, nil // W0: stopped automation claims nothing.
+	}
 	live, err := s.ClaimedCountByAgent(agent.ID)
 	if err != nil {
 		return nil, err
@@ -75,6 +78,16 @@ func (s *Store) ClaimRoutedJob(agent *Agent, types []string, leaseSec int) (*Job
 	if live >= agent.Capacity {
 		return nil, nil
 	}
+	// W16-6: PC-wide AI concurrency cap (default 3).
+	if max, merr := s.maxConcurrent(); merr == nil && max > 0 {
+		if load, lerr := s.ClaimedAILoad(); lerr == nil && load >= max {
+			return nil, nil
+		}
+	}
+	// W16-3: stale jobs of unworkable teams move to the default team
+	// before routing (outside the claim tx: restamp + notice are their
+	// own idempotent writes).
+	s.sweepHandoffs(time.Now())
 	s.claimMu.Lock()
 	defer s.claimMu.Unlock()
 	ctx := context.Background()
@@ -124,8 +137,32 @@ func (s *Store) ClaimRoutedJob(agent *Agent, types []string, leaseSec int) (*Job
 	}
 	now := nowUTC()
 	lease := time.Now().UTC().Add(time.Duration(leaseSec) * time.Second).Format(time.RFC3339)
+	cands = s.rotateTeams(cands)
+	agentTeam, _ := s.AgentTeam(agent)
 	for _, j := range cands {
 		if j.Type == "publish" && !s.publishFitsAgent(conn, j, agent) {
+			continue
+		}
+		// W6: a writer never reviews its own drafts.
+		if j.Type == "review" && !s.reviewFitsAgent(conn, j, agent) {
+			continue
+		}
+		// W15-5: AI lanes run only on chat-linked accounts.
+		if aiWorkTypes[j.Type] && !s.aiFitsAgent(agent) {
+			continue
+		}
+		// W16: jobs stay inside their team (publish claims bypass:
+		// channel scoping happens at assignment, not at claim).
+		if aiWorkTypes[j.Type] && !s.teamScopeFits(j, agent, agentTeam) {
+			continue
+		}
+		if aiWorkTypes[j.Type] && !s.teamRoleFits(j, agent) {
+			continue
+		}
+		if j.Type == "review" && !s.reviewLeaderGate(conn, j, agent) {
+			continue
+		}
+		if aiWorkTypes[j.Type] && agent.AccountID != nil && !s.teamCapFits(j) {
 			continue
 		}
 		res, err := conn.ExecContext(ctx, `UPDATE jobs SET status='claimed',worker_name=?,agent_id=?,claimed_at=?,lease_until=?
@@ -142,6 +179,9 @@ func (s *Store) ClaimRoutedJob(agent *Agent, types []string, leaseSec int) (*Job
 		}
 		committed = true
 		_ = conn.Close()
+		if teamID, terr := s.EffectiveJobTeam(j); terr == nil {
+			s.SetRoundRobinCursor(teamID)
+		}
 		return s.GetJob(j.ID)
 	}
 	if _, err := conn.ExecContext(ctx, `ROLLBACK`); err != nil {
@@ -171,6 +211,93 @@ func (s *Store) publishFitsAgent(conn interface {
 	return err == nil && id == *agent.AccountID
 }
 
+// reviewFitsAgent excludes the linked account that authored any draft in
+// the review job's scope (W6 writer≠reviewer). Unlinked agents and
+// unknown authorship (legacy/NULL) never exclude: the rule only fires on
+// a proven writer match.
+func (s *Store) reviewFitsAgent(conn interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}, j *Job, agent *Agent) bool {
+	if agent.AccountID == nil {
+		return true
+	}
+	var payload struct {
+		ContentIDs []int64 `json:"content_ids"`
+	}
+	if err := json.Unmarshal([]byte(j.Payload), &payload); err != nil || len(payload.ContentIDs) == 0 {
+		return true // legacy payload without scope: allow
+	}
+	rows, err := conn.QueryContext(context.Background(),
+		`SELECT DISTINCT generated_by_account_id FROM contents WHERE id IN (`+placeholders(len(payload.ContentIDs))+`)`,
+		intsToAny(payload.ContentIDs)...)
+	if err != nil {
+		return true
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id sql.NullInt64
+		if err := rows.Scan(&id); err == nil && id.Valid && id.Int64 == *agent.AccountID {
+			return false
+		}
+	}
+	return true
+}
+
+func intsToAny(in []int64) []any {
+	out := make([]any, 0, len(in))
+	for _, v := range in {
+		out = append(out, v)
+	}
+	return out
+}
+
+// aiWorkTypes are the AI lanes gated by chat-link state (W15-5).
+var aiWorkTypes = map[string]bool{"analyze": true, "strategy": true, "generate": true, "review": true, "research": true}
+
+// aiFitsAgent reports whether an agent's linked AI account is chat-linked.
+// Unlinked agents, channel accounts, and unknown platforms pass; only an
+// explicit unlinked registry row excludes.
+func (s *Store) aiFitsAgent(agent *Agent) bool {
+	if agent.AccountID == nil {
+		return true
+	}
+	row, err := s.GetAccountRow(*agent.AccountID)
+	if err != nil {
+		return true
+	}
+	// Registry membership decides, not the kind label: mislabeled legacy
+	// AI rows are still gated, channel accounts never match.
+	p, err := s.GetAIPlatform(row.Platform)
+	if err != nil {
+		return true
+	}
+	return p.ChatStatus == AIChatOK
+}
+
+// LanesForAccount lists distinct agent lanes bound to one account (W6
+// boot guard: B+C on one account refuses to boot).
+func (s *Store) LanesForAccount(accountID int64) ([]string, error) {
+	return s.LanesForAccountExcept(accountID, 0)
+}
+
+// LanesForAccountExcept skips one agent (the row being updated).
+func (s *Store) LanesForAccountExcept(accountID, excludeID int64) ([]string, error) {
+	rows, err := s.ro.Query(`SELECT DISTINCT lane FROM agents WHERE account_id=? AND id != ? ORDER BY lane`, accountID, excludeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var lane string
+		if err := rows.Scan(&lane); err != nil {
+			return nil, err
+		}
+		out = append(out, lane)
+	}
+	return out, rows.Err()
+}
+
 // ExtendJobLease pushes a claim's lease out. Foreign claims get ErrLeaseDenied.
 func (s *Store) ExtendJobLease(id, agentID int64, leaseSec int) (string, error) {
 	lease := time.Now().UTC().Add(time.Duration(leaseSec) * time.Second).Format(time.RFC3339)
@@ -194,7 +321,7 @@ type ReapAction struct {
 }
 
 // ReapExpiredLeases applies D25 to claims past nowRFC3339: analyze/strategy/
-// generate/review with attempts==0 return to pending once (attempts=1);
+// generate/review/research with attempts==0 return to pending once (attempts=1);
 // attempts>=1 close as failed; publish never requeues and holds its content.
 func (s *Store) ReapExpiredLeases(nowRFC3339 string) ([]ReapAction, error) {
 	rows, err := s.ro.Query(`SELECT `+jobCols+` FROM jobs

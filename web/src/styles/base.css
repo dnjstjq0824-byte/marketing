@@ -16,7 +16,7 @@ button { font: inherit; cursor: pointer; }
 input, select, textarea { font: inherit; color: var(--ink); }
 .num, .stat b { font-variant-numeric: tabular-nums; }
 
-.page-title { font-size: 22px; line-height: 28px; }
+.page-title { font-size: 24px; line-height: 30px; font-weight: 800; letter-spacing: -0.5px; }
 .section-title { font-size: 16px; line-height: 24px; font-weight: 700; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; line-height: 20px; }
@@ -41,3 +41,107 @@ input, select, textarea { font: inherit; color: var(--ink); }
   .page-title { font-size: 20px; }
   input, select, textarea { font-size: 16px; }
 }
+
+/* Legacy content globals (ex-App.vue). Shell/chrome rules were removed with
+ * the old menu; only element styles and content classes the 7 screens use
+ * remain. Values unchanged. */
+body {
+  background-color: var(--bg);
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope="0.055"/></feComponentTransfer></filter><rect width="140" height="140" filter="url(%23n)"/></svg>');
+}
+a:hover { color: var(--accent); }
+:focus-visible { border-radius: 4px; }
+.num { font-variant-numeric: tabular-nums; text-align: right; }
+th.num { text-align: right; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 20px 24px;
+  margin: 14px 0;
+  box-shadow: var(--shadow);
+}
+.card.narrow { max-width: 560px; }
+.card.hi { border-color: var(--accent); }
+.card.warnline { border-color: var(--warn); }
+.card h3 { margin: 0 0 10px; font-size: 16px; letter-spacing: -0.2px; }
+.card h4 { margin: 18px 0 8px; font-size: 14px; }
+.card h4:first-child { margin-top: 0; }
+label { display: block; margin: 10px 0; font-weight: 600; font-size: 13px; }
+label .req { color: var(--warn); font-weight: 700; }
+.hint { display: block; font-weight: 400; font-size: 12px; color: var(--muted); margin-top: 3px; }
+input, select, textarea {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  font-weight: 400;
+  background: var(--panel);
+  color: var(--ink);
+}
+input:hover, select:hover, textarea:hover { border-color: #c4b995; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+input::placeholder, textarea::placeholder { color: #a39e8b; }
+input[type="radio"], input[type="checkbox"] { display: inline; width: auto; margin: 0 6px 0 0; accent-color: var(--accent-dark); }
+input[type="number"] { font-variant-numeric: tabular-nums; }
+textarea { resize: vertical; line-height: 1.6; }
+fieldset { border: 1px solid var(--line); border-radius: var(--r-sm); margin: 10px 0; padding: 10px 14px 12px; }
+fieldset legend { font-size: 13px; font-weight: 600; padding: 0 6px; }
+fieldset label { display: inline-block; margin-right: 18px; font-weight: 400; }
+button {
+  padding: 9px 18px;
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  margin: 4px 4px 4px 0;
+  box-shadow: 0 1px 2px rgba(11, 93, 116, 0.25);
+}
+button:hover { background: var(--accent-dark); }
+button:active { transform: translateY(1px); box-shadow: none; }
+button:disabled { opacity: 0.55; cursor: default; transform: none; box-shadow: none; }
+button.ghost { background: var(--panel); color: var(--ink); border-color: var(--line); font-weight: 500; box-shadow: none; }
+button.ghost:hover { background: var(--soft); border-color: #c4b995; }
+button.danger { background: var(--warn); border-color: var(--warn); color: #fff; box-shadow: 0 1px 2px rgba(180, 35, 24, 0.25); }
+button.danger:hover { background: #8f1b13; }
+button.small { padding: 4px 10px; font-size: 12px; font-weight: 500; }
+.error { color: var(--warn); }
+.ok { color: var(--ok); }
+.banner { border-radius: var(--r-sm); padding: 10px 14px; margin: 10px 0; font-size: 13px; }
+.banner.err { background: var(--warn-soft); color: #7c1a12; }
+.banner.okk { background: var(--ok-soft); color: #0a4a2e; }
+.banner.warn { background: var(--hold-soft); color: #5f3f00; }
+.banner.info { background: var(--accent-soft); color: var(--accent-dark); }
+table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13.5px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+thead th {
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--soft);
+  position: sticky;
+  top: 0;
+  white-space: nowrap;
+}
+tbody tr:hover { background: var(--soft); }
+tbody tr.sel { background: var(--accent-soft); }
+td.id, th.id { font-variant-numeric: tabular-nums; color: var(--muted); width: 1%; white-space: nowrap; }
+.btnrow { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.btnrow select { width: auto; margin: 0; }
+.modal-back { position: fixed; inset: 0; background: rgba(23, 34, 46, 0.5); display: flex; align-items: center; justify-content: center; z-index: 40; padding: 16px; }
+.modal { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 22px 26px; max-width: 480px; width: 100%; box-shadow: var(--shadow-lg); max-height: 86vh; overflow: auto; }
+.modal h3 { margin-top: 0; }
+.modal .btnrow { margin-top: 14px; justify-content: flex-end; }
+.empty { border: 1px dashed var(--line); border-radius: var(--r-md); padding: 26px 20px; text-align: center; color: var(--muted); background: var(--soft); margin: 10px 0; }
+.empty strong { display: block; color: var(--ink-soft); font-size: 14px; margin-bottom: 2px; }
+.empty-art { text-align: center; padding: 22px 12px 20px; color: var(--muted); }
+.empty-art svg { display: block; margin: 0 auto 8px; }
+.empty-art strong { display: block; color: var(--ink-soft); font-size: 14px; }
+.empty-art span { display: block; font-size: 12px; margin-top: 2px; }
+.sect-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.sect-head .count { font-size: 12px; color: var(--muted); }

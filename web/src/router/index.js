@@ -1,13 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
-import ChatView from '../views/ChatView.vue'
-import ProductInputView from '../views/ProductInputView.vue'
-import ProductReadView from '../views/ProductReadView.vue'
-import ContentReviewView from '../views/ContentReviewView.vue'
-import PublishQueueView from '../views/PublishQueueView.vue'
-import SettingsView from '../views/SettingsView.vue'
-import ConnectViews from '../views/ConnectViews.vue'
-import OpsViews from '../views/OpsViews.vue'
+import LoginView from '../views/LoginView.vue'
 import NewWorkView from '../views/NewWorkView.vue'
 import WorksView from '../views/WorksView.vue'
 import WorkDetailView from '../views/WorkDetailView.vue'
@@ -15,24 +8,13 @@ import MediaView from '../views/MediaView.vue'
 import ConnectView from '../views/ConnectView.vue'
 import TeamsView from '../views/TeamsView.vue'
 import TeamDetailView from '../views/TeamDetailView.vue'
+import SettingsView from '../views/SettingsView.vue'
+import { auth, refreshMe } from '../stores/auth.js'
 
-// 15 views in 6 groups (§8). Names are stable for menu wiring.
+// 7 screens (UI_DESIGN §3-1) + login. Removed paths land on home (§8).
 const routes = [
+  { path: '/login', name: 'login', component: LoginView },
   { path: '/', name: 'home', component: HomeView },
-  { path: '/chat', name: 'chat', component: ChatView },
-  { path: '/products', name: 'products', component: ProductInputView },
-  { path: '/readings', name: 'readings', component: ProductReadView },
-  { path: '/review', name: 'review', component: ContentReviewView },
-  { path: '/queue', name: 'queue', component: PublishQueueView },
-  { path: '/metrics', name: 'metrics', component: OpsViews, props: { view: 'metrics' } },
-  { path: '/agents', name: 'agents', component: ConnectViews, props: { view: 'agents' } },
-  { path: '/channels', name: 'channels', component: ConnectViews, props: { view: 'channels' } },
-  { path: '/owned', name: 'owned', component: ConnectViews, props: { view: 'owned' } },
-  { path: '/criteria', name: 'criteria', component: OpsViews, props: { view: 'criteria' } },
-  { path: '/resident', name: 'resident', component: OpsViews, props: { view: 'resident' } },
-  { path: '/system', name: 'system', component: OpsViews, props: { view: 'system' } },
-  { path: '/mobile', name: 'mobile', component: OpsViews, props: { view: 'mobile' } },
-  { path: '/settings', name: 'settings', component: SettingsView },
   { path: '/new', name: 'new-work', component: NewWorkView },
   { path: '/works', name: 'works', component: WorksView },
   { path: '/works/:id', name: 'work-detail', component: WorkDetailView },
@@ -40,43 +22,27 @@ const routes = [
   { path: '/connect', name: 'connect', component: ConnectView },
   { path: '/teams', name: 'teams', component: TeamsView },
   { path: '/teams/:id', name: 'team-detail', component: TeamDetailView },
+  { path: '/settings', name: 'settings', component: SettingsView },
+  { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
-export const menuGroups = [
-  { label: '홈', items: [{ to: '/', label: '대시보드' }] },
-  {
-    label: '작업',
-    items: [
-      { to: '/new', label: '새 작업' },
-      { to: '/chat', label: '대화' },
-      { to: '/products', label: '상품 투입' },
-      { to: '/readings', label: '상품 판독' },
-      { to: '/review', label: '콘텐츠 검수' },
-      { to: '/queue', label: '발행 큐' },
-    ],
-  },
-  { label: '성과', items: [{ to: '/metrics', label: '지표' }] },
-  {
-    label: '연결',
-    items: [
-      { to: '/agents', label: '에이전트 연결' },
-      { to: '/channels', label: '채널 계정' },
-      { to: '/owned', label: '자체 채널' },
-    ],
-  },
-  { label: '총괄', items: [{ to: '/criteria', label: '판정·기준' }] },
-  {
-    label: '시스템',
-    items: [
-      { to: '/resident', label: 'Muse 상주 관리' },
-      { to: '/system', label: '시스템 구성' },
-      { to: '/mobile', label: '모바일 앱' },
-      { to: '/settings', label: '설정' },
-    ],
-  },
-]
-
-export default createRouter({
+const router = createRouter({
   history: createWebHistory(),
   routes,
 })
+
+router.beforeEach(async (to) => {
+  if (to.path === '/login') {
+    if (!auth.token) return true
+    const user = auth.user || (await refreshMe())
+    return user ? '/' : true
+  }
+  if (!auth.token) return { path: '/login', query: { next: to.fullPath } }
+  if (!auth.user) {
+    const user = await refreshMe()
+    if (!user) return { path: '/login', query: { next: to.fullPath } }
+  }
+  return true
+})
+
+export default router

@@ -62,29 +62,54 @@ type Service struct {
 	sessionSvc *session.Service
 	// sendRunner replaces the adapter.chat subprocess in tests.
 	// It returns the reply or a typed error.
-	sendRunner func(account, platform, message string) (string, error)
+	sendRunner func(account, platform, message, thread string, files []string) (string, error)
 
 	mu      sync.Mutex
 	pending map[int64]*pendingRun
 	grace   time.Duration
-	// Per-account send locks (W13-5): overlapping sends to one account
+	// Per-thread send locks (W13-5): overlapping sends to one thread
 	// tangle replies; the second waiter goes after the first finishes.
-	lockMu    sync.Mutex
-	acctLocks map[int64]*sync.Mutex
+	lockMu sync.Mutex
+	locks  map[string]*sync.Mutex
 }
 
-func (s *Service) lockFor(id int64) *sync.Mutex {
+func (s *Service) lockFor(id int64, thread string) *sync.Mutex {
+	key := threadLockKey(id, thread)
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
-	if s.acctLocks == nil {
-		s.acctLocks = map[int64]*sync.Mutex{}
+	if s.locks == nil {
+		s.locks = map[string]*sync.Mutex{}
 	}
-	m, ok := s.acctLocks[id]
+	m, ok := s.locks[key]
 	if !ok {
 		m = &sync.Mutex{}
-		s.acctLocks[id] = m
+		s.locks[key] = m
 	}
 	return m
+}
+
+func threadLockKey(id int64, thread string) string {
+	return fmt.Sprintf("%d\x00%s", id, thread)
+}
+
+// sanitizeThreadKey keeps adapter file names safe. Empty means default.
+func sanitizeThreadKey(thread string) (string, error) {
+	if thread == "" {
+		return "", nil
+	}
+	if len(thread) > 64 {
+		return "", ErrBadThread
+	}
+	safe := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return -1
+	}, thread)
+	if safe == "" || safe != thread {
+		return "", ErrBadThread
+	}
+	return safe, nil
 }
 
 // NewService builds the chat service.
@@ -101,7 +126,11 @@ type SendResult struct {
 
 // Send records the user turn and delivers it. Fast runs return the reply;
 // slow runs continue in the background and return Pending (poll Pending).
-func (s *Service) Send(accountID int64, message string) (SendResult, error) {
+// Empty thread means the account default thread; workers pass per-product keys.
+// Attachments are server-side file paths the AI should see (W2-2). Every
+// path must resolve inside the data dir; anything else is rejected before
+// the adapter ever runs.
+func (s *Service) Send(accountID int64, message, thread string, attachments ...string) (SendResult, error) {
 	row, err := s.store.GetAccountRow(accountID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -112,12 +141,27 @@ func (s *Service) Send(accountID int64, message string) (SendResult, error) {
 	if row.SessionState != session.StateConnected {
 		return SendResult{}, ErrNotConnected
 	}
+	files, err := s.checkAttachments(attachments)
+	if err != nil {
+		return SendResult{}, err
+	}
+	// W15-5: automatic work and console chat run only on chat-linked AI.
+	// Channel accounts (no registry row) are unaffected.
+	if p, err := s.store.GetAIPlatform(strings.TrimSpace(row.Platform)); err == nil {
+		if p.ChatStatus != store.AIChatOK {
+			return SendResult{}, fmt.Errorf("%w: 대화 미연결 — 연결 화면에서 대화 연결 테스트를 먼저 하세요", ErrUnavailable)
+		}
+	}
 	text := strings.TrimSpace(message)
 	if text == "" {
 		return SendResult{}, ErrEmptyMessage
 	}
 	if len([]rune(text)) > MaxMessageRunes {
 		return SendResult{}, ErrMessageTooBig
+	}
+	thread, err = sanitizeThreadKey(strings.TrimSpace(thread))
+	if err != nil {
+		return SendResult{}, err
 	}
 	userMsg, err := s.store.AppendChatMessage(accountID, "user", text)
 	if err != nil {
@@ -127,7 +171,7 @@ func (s *Service) Send(accountID int64, message string) (SendResult, error) {
 	s.mu.Lock()
 	s.pending[userMsg.ID] = run
 	s.mu.Unlock()
-	go s.deliver(accountID, userMsg.ID, row.Name, strings.TrimSpace(row.Platform), text, run)
+	go s.deliver(accountID, userMsg.ID, row.Name, strings.TrimSpace(row.Platform), text, thread, files, run)
 	select {
 	case <-run.done:
 		return s.collect(userMsg.ID, run)
@@ -143,14 +187,18 @@ func (s *Service) gracePeriod() time.Duration {
 	return graceSec * time.Second
 }
 
-func (s *Service) deliver(accountID, userMsgID int64, name, platform, text string, run *pendingRun) {
+func (s *Service) deliver(accountID, userMsgID int64, name, platform, text, thread string, files []string, run *pendingRun) {
 	defer close(run.done)
-	mu := s.lockFor(accountID)
+	mu := s.lockFor(accountID, thread)
 	mu.Lock()
 	defer mu.Unlock()
-	reply, err := s.runAdapter(name, platform, text)
+	reply, err := s.runAdapter(name, platform, text, thread, files)
 	if err == nil {
 		_, err = s.store.AppendChatMessage(accountID, "assistant", reply)
+	}
+	if err == nil {
+		// Mirror write is best-effort: observability must not fail a chat.
+		_ = s.store.UpsertChatThread(accountID, thread)
 	}
 	run.reply, run.err = reply, err
 	run.doneAt = time.Now()
@@ -234,14 +282,9 @@ func (s *Service) ResetThread(accountID int64, thread string) error {
 			}
 		}
 	} else if thread != "" {
-		safe := strings.Map(func(r rune) rune {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-				return r
-			}
-			return -1
-		}, thread)
-		if safe == "" || safe != thread {
-			return ErrBadThread
+		safe, err := sanitizeThreadKey(thread)
+		if err != nil {
+			return err
 		}
 		names = []string{"thread_" + safe + ".json"}
 	}
@@ -250,6 +293,7 @@ func (s *Service) ResetThread(accountID int64, thread string) error {
 			return err
 		}
 	}
+	_ = s.store.DeleteChatThreads(accountID, thread)
 	return nil
 }
 
@@ -263,23 +307,71 @@ func (s *Service) History(accountID int64, limit int) ([]*store.ChatMessage, err
 	return s.store.ListChatHistory(accountID, limit)
 }
 
-func (s *Service) runAdapter(name, platform, message string) (string, error) {
+// ErrBadAttachment marks paths outside the data dir or unreadable files.
+var ErrBadAttachment = errors.New("attachment must be a readable file inside the data dir")
+
+// checkAttachments resolves every path against the data dir. Symlink and
+// traversal escapes are rejected; the adapter receives absolute paths.
+func (s *Service) checkAttachments(paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	root, err := filepath.Abs(s.dataDir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range paths {
+		abs := p
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(root, abs)
+		}
+		abs, err = filepath.Abs(abs)
+		if err != nil {
+			return nil, ErrBadAttachment
+		}
+		if rel, err := filepath.Rel(root, abs); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return nil, ErrBadAttachment
+		}
+		fi, err := os.Stat(abs)
+		if err != nil || fi.IsDir() {
+			return nil, ErrBadAttachment
+		}
+		out = append(out, abs)
+	}
+	return out, nil
+}
+
+func (s *Service) runAdapter(name, platform, message, thread string, files []string) (string, error) {
 	if s.sendRunner != nil {
-		return s.sendRunner(name, platform, message)
+		return s.sendRunner(name, platform, message, thread, files)
 	}
 	if s.python == "" {
 		return "", fmt.Errorf("%w: adapter venv 없음", ErrUnavailable)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), bgTimeoutSec*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, s.python, "-m", "adapter.chat", name, platform, message)
+	args := []string{"-m", "adapter.chat", name, platform}
+	if thread != "" {
+		args = append(args, "--thread", thread)
+	}
+	for _, f := range files {
+		args = append(args, "--attach", f)
+	}
+	args = append(args, message)
+	cmd := exec.CommandContext(ctx, s.python, args...)
 	root := s.python
 	for i := 0; i < 4; i++ {
 		root = filepath.Dir(root)
 	}
 	cmd.Dir = root
 	profiles, _ := filepath.Abs(filepath.Join(s.dataDir, "profiles"))
-	cmd.Env = append(os.Environ(), "PROFILES_DIR="+profiles, "PYTHONUTF8=1")
+	env := append(os.Environ(), "PROFILES_DIR="+profiles, "PYTHONUTF8=1")
+	if jsonPath, jerr := s.store.AIPlatformJSON(platform); jerr == nil && jsonPath != "" {
+		defer os.Remove(jsonPath)
+		env = append(env, "AI_PLATFORM_JSON="+jsonPath)
+	}
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if ctx.Err() == context.DeadlineExceeded {
@@ -289,14 +381,7 @@ func (s *Service) runAdapter(name, platform, message string) (string, error) {
 		if exit, ok := err.(*exec.ExitError); ok {
 			switch exit.ExitCode() {
 			case 2:
-				if strings.Contains(output, "not pinned") {
-					return "", ErrUnavailable
-				}
-				if strings.Contains(output, "no saved session") {
-					s.markSessionLost(name)
-					return "", ErrChatNoSession
-				}
-				return "", fmt.Errorf("%w: %s", ErrUnavailable, output)
+				return "", s.mapExit2(name, output)
 			}
 		}
 		if output != "" {
@@ -320,6 +405,20 @@ func (s *Service) runAdapter(name, platform, message string) (string, error) {
 
 // markSessionLost flips a connected account to expired when its session file
 // vanished, so the relogin flow picks it up.
+// mapExit2 maps adapter exit-2 output to an error. The adapter prints the
+// fixed NO_SESSION code when the saved session is gone (B18); anything else
+// with exit 2 is an unavailable platform or a usage error.
+func (s *Service) mapExit2(name, output string) error {
+	if strings.Contains(output, "not pinned") {
+		return ErrUnavailable
+	}
+	if strings.Contains(output, "NO_SESSION") {
+		s.markSessionLost(name)
+		return ErrChatNoSession
+	}
+	return fmt.Errorf("%w: %s", ErrUnavailable, output)
+}
+
 func (s *Service) markSessionLost(name string) {
 	if s.sessionSvc == nil {
 		return

@@ -94,12 +94,14 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name           *string  `json:"name"`
-		Description    *string  `json:"description"`
-		Businesses     []string `json:"businesses"`
-		RoleMode       *string  `json:"roleMode"`
-		MaxConcurrency *int     `json:"maxConcurrency"`
-		Enabled        *bool    `json:"enabled"`
+		Name             *string  `json:"name"`
+		Description      *string  `json:"description"`
+		Businesses       []string `json:"businesses"`
+		RoleMode         *string  `json:"roleMode"`
+		MaxConcurrency   *int     `json:"maxConcurrency"`
+		Enabled          *bool    `json:"enabled"`
+		DistributionMode *string  `json:"distributionMode"`
+		DistributionCap  *int     `json:"distributionCap"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -109,14 +111,16 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &keys)
 	_, hasBusinesses := keys["businesses"]
 	t, err := h.svc.Update(id, req.Name, req.Description, req.Businesses, hasBusinesses,
-		req.RoleMode, req.MaxConcurrency, req.Enabled)
+		req.RoleMode, req.MaxConcurrency, req.Enabled,
+		req.DistributionMode, req.DistributionCap)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrNoTeam):
 			writeError(w, http.StatusNotFound, err.Error())
 		case errors.Is(err, ErrDupName), errors.Is(err, ErrBusinessTaken):
 			writeError(w, http.StatusConflict, err.Error())
-		case errors.Is(err, ErrNoName), errors.Is(err, ErrBadRoleMode):
+		case errors.Is(err, ErrNoName), errors.Is(err, ErrBadRoleMode),
+			errors.Is(err, ErrBadDistMode), errors.Is(err, ErrBadDistCap):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
 			writeError(w, http.StatusInternalServerError, "cannot update team")

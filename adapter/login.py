@@ -26,9 +26,10 @@ def parse_login_args(argv):
     if len(argv) < 3:
         raise ValueError("usage: python -m adapter.login <account> <platform> "
                          "[--auto user pass] [--confirm-file path] "
-                         "[--real-profile] [--incognito]")
+                         "[--real-profile] [--incognito] [--platform-json path]")
     auto = []
     confirm_file = ""
+    platform_json = ""
     rest = argv[3:]
     if "--auto" in rest:
         i = rest.index("--auto")
@@ -40,10 +41,16 @@ def parse_login_args(argv):
         if i + 1 >= len(rest) or not rest[i + 1]:
             raise ValueError("--confirm-file needs a path")
         confirm_file = rest[i + 1]
+    if "--platform-json" in rest:
+        i = rest.index("--platform-json")
+        if i + 1 >= len(rest) or not rest[i + 1]:
+            raise ValueError("--platform-json needs a path")
+        platform_json = rest[i + 1]
     return {"account": argv[1], "platform": argv[2], "auto": auto,
             "confirm_file": confirm_file,
             "real_profile": "--real-profile" in rest,
-            "incognito": "--incognito" in rest}
+            "incognito": "--incognito" in rest,
+            "platform_json": platform_json}
 
 
 def main(argv):
@@ -55,9 +62,12 @@ def main(argv):
     account, platform_name = args["account"], args["platform"]
     auto, confirm_file = args["auto"], args["confirm_file"]
     try:
-        platform = platforms.get_platform(platform_name)
+        platform = platforms.resolve(platform_name, args["platform_json"])
     except KeyError:
         print("unknown platform: %s" % platform_name)
+        return 2
+    except ValueError as exc:
+        print(str(exc))
         return 2
     base = config.STUB_BASE_URL.rstrip("/")
     # --auto types the credentials itself, so no human watches: run headless.

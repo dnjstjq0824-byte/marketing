@@ -1,7 +1,7 @@
 // Shared Korean labels for enums. API values stay English; only display text lives here.
 export const CONTENT_STATUS = { draft: '초안', review: '검수', approved: '승인', queued: '대기', published: '발행됨' }
 export const JOB_STATUS = { pending: '대기', claimed: '처리 중', done: '완료', failed: '실패' }
-export const JOB_TYPE = { analyze: '판독', strategy: '전략', generate: '생성', review: '검수' }
+export const JOB_TYPE = { analyze: '판독', strategy: '전략', generate: '생성', review: '검수', research: '조사' }
 export const SESSION_STATE = { pending: '대기', connected: '연결', expired: '만료', limited: '한도', inactive_hold: '비활성 보류' }
 export const VERDICT = {
   ready: '실행 가능',
@@ -18,7 +18,9 @@ export const CHANNEL = { instagram: '인스타그램', shortform: '숏폼', card
 export const PLATFORM = {
   meta_ai: 'Meta AI', claude_app: 'Claude', chatgpt: 'ChatGPT', gemini: 'Gemini', muse: 'Muse',
   naver_blog: '네이버 블로그', tistory: '티스토리',
-  instagram: '인스타그램', stubboard: '스텁(시험)',
+  instagram: '인스타그램', threads: '스레드', facebook: '페이스북', x: 'X',
+  tiktok: '틱톡', youtube: '유튜브', blogger: '블로거', wordpress: '워드프레스',
+  stubboard: '스텁(시험)',
 }
 export const KIND = { agent_service: 'AI 서비스', channel: '채널' }
 // AI service platforms (kind=agent_service). Everything else is a channel.
@@ -27,10 +29,10 @@ export const AI_PLATFORMS = ['meta_ai', 'claude_app', 'chatgpt', 'gemini', 'muse
 // login option is shown only for these (fresh driven-browser Google SSO
 // stalls at the post-identifier risk check).
 export const GOOGLE_SSO_PLATFORMS = ['gemini', 'chatgpt', 'claude_app']
-// Login order: AI services first, channels last.
+// Login order: AI services first, channels last (blogs, then SNS-first).
 export const PLATFORM_GROUPS = [
   { label: 'AI 서비스', options: AI_PLATFORMS },
-  { label: '채널', options: ['naver_blog', 'tistory'] },
+  { label: '채널', options: ['naver_blog', 'tistory', 'instagram', 'threads', 'facebook', 'x', 'tiktok', 'youtube', 'blogger', 'wordpress'] },
 ]
 export const LOGIN_HINT = {
   meta_ai: 'Meta AI 페이지에서 로그인을 누른 뒤 Facebook/Instagram 계정으로 로그인하세요.',
@@ -40,6 +42,14 @@ export const LOGIN_HINT = {
   muse: 'Muse 페이지에서 Log in을 누른 뒤 로그인하세요. 지역 제한(미국·캐나다)으로 막히면 그 화면 그대로 알려주세요.',
   naver_blog: '네이버 로그인 화면에서 계정으로 로그인하세요.',
   tistory: '티스토리 로그인 화면에서 계정으로 로그인하세요.',
+  instagram: '인스타그램 로그인 화면에서 계정으로 로그인하세요.',
+  threads: '스레드 로그인 화면에서 계정으로 로그인하세요.',
+  facebook: '페이스북 로그인 화면에서 계정으로 로그인하세요.',
+  x: 'X 로그인 화면에서 계정으로 로그인하세요.',
+  tiktok: '틱톡 로그인 화면에서 계정으로 로그인하세요.',
+  youtube: 'YouTube용 Google 계정으로 로그인하세요.',
+  blogger: '블로거용 Google 계정으로 로그인하세요.',
+  wordpress: '워드프레스 로그인 화면에서 계정으로 로그인하세요.',
 }
 
 export function label(map, value, fallback) {

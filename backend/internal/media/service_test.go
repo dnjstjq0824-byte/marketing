@@ -5,7 +5,10 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"somun/internal/store"
 )
@@ -31,6 +34,40 @@ func pngBytes(n int) []byte {
 		out = append(out, 0x00)
 	}
 	return out
+}
+
+// W5-3: signed URLs verify, tampered and expired ones fail closed.
+func TestSignedURL(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	future := time.Now().Add(time.Hour).Unix()
+	u := SignFileURL(key, 7, future)
+	if !strings.HasPrefix(u, "/api/media/7/signed?exp=") || !strings.Contains(u, "&sig=") {
+		t.Fatalf("url = %q", u)
+	}
+	parts := strings.Split(u[strings.Index(u, "?")+1:], "&")
+	q := map[string]string{}
+	for _, p := range parts {
+		kv := strings.SplitN(p, "=", 2)
+		q[kv[0]] = kv[1]
+	}
+	if !VerifyFileURL(key, 7, q["exp"], q["sig"]) {
+		t.Fatal("valid signature rejected")
+	}
+	if VerifyFileURL(key, 7, q["exp"], q["sig"]+"0") {
+		t.Fatal("tampered signature accepted")
+	}
+	if VerifyFileURL(key, 8, q["exp"], q["sig"]) {
+		t.Fatal("swapped id accepted")
+	}
+	past := time.Now().Add(-time.Hour).Unix()
+	old := SignFileURL(key, 7, past)
+	oldsig := old[strings.Index(old, "sig=")+4:]
+	if VerifyFileURL(key, 7, strconv.FormatInt(past, 10), oldsig) {
+		t.Fatal("expired signature accepted")
+	}
+	if VerifyFileURL(nil, 7, q["exp"], q["sig"]) {
+		t.Fatal("empty key accepted")
+	}
 }
 
 func TestUploadRoundTrip(t *testing.T) {

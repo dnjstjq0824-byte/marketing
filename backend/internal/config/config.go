@@ -10,6 +10,9 @@ import (
 	"strings"
 )
 
+// AppVersion is the console "버전" row (S6). Bump on user-visible releases.
+const AppVersion = "2026.11.15"
+
 // Defaults for local development. Production must override secrets via env.
 const (
 	DefaultPort           = "8080"
@@ -34,8 +37,8 @@ const (
 	DefaultLeaseSec    = 600
 	DefaultLongpollMax = 25
 	DefaultDBReadConns = 4
-	// Executor (P1-1). Heartbeat 0 stops execution.
-	DefaultExecutorHeartbeatMin = 0
+	// Executor (P1-1). Heartbeat 0 stops execution. W0: fresh installs run.
+	DefaultExecutorHeartbeatMin = 15
 	DefaultExecutorMinInterval  = 30
 	DefaultExecutorMaxActive    = 2
 	DefaultRetentionEvery       = 24

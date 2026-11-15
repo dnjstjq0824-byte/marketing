@@ -35,6 +35,62 @@ func newTestService(t *testing.T) (*Service, *store.Store) {
 	return svc, st
 }
 
+// W6: one account cannot bind both the B (generate) and C (review)
+// lanes, at register or at update time. Same-lane twins stay legal.
+func TestLaneSplitGuard(t *testing.T) {
+	svc, st := newTestService(t)
+	acc, err := st.CreateAccountRow(&store.ChannelAccount{Name: "a1", Platform: "meta_ai", Role: "worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.Register("wB", "B", "", "", "", 1, &acc.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.Register("wC", "C", "", "", "", 1, &acc.ID); err == nil {
+		t.Fatal("B+C split accepted at register")
+	}
+	if _, _, err := svc.Register("wB2", "B", "", "", "", 1, &acc.ID); err != nil {
+		t.Fatalf("B+B twin refused: %v", err)
+	}
+	a, _, err := svc.Register("wA", "A", "", "", "", 1, &acc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(a.ID, "C", "", "", "", 1, true, &acc.ID); err == nil {
+		t.Fatal("B+C split accepted at update")
+	}
+}
+
+// W16-7: the team executor (lane T) claims the whole AI chain.
+func TestLaneTClaimsChain(t *testing.T) {
+	svc, st := newTestService(t)
+	if !store.ValidLane("T") {
+		t.Fatal("lane T invalid")
+	}
+	stt := store.DefaultAutomationSettings()
+	stt.MaxConcurrent = 10
+	if err := store.SetAutomationSettings(st.DB(), stt); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := svc.Register("wt", "T", "", "", "", 4, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := st.CreateProduct("https://example.com/wt", "A", 0, "")
+	for _, typ := range []string{"analyze", "strategy", "generate", "review"} {
+		if _, err := st.CreateJob(typ, p.ID, "{}"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, typ := range []string{"analyze", "strategy", "generate", "review"} {
+		fresh, _ := st.GetAgent(a.ID)
+		j, err := svc.Claim(fresh, typ, 0)
+		if err != nil || j == nil || j.Type != typ {
+			t.Fatalf("T claim %s = %+v, %v", typ, j, err)
+		}
+	}
+}
+
 func TestClaimLaneMismatch(t *testing.T) {
 	svc, _ := newTestService(t)
 	a, _, err := svc.Register("w", "A", "", "", "", 1, nil)

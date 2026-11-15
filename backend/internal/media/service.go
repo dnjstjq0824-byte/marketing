@@ -52,6 +52,8 @@ var majorCap = map[string]int64{
 type Service struct {
 	store     *store.Store
 	uploadDir string
+	// FileKey signs worker download URLs (W5-3). Empty refuses all.
+	FileKey []byte
 }
 
 // NewService builds the media service.

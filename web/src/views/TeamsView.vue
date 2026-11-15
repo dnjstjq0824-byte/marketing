@@ -8,10 +8,16 @@
     </div>
     <p v-if="onlyDefault" class="hint">브랜드별로 팀을 나눠 보세요. 예: 마케팅1팀 = LUNO 전담</p>
     <p v-if="loadMsg" class="error">{{ loadMsg }}</p>
+    <p v-if="teams.length && !loadMsg" class="healthline" aria-label="팀 건강 요약">
+      <span class="h-ok">정상 {{ healthCounts.ok }}</span> ·
+      <span class="h-warn">주의 {{ healthCounts.warn }}</span> ·
+      <span class="h-bad">위험 {{ healthCounts.bad }}</span>
+    </p>
     <div class="grid">
-      <RouterLink v-for="c in teams" :key="c.team.id" class="card teamcard" :to="'/teams/' + c.team.id">
+      <RouterLink v-for="c in sortedTeams" :key="c.team.id" class="card teamcard" :class="'h-' + health(c)" :to="'/teams/' + c.team.id">
         <div class="t-head">
           <strong class="t-name">{{ c.team.name }}</strong>
+          <span class="health" :class="health(c)">{{ healthText(health(c)) }}</span>
           <span class="t-state" :class="{ off: !c.team.enabled }"><span class="dot" :class="{ on: c.team.enabled }" aria-hidden="true"></span>{{ c.team.enabled ? '가동' : '멈춤' }}</span>
         </div>
         <p class="t-biz muted">{{ bizLine(c) }}</p>
@@ -22,6 +28,7 @@
         </div>
         <p class="t-nums">일하는 중 {{ c.working }} · 대기 {{ c.idle }}</p>
         <p class="t-nums">진행 작업 {{ c.stats.runningWorks }} · 오늘 발행 {{ c.stats.todayPublished }}</p>
+        <p v-if="c.stats.todayFailed" class="t-nums h-bad">오늘 실패 {{ c.stats.todayFailed }}건</p>
         <p class="t-nums muted">채널 {{ c.channelCount }}개</p>
         <p v-for="w in warnings(c)" :key="w" class="warn">⚠ {{ w }}</p>
       </RouterLink>
@@ -179,6 +186,25 @@ function warnings(c) {
   return out
 }
 
+function health(c) {
+  if ((c.stats?.todayFailed || 0) > 0) return 'bad'
+  if (!c.team.enabled || c.memberCount === 0 || c.memberCount === 1 || (c.unready || 0) > 0 ||
+    (!c.team.isDefault && (c.businesses || []).length > 0 && c.channelCount === 0)) return 'warn'
+  return 'ok'
+}
+
+function healthText(h) {
+  return h === 'bad' ? '위험' : (h === 'warn' ? '주의' : '정상')
+}
+
+const healthRank = { bad: 0, warn: 1, ok: 2 }
+const sortedTeams = computed(() => [...teams.value].sort((a, b) => healthRank[health(a)] - healthRank[health(b)]))
+const healthCounts = computed(() => {
+  const out = { ok: 0, warn: 0, bad: 0 }
+  for (const c of teams.value) out[health(c)]++
+  return out
+})
+
 function toggleAll(e) {
   const ids = new Set(form.value.memberIds)
   if (e.target.checked) for (const a of filteredAgents.value) ids.add(a.id)
@@ -291,6 +317,15 @@ onMounted(load)
 .more { color: var(--muted); font-size: 13px; align-self: center; }
 .t-nums { margin: 2px 0; font-size: 14px; }
 .warn { margin: var(--s1) 0 0; font-size: 13px; color: var(--warn-ink, #9a5b00); }
+.healthline { margin: 0 0 var(--s3); font-size: 14px; font-weight: 700; }
+.h-ok { color: var(--ok); }
+.h-warn { color: var(--warn-ink, #9a5b00); }
+.h-bad { color: var(--warn); }
+.health { font-size: 12px; font-weight: 800; border-radius: 999px; padding: 1px 10px; white-space: nowrap; }
+.health.ok { background: var(--ok-soft); color: var(--ok); }
+.health.warn { background: var(--hold-soft); color: var(--warn-ink, #9a5b00); }
+.health.bad { background: var(--warn-soft); color: var(--warn); }
+.teamcard.h-bad { border-color: var(--warn); }
 .steps { display: flex; gap: var(--s3); list-style: none; margin: 0 0 var(--s4); padding: 0; }
 .steps li { color: var(--muted); font-size: 14px; }
 .steps li.on { color: var(--ink); font-weight: 700; }

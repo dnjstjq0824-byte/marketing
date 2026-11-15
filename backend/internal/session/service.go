@@ -9,10 +9,12 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"somun/internal/content"
@@ -54,10 +56,12 @@ var (
 	ErrFinalDisposal = errors.New("release/transfer is a PO decision, not implemented")
 	ErrHeldItems     = errors.New("account still has queued items")
 	ErrBadMode       = errors.New("posting mode must be auto or manual")
+	ErrBadDailyCap   = errors.New("daily cap must be 0..999")
 	ErrBadKind       = errors.New("kind must be channel or agent_service")
 	ErrCredentials   = errors.New("login ID and password are both required")
 	ErrDuplicate     = errors.New("account name already exists")
 	ErrVault = errors.New("credential vault unavailable")
+	ErrBadCapabilities = errors.New("capabilities must be a JSON array of text/image/video/file")
 )
 
 // Account is one agent/channel account with session liveness.
@@ -71,6 +75,7 @@ type Account struct {
 	Business       string `json:"business"`
 	SessionState   string `json:"sessionState"`
 	PostingMode    string `json:"postingMode"`
+	DailyCap       int    `json:"dailyCap"`
 	HasCredentials bool   `json:"hasCredentials"`
 	LastCheckedAt  string `json:"lastCheckedAt"`
 	LastWakeAt     string `json:"lastWakeAt"`
@@ -78,6 +83,10 @@ type Account struct {
 	LastJobAt      string `json:"lastJobAt"`
 	Kind           string `json:"kind"`
 	PlatformUserID string `json:"platformUserId"`
+	PlanTier       string `json:"planTier"`
+	Capabilities   string `json:"capabilities"`
+	ProfileMode    string `json:"profileMode"`
+	ChatStatus     string `json:"chatStatus"`
 }
 
 // ReloginItem is one account needing its owner to log back in.
@@ -94,6 +103,7 @@ type Service struct {
 	store   *store.Store
 	content *content.Service
 	vault   cipher.AEAD
+	signKey []byte
 	// OnSessionState, when set, fires after a session move (notify hook).
 	OnSessionState func(id int64, name, prev, next string)
 	// Console-driven login (login.go).
@@ -102,6 +112,9 @@ type Service struct {
 	logins       *LoginManager
 	// verifyRunner replaces the adapter.verify subprocess in tests.
 	verifyRunner func(name, platform string) (string, string)
+	// probeRunner replaces the adapter.chat --probe subprocess in tests.
+	// It returns the probe JSON document.
+	probeRunner func(name, platform string) (map[string]any, error)
 }
 
 // NewService loads (or creates) the vault key.
@@ -118,7 +131,15 @@ func NewService(st *store.Store, keyPath string) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrVault, err)
 	}
-	return &Service{store: st, content: content.NewService(st), vault: vault}, nil
+	return &Service{store: st, content: content.NewService(st), vault: vault, signKey: key}, nil
+}
+
+// FileKey returns a copy of the vault key bytes for HMAC-signing worker
+// download URLs (W5-3). Callers must not log or persist it.
+func (s *Service) FileKey() []byte {
+	out := make([]byte, len(s.signKey))
+	copy(out, s.signKey)
+	return out
 }
 
 // loadOrCreateKey reads the 32-byte vault key, generating one (0600) on first boot.
@@ -199,14 +220,29 @@ func toView(row *store.ChannelAccount) *Account {
 	return &Account{
 		ID: row.ID, Name: row.Name, Platform: row.Platform, Owner: row.Owner,
 		Role: row.Role, Business: row.Business, SessionState: row.SessionState,
-		PostingMode: row.PostingMode, HasCredentials: row.EncPW != "",
+		PostingMode: row.PostingMode, DailyCap: row.DailyCap, HasCredentials: row.EncPW != "",
 		LastCheckedAt: row.LastCheckedAt, LastWakeAt: row.LastWakeAt,
 		Usage: row.Usage, LastJobAt: row.LastJobAt,
 		Kind: row.Kind, PlatformUserID: row.PlatformUser,
+		PlanTier: row.PlanTier, Capabilities: row.Capabilities,
+		ProfileMode: row.ProfileMode,
 	}
 }
 
-// RegisterAccount adds an account in pending/manual state.
+// withChatStatus fills the AI chat link state from the registry. Channel
+// accounts keep it empty (not applicable).
+func (s *Service) withChatStatus(a *Account) *Account {
+	if a == nil {
+		return nil
+	}
+	if p, err := s.store.GetAIPlatform(a.Platform); err == nil {
+		a.ChatStatus = p.ChatStatus
+	}
+	return a
+}
+
+// RegisterAccount adds an account in pending state. Channel platforms default
+// to auto posting (W0); AI and unknown platforms stay manual.
 func (s *Service) RegisterAccount(name, platform, owner, role, business string) (*Account, error) {
 	if name == "" {
 		return nil, ErrNoName
@@ -219,7 +255,7 @@ func (s *Service) RegisterAccount(name, platform, owner, role, business string) 
 	}
 	row, err := s.store.CreateAccountRow(&store.ChannelAccount{
 		Name: name, Platform: platform, Owner: owner, Role: role, Business: business,
-		SessionState: StatePending, PostingMode: PostingManual,
+		SessionState: StatePending, PostingMode: s.defaultMode(platform),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrDuplicate) {
@@ -232,6 +268,15 @@ func (s *Service) RegisterAccount(name, platform, owner, role, business string) 
 
 // MaxBulkCount bounds one multi-account registration (UI_DESIGN S5).
 const MaxBulkCount = 50
+
+// defaultMode returns the W0 posting default: auto for registered channel
+// platforms, manual for AI service accounts and anything unknown.
+func (s *Service) defaultMode(platform string) string {
+	if _, err := s.store.GetChannelPlatform(platform); err == nil {
+		return PostingAuto
+	}
+	return PostingManual
+}
 
 var (
 	ErrNoPrefix = errors.New("prefix is required")
@@ -260,7 +305,7 @@ func (s *Service) RegisterAccounts(prefix, platform, owner, role, business strin
 		name := fmt.Sprintf("%s%02d", prefix, i)
 		row, err := s.store.CreateAccountRow(&store.ChannelAccount{
 			Name: name, Platform: platform, Owner: owner, Role: role, Business: business,
-			SessionState: StatePending, PostingMode: PostingManual,
+			SessionState: StatePending, PostingMode: s.defaultMode(platform),
 		})
 		if err != nil {
 			if errors.Is(err, store.ErrDuplicate) {
@@ -355,7 +400,7 @@ func (s *Service) ListAccounts() []*Account {
 	}
 	out := make([]*Account, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, toView(row))
+		out = append(out, s.withChatStatus(toView(row)))
 	}
 	return out
 }
@@ -369,7 +414,7 @@ func (s *Service) GetAccount(id int64) (*Account, error) {
 		}
 		return nil, err
 	}
-	return toView(row), nil
+	return s.withChatStatus(toView(row)), nil
 }
 
 // SetSessionState moves an account's session state machine with side effects:
@@ -463,6 +508,26 @@ func (s *Service) SetPostingMode(id int64, mode string) (*Account, error) {
 	return s.GetAccount(id)
 }
 
+// SetDailyCap overrides one account's daily publish cap (W0).
+// 0 means "follow the global settings cap".
+func (s *Service) SetDailyCap(id int64, dailyCap int) (*Account, error) {
+	if dailyCap < 0 || dailyCap > 999 {
+		return nil, ErrBadDailyCap
+	}
+	row, err := s.store.GetAccountRow(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrNoAccount
+		}
+		return nil, err
+	}
+	row.DailyCap = dailyCap
+	if err := s.store.UpdateAccountRow(row); err != nil {
+		return nil, err
+	}
+	return s.GetAccount(id)
+}
+
 // SetKindFields tags an account (channel vs agent_service) with an optional
 // platform user id. Nil pointers leave the field untouched.
 func (s *Service) SetKindFields(id int64, kind, platformUserID *string) (*Account, error) {
@@ -486,6 +551,172 @@ func (s *Service) SetKindFields(id int64, kind, platformUserID *string) (*Accoun
 		return nil, err
 	}
 	return s.GetAccount(id)
+}
+
+// validCapabilities is the W15-9 feature vocabulary.
+var validCapabilities = map[string]bool{"text": true, "image": true, "video": true, "file": true}
+
+// normalizeCapabilities parses and canonicalizes a capabilities JSON array.
+func normalizeCapabilities(raw string) (string, error) {
+	var items []string
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return "", ErrBadCapabilities
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	for _, it := range items {
+		it = strings.ToLower(strings.TrimSpace(it))
+		if !validCapabilities[it] || seen[it] {
+			if !validCapabilities[it] {
+				return "", ErrBadCapabilities
+			}
+			continue
+		}
+		seen[it] = true
+		out = append(out, it)
+	}
+	if out == nil {
+		out = []string{}
+	}
+	enc, _ := json.Marshal(out)
+	return string(enc), nil
+}
+
+// SetPlanFields tags an account with its plan tier label and proven
+// capabilities (W15-9). Nil pointers leave the field untouched.
+func (s *Service) SetPlanFields(id int64, planTier, capabilities *string) (*Account, error) {
+	row, err := s.store.GetAccountRow(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrNoAccount
+		}
+		return nil, err
+	}
+	if planTier != nil {
+		row.PlanTier = strings.TrimSpace(*planTier)
+	}
+	if capabilities != nil {
+		norm, err := normalizeCapabilities(strings.TrimSpace(*capabilities))
+		if err != nil {
+			return nil, err
+		}
+		row.Capabilities = norm
+	}
+	if err := s.store.UpdateAccountRow(row); err != nil {
+		return nil, err
+	}
+	return s.GetAccount(id)
+}
+
+// ProbeResult is one chat-probe outcome (W15-4).
+type ProbeResult struct {
+	OK       bool   `json:"ok"`
+	Reason   string `json:"reason,omitempty"`
+	ChatURL  string `json:"chatUrl,omitempty"`
+	Composer string `json:"composerSelector,omitempty"`
+	Send     string `json:"sendSelector,omitempty"`
+	Reply    string `json:"replySelector,omitempty"`
+}
+
+// ChatProbe runs adapter.chat --probe for one account and stores the
+// outcome: success writes selectors + chat_status=ok, anything else marks
+// the platform unlinked. Proven text/file features merge into the
+// account's capabilities (W15-9).
+func (s *Service) ChatProbe(id int64) (*ProbeResult, error) {
+	row, err := s.store.GetAccountRow(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrNoAccount
+		}
+		return nil, err
+	}
+	platform := strings.TrimSpace(row.Platform)
+	p, err := s.store.GetAIPlatform(platform)
+	if err != nil {
+		return nil, ErrBadPlatform
+	}
+	doc, err := s.runProbe(row.Name, platform)
+	if err != nil {
+		p.ChatStatus = store.AIChatUnlinked
+		_ = s.store.UpdateAIPlatform(p)
+		return &ProbeResult{Reason: err.Error()}, nil
+	}
+	res := &ProbeResult{
+		OK:       doc["ok"] == true,
+		Reason:   strField(doc, "reason"),
+		ChatURL:  strField(doc, "chat_url"),
+		Composer: strField(doc, "composer_selector"),
+		Send:     strField(doc, "send_selector"),
+		Reply:    strField(doc, "reply_selector"),
+	}
+	if !res.OK {
+		p.ChatStatus = store.AIChatUnlinked
+		_ = s.store.UpdateAIPlatform(p)
+		return res, nil
+	}
+	p.ComposerSelector = res.Composer
+	p.SendSelector = res.Send
+	p.ReplySelector = res.Reply
+	if res.ChatURL != "" {
+		p.ChatURL = res.ChatURL
+	}
+	if pat := strField(doc, "thread_url_pattern"); pat != "" {
+		p.ThreadURLPattern = pat
+	}
+	p.ChatStatus = store.AIChatOK
+	if err := s.store.UpdateAIPlatform(p); err != nil {
+		return nil, err
+	}
+	features := []string{"text"}
+	if doc["has_file_input"] == true {
+		features = append(features, "file")
+	}
+	row.Capabilities = mergeCapabilities(row.Capabilities, features)
+	_ = s.store.UpdateAccountRow(row)
+	return res, nil
+}
+
+func strField(doc map[string]any, key string) string {
+	if v, ok := doc[key].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// mergeCapabilities unions proven features into the stored JSON array.
+func mergeCapabilities(stored string, proven []string) string {
+	seen := map[string]bool{}
+	out := []string{}
+	var cur []string
+	if err := json.Unmarshal([]byte(stored), &cur); err == nil {
+		for _, c := range cur {
+			c = strings.ToLower(strings.TrimSpace(c))
+			if c != "" && !seen[c] {
+				seen[c] = true
+				out = append(out, c)
+			}
+		}
+	}
+	for _, c := range proven {
+		if validCapabilities[c] && !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	if out == nil {
+		out = []string{}
+	}
+	enc, _ := json.Marshal(out)
+	return string(enc)
+}
+
+// runProbe executes adapter.chat --probe. Tests replace probeRunner.
+// The real subprocess lives in login.go beside the other adapter calls.
+func (s *Service) runProbe(name, platform string) (map[string]any, error) {
+	if s.probeRunner != nil {
+		return s.probeRunner(name, platform)
+	}
+	return s.execProbe(name, platform)
 }
 
 // UnregisterAccount removes an account. Accounts with any queued items are

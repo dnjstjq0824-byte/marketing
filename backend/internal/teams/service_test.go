@@ -231,6 +231,20 @@ func TestDeleteMovesToDefault(t *testing.T) {
 	if _, _, err := svc.Delete(def.ID); !errors.Is(err, ErrDefaultProtect) {
 		t.Fatalf("default delete err = %v", err)
 	}
+	p, err := st.CreateProduct("https://example.com/del", "A", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetProductTeam(p.ID, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	j, err := st.CreateJob("generate", p.ID, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetJobTeam(j.ID, a.ID); err != nil {
+		t.Fatal(err)
+	}
 	moved, _, err := svc.Delete(a.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -240,6 +254,40 @@ func TestDeleteMovesToDefault(t *testing.T) {
 	}
 	if ok, _ := st.IsTeamMember(def.ID, ai); !ok {
 		t.Fatal("member not moved to default team")
+	}
+	got, _ := st.GetProduct(p.ID)
+	if got.TeamID == nil || *got.TeamID != def.ID {
+		t.Fatalf("work team = %+v, want default", got.TeamID)
+	}
+	gotJob, _ := st.GetJob(j.ID)
+	if gotJob.TeamID == nil || *gotJob.TeamID != def.ID {
+		t.Fatalf("job team = %+v, want default", gotJob.TeamID)
+	}
+}
+
+// W21-4: distribution mode/cap round-trip with validation.
+func TestUpdateDistribution(t *testing.T) {
+	st := openTestStore(t)
+	svc := NewService(st)
+	a, _ := svc.Create("D", "", nil, "")
+	if a.DistributionMode != "all" || a.DistributionCap != 5 {
+		t.Fatalf("defaults = %s/%d", a.DistributionMode, a.DistributionCap)
+	}
+	mode, cap := "one", 2
+	got, err := svc.Update(a.ID, nil, nil, nil, false, nil, nil, nil, &mode, &cap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DistributionMode != "one" || got.DistributionCap != 2 {
+		t.Fatalf("updated = %+v", got)
+	}
+	bad := "many"
+	if _, err := svc.Update(a.ID, nil, nil, nil, false, nil, nil, nil, &bad, nil); !errors.Is(err, ErrBadDistMode) {
+		t.Fatalf("mode err = %v", err)
+	}
+	z := 0
+	if _, err := svc.Update(a.ID, nil, nil, nil, false, nil, nil, nil, nil, &z); !errors.Is(err, ErrBadDistCap) {
+		t.Fatalf("cap err = %v", err)
 	}
 }
 
@@ -318,6 +366,9 @@ func TestDetailAndCards(t *testing.T) {
 	for _, card := range cards {
 		if card.Team.ID == a.ID && (card.MemberCount != 1 || card.ChannelCount != 1 || card.Working != 1 || card.Idle != 0) {
 			t.Fatalf("card = %+v", card)
+		}
+		if card.Team.ID == a.ID && (len(card.MemberIDs) != 1 || card.MemberIDs[0] != ai || len(card.ChannelIDs) != 1 || card.ChannelIDs[0] != ch) {
+			t.Fatalf("card ids = %+v", card)
 		}
 	}
 	if _, err := svc.Detail(9999); !errors.Is(err, ErrNoTeam) {

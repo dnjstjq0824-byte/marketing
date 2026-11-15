@@ -17,6 +17,27 @@ type Handler struct {
 	agents      *agent.Service
 	workerToken string
 	allowShared bool // dev only; production serves agent tokens alone
+	// Production, when true, refuses fake- workers (W9). Set by the router.
+	Production bool
+}
+
+// FakeWorkerPrefix marks test-loop workers. worker.py --fake enforces it.
+const FakeWorkerPrefix = "fake-"
+
+func isFakeName(name string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), FakeWorkerPrefix)
+}
+
+// fakeBlocked reports whether this request comes from a fake worker that
+// production must refuse. Agent identity wins when present.
+func (h *Handler) fakeBlocked(r *http.Request) bool {
+	if !h.Production {
+		return false
+	}
+	if a, ok := agent.AgentFrom(r.Context()); ok && a != nil {
+		return isFakeName(a.Label)
+	}
+	return isFakeName(workerName(r))
 }
 
 // NewHandler builds the worker handler.
@@ -60,6 +81,10 @@ func workerName(r *http.Request) string {
 // Next handles GET /api/worker/jobs/next?type=&wait=. Agents may omit the
 // type (whole lane) and long-poll; the shared token keeps type required.
 func (h *Handler) Next(w http.ResponseWriter, r *http.Request) {
+	if h.fakeBlocked(r) {
+		writeError(w, http.StatusForbidden, "fake workers are refused in production")
+		return
+	}
 	a, _ := agent.AgentFrom(r.Context())
 	wait, err := parseWait(r.URL.Query().Get("wait"))
 	if err != nil || wait < 0 {
@@ -124,60 +149,9 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListForOperator handles GET /api/jobs: the same newest-100 list behind
-// operator auth, so a human can review failed jobs on the queue screen.
+// operator auth, for failure review and worker-install cleanup.
 func (h *Handler) ListForOperator(w http.ResponseWriter, r *http.Request) {
 	h.listJobs(w)
-}
-
-type cancelRequest struct {
-	Reason string `json:"reason"`
-}
-
-// CancelForOperator handles POST /api/jobs/{id}/cancel: a pending/claimed job
-// is marked failed like a worker failure (never requeues). Finished jobs 409.
-func (h *Handler) CancelForOperator(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid job id")
-		return
-	}
-	var req cancelRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	reason := strings.TrimSpace(req.Reason)
-	if reason == "" {
-		reason = "cancelled by operator"
-	}
-	job, err := h.svc.store.SetJobFailed(id, reason)
-	if err != nil {
-		switch {
-		case errors.Is(err, store.ErrNotFound):
-			writeError(w, http.StatusNotFound, "job not found")
-		case errors.Is(err, store.ErrAlreadyDone):
-			writeError(w, http.StatusConflict, "job already finished")
-		default:
-			writeError(w, http.StatusInternalServerError, "cannot cancel job")
-		}
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"job": toView(job)})
-}
-
-// DeleteForOperator handles DELETE /api/jobs/{id}: purge one job row.
-func (h *Handler) DeleteForOperator(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid job id")
-		return
-	}
-	if err := h.svc.store.DeleteJob(id); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "job not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "cannot delete job")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
 }
 
 func (h *Handler) listJobs(w http.ResponseWriter) {
@@ -193,8 +167,32 @@ func (h *Handler) listJobs(w http.ResponseWriter) {
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": views})
 }
 
+// BootCheck handles GET /api/worker/boot-check?accountId=. Workers call it
+// at boot; ok=false means the account spans B+C and must not start (W6).
+func (h *Handler) BootCheck(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("accountId")), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "accountId is required")
+		return
+	}
+	ok, lanes, err := h.svc.BootCheck(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot check boot")
+		return
+	}
+	out := map[string]any{"ok": ok, "lanes": lanes}
+	if !ok {
+		out["reason"] = "account spans lanes B+C: one account cannot write and review"
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // Result handles POST /api/worker/jobs/{id}/result. Not idempotent.
 func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
+	if h.fakeBlocked(r) {
+		writeError(w, http.StatusForbidden, "fake workers are refused in production")
+		return
+	}
 	id, err := pathID(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid job id")
@@ -216,6 +214,18 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch job.Type {
+	case JobResearch:
+		var rres ResearchResult
+		if err := json.NewDecoder(r.Body).Decode(&rres); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body: all research fields must be strings")
+			return
+		}
+		done, err := h.svc.SubmitResearch(id, rres)
+		if err != nil {
+			h.writeSubmitError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"job": toView(done)})
 	case JobAnalyze:
 		var res AnalyzeResult
 		if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
@@ -307,6 +317,10 @@ type failRequest struct {
 
 // Fail handles POST /api/worker/jobs/{id}/fail.
 func (h *Handler) Fail(w http.ResponseWriter, r *http.Request) {
+	if h.fakeBlocked(r) {
+		writeError(w, http.StatusForbidden, "fake workers are refused in production")
+		return
+	}
 	id, err := pathID(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid job id")

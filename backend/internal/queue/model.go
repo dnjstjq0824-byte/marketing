@@ -16,6 +16,9 @@ const (
 	JobGenerate = "generate"
 	JobReview   = "review"
 	JobPublish  = "publish"
+	// JobResearch reads a topic-only input (W1): outline + key points
+	// instead of page parsing. It feeds the strategy job like analyze.
+	JobResearch = "research"
 )
 
 // Job statuses: pending -> claimed -> done/failed.
@@ -45,6 +48,15 @@ type AnalyzeResult struct {
 	Unknowns      string `json:"unknowns"`
 }
 
+// ResearchResult is the worker's topic-study payload (W1): the topic
+// title, key points, and a post outline. It becomes the work's reading.
+type ResearchResult struct {
+	TopicTitle string `json:"topic_title"`
+	KeyPoints  string `json:"key_points"`
+	Outline    string `json:"outline"`
+	Unknowns   string `json:"unknowns"`
+}
+
 // StrategyResult is the worker's marketing-strategy payload: 4 strings.
 // Angle is required; the rest may stay empty.
 type StrategyResult struct {
@@ -60,6 +72,11 @@ type GenerateItem struct {
 	Title          string `json:"title"`
 	Body           string `json:"body"`
 	VirtualPersona bool   `json:"virtual_persona"`
+	// Platform optionally pins the brief entry (W3-2); empty keeps the
+	// legacy first-match resolution.
+	Platform string `json:"platform"`
+	// Media is the worker's media shopping list (W3-4), stored verbatim.
+	Media string `json:"media"`
 }
 
 // GenerateResult is the worker's content-generation payload.
@@ -67,9 +84,9 @@ type GenerateResult struct {
 	Contents []GenerateItem `json:"contents"`
 }
 
-// ReviewDecisionItem is one chief judgment on a draft. Target fields travel
-// together: account+platform schedule the item when approved; scheduledAt is
-// optional (empty means unscheduled queue entry).
+// ReviewDecisionItem is one chief judgment on a draft.
+// W4: Account/Platform/ScheduledAt are legacy worker echoes and are ignored;
+// the server scheduler assigns on approval.
 type ReviewDecisionItem struct {
 	ContentID   int64  `json:"content_id"`
 	Approve     bool   `json:"approve"`

@@ -80,6 +80,22 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// SignedFile handles GET /api/media/{id}/signed?exp=&sig=: the worker
+// download path (W5-3). Public route, signature-checked, no login.
+func (h *Handler) SignedFile(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid media id")
+		return
+	}
+	q := r.URL.Query()
+	if !VerifyFileURL(h.svc.FileKey, id, q.Get("exp"), q.Get("sig")) {
+		writeError(w, http.StatusForbidden, "bad or expired signature")
+		return
+	}
+	h.File(w, r)
+}
+
 // Detail handles GET /api/media/{id}.
 func (h *Handler) Detail(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r, "id")

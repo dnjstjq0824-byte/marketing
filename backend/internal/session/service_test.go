@@ -33,6 +33,54 @@ func newTestService(t *testing.T) *Service {
 	return svc
 }
 
+// W0: channel platforms default to auto; AI and unknown stay manual.
+func TestRegisterPostingDefault(t *testing.T) {
+	svc := newTestService(t)
+	ch, err := svc.RegisterAccount("blog1", "naver_blog", "me", "worker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.PostingMode != PostingAuto {
+		t.Fatalf("channel mode = %s", ch.PostingMode)
+	}
+	ai, err := svc.RegisterAccount("ai1", "meta_ai", "me", "worker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ai.PostingMode != PostingManual {
+		t.Fatalf("AI mode = %s", ai.PostingMode)
+	}
+	unk, err := svc.RegisterAccount("u1", "mystery", "me", "worker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unk.PostingMode != PostingManual {
+		t.Fatalf("unknown mode = %s", unk.PostingMode)
+	}
+}
+
+// W0: per-account daily cap round-trips; out-of-range rejected.
+func TestSetDailyCap(t *testing.T) {
+	svc := newTestService(t)
+	a, err := svc.RegisterAccount("cap1", "naver_blog", "me", "worker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.DailyCap != 0 {
+		t.Fatalf("default cap = %d", a.DailyCap)
+	}
+	upd, err := svc.SetDailyCap(a.ID, 5)
+	if err != nil || upd.DailyCap != 5 {
+		t.Fatalf("cap = %+v err = %v", upd, err)
+	}
+	if _, err := svc.SetDailyCap(a.ID, 1000); !errors.Is(err, ErrBadDailyCap) {
+		t.Fatalf("over range: err=%v", err)
+	}
+	if _, err := svc.SetDailyCap(a.ID, -1); !errors.Is(err, ErrBadDailyCap) {
+		t.Fatalf("negative: err=%v", err)
+	}
+}
+
 // Account fields update; bad roles are rejected.
 func TestUpdateAccountFields(t *testing.T) {
 	svc := newTestService(t)
@@ -118,19 +166,19 @@ func TestNextLogin(t *testing.T) {
 	}
 }
 
-// Posting mode defaults to manual; only auto/manual are accepted.
+// Posting mode defaults to auto on channels; only auto/manual are accepted.
 func TestPostingMode(t *testing.T) {
 	svc := newTestService(t)
 	a, err := svc.RegisterAccount("acc", "instagram", "me", "worker", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.PostingMode != PostingManual {
+	if a.PostingMode != PostingAuto {
 		t.Fatalf("default mode = %q", a.PostingMode)
 	}
-	upd, err := svc.SetPostingMode(a.ID, PostingAuto)
-	if err != nil || upd.PostingMode != PostingAuto {
-		t.Fatalf("set auto: %+v %v", upd, err)
+	upd, err := svc.SetPostingMode(a.ID, PostingManual)
+	if err != nil || upd.PostingMode != PostingManual {
+		t.Fatalf("set manual: %+v %v", upd, err)
 	}
 	if _, err := svc.SetPostingMode(a.ID, "turbo"); !errors.Is(err, ErrBadMode) {
 		t.Fatalf("bad mode: err=%v", err)
@@ -235,6 +283,9 @@ func TestPublishPlan(t *testing.T) {
 	}
 	man, err := svc.RegisterAccount("man1", "instagram", "me", "worker", "")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetPostingMode(man.ID, PostingManual); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.SetSessionState(man.ID, StateConnected, ""); err != nil {

@@ -16,8 +16,10 @@ type Handler struct {
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
 type sendRequest struct {
-	AccountID int64  `json:"accountId"`
-	Message   string `json:"message"`
+	AccountID   int64    `json:"accountId"`
+	Message     string   `json:"message"`
+	Thread      string   `json:"thread"`
+	Attachments []string `json:"attachments"`
 }
 
 // Send handles POST /api/chat/send and POST /api/worker/chat/send.
@@ -29,7 +31,7 @@ func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	res, err := h.svc.Send(req.AccountID, req.Message)
+	res, err := h.svc.Send(req.AccountID, req.Message, req.Thread, req.Attachments...)
 	if err != nil {
 		writeSendError(w, err)
 		return
@@ -83,7 +85,7 @@ func writeSendError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNoAccount):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrEmptyMessage), errors.Is(err, ErrMessageTooBig):
+	case errors.Is(err, ErrEmptyMessage), errors.Is(err, ErrMessageTooBig), errors.Is(err, ErrBadThread), errors.Is(err, ErrBadAttachment):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrNotConnected):
 		writeError(w, http.StatusConflict, err.Error())

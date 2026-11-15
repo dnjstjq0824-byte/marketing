@@ -186,6 +186,7 @@ func (s *Store) OverviewWorkSummary(productID int64) (*OverviewWork, error) {
 	preStageDetail := map[string]string{
 		"analyze": "분석 대기 중", "strategy": "전략 대기 중", "generate": "제작 대기 중",
 		"review": "검수 대기 중", "publish": "발행 대기 중", "collect": "성과 수집 중",
+		"research": "조사 대기 중",
 	}
 	if detail, ok := preStageDetail[jobType]; ok {
 		w.Detail = detail

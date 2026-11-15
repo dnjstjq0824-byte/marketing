@@ -17,6 +17,7 @@ var (
 	ErrBadExitType = errors.New("exitType must be A or B")
 	ErrBadURL      = errors.New("sourceUrl must be an http(s) URL")
 	ErrBadPriority = errors.New("priority must be >= 0")
+	ErrBadIndustry = errors.New("industry must be cosmetics, health, food, or empty")
 )
 
 // NormalizeExitType defaults an empty exit type to A (own/partner first).

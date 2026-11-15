@@ -17,8 +17,12 @@ type Team struct {
 	RoleMode        string `json:"roleMode"`
 	Enabled         bool   `json:"enabled"`
 	LeaderAccountID *int64 `json:"leaderAccountId"`
-	CreatedAt       string `json:"createdAt"`
-	UpdatedAt       string `json:"updatedAt"`
+	// DistributionMode all/one + DistributionCap bound multi-account
+	// publishing (W21-4).
+	DistributionMode string `json:"distributionMode"`
+	DistributionCap  int    `json:"distributionCap"`
+	CreatedAt        string `json:"createdAt"`
+	UpdatedAt        string `json:"updatedAt"`
 }
 
 // TeamMember is one team membership with optional fixed roles (CSV).
@@ -28,14 +32,15 @@ type TeamMember struct {
 	FixedRole string `json:"fixedRole"`
 }
 
-const teamCols = `id,name,description,is_default,businesses,max_concurrency,role_mode,enabled,leader_account_id,created_at,updated_at`
+const teamCols = `id,name,description,is_default,businesses,max_concurrency,role_mode,enabled,leader_account_id,distribution_mode,distribution_cap,created_at,updated_at`
 
 func scanTeam(row interface{ Scan(...any) error }) (*Team, error) {
 	t := &Team{}
 	var isDefault, enabled int
 	var leader sql.NullInt64
 	err := row.Scan(&t.ID, &t.Name, &t.Description, &isDefault, &t.Businesses,
-		&t.MaxConcurrency, &t.RoleMode, &enabled, &leader, &t.CreatedAt, &t.UpdatedAt)
+		&t.MaxConcurrency, &t.RoleMode, &enabled, &leader,
+		&t.DistributionMode, &t.DistributionCap, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -105,9 +110,9 @@ func (s *Store) UpdateTeam(t *Team) error {
 	if t.LeaderAccountID != nil {
 		leader = *t.LeaderAccountID
 	}
-	_, err := s.db.Exec(`UPDATE teams SET name=?,description=?,businesses=?,max_concurrency=?,role_mode=?,enabled=?,leader_account_id=?,updated_at=?
+	_, err := s.db.Exec(`UPDATE teams SET name=?,description=?,businesses=?,max_concurrency=?,role_mode=?,enabled=?,leader_account_id=?,distribution_mode=?,distribution_cap=?,updated_at=?
 		WHERE id=?`, t.Name, t.Description, t.Businesses, t.MaxConcurrency, t.RoleMode,
-		boolInt(t.Enabled), leader, nowUTC(), t.ID)
+		boolInt(t.Enabled), leader, t.DistributionMode, t.DistributionCap, nowUTC(), t.ID)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrDuplicate

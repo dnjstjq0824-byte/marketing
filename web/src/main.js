@@ -1,8 +1,8 @@
 import { createApp } from 'vue'
 import './styles/tokens.css'
+import './styles/base.css'
 import App from './App.vue'
 import router from './router/index.js'
-import { refreshMe } from './stores/auth.js'
 
 const app = createApp(App)
 app.use(router)
@@ -13,6 +13,3 @@ app.mount('#app')
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {})
 }
-
-// Restore operator session (if a token was kept) without blocking first paint.
-refreshMe()

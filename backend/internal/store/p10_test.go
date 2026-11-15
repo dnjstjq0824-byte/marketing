@@ -169,6 +169,57 @@ func backdateLease(t *testing.T, st *Store, id int64, minutes int) {
 	}
 }
 
+// W6: the writing account cannot claim its own drafts for review; other
+// linked accounts and unlinked agents claim normally.
+func TestClaimReviewExcludesWriter(t *testing.T) {
+	st := openP10Store(t)
+	wa, err := st.CreateAccountRow(&ChannelAccount{Name: "writer", Platform: "meta_ai", Role: "worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra, err := st.CreateAccountRow(&ChannelAccount{Name: "reviewer", Platform: "claude_app", Role: "worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, _, err := st.CreateAgent("wB", "B", "", "", "", 1, &wa.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer, _, err := st.CreateAgent("wC", "C", "", "", "", 1, &ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, _, err := st.CreateAgent("wC2", "C", "", "", "", 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := st.CreateProduct("https://example.com/w6", "A", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := st.CreateContent(&Content{ProductID: p.ID, Channel: "blog", Title: "t", Body: "b",
+		GeneratedByAccountID: &wa.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateJob("review", p.ID, `{"content_ids":[`+strconv.FormatInt(c.ID, 10)+`]}`); err != nil {
+		t.Fatal(err)
+	}
+	if j, err := st.ClaimRoutedJob(writer, []string{"review"}, 600); err != nil || j != nil {
+		t.Fatalf("writer claim = %+v, %v; want nil", j, err)
+	}
+	j, err := st.ClaimRoutedJob(reviewer, []string{"review"}, 600)
+	if err != nil || j == nil {
+		t.Fatalf("reviewer claim = %+v, %v", j, err)
+	}
+	if _, err := st.DB().Exec(`UPDATE jobs SET status='pending',agent_id=0 WHERE id=?`, j.ID); err != nil {
+		t.Fatal(err)
+	}
+	if j, err := st.ClaimRoutedJob(plain, []string{"review"}, 600); err != nil || j == nil {
+		t.Fatalf("unlinked claim = %+v, %v; want job", j, err)
+	}
+}
+
 func TestReapFirstReturnsOnce(t *testing.T) {
 	st := openP10Store(t)
 	a, _, err := st.CreateAgent("wR", "A", "", "", "", 1, nil)

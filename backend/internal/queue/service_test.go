@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"somun/internal/content/policy"
+	"somun/internal/scheduler"
 	"somun/internal/store"
 )
 
@@ -21,6 +22,13 @@ func openTestStore(t *testing.T) *store.Store {
 	if err := store.Migrate(st.DB()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	// Queue tests exercise routing, not the W3 length floor (covered in
+	// guard tests); keep the floor trivially satisfiable.
+	cfg := store.DefaultAutomationSettings()
+	cfg.BlogMinLen = 1
+	if err := store.SetAutomationSettings(st.DB(), cfg); err != nil {
+		t.Fatalf("settings: %v", err)
+	}
 	return st
 }
 
@@ -31,6 +39,176 @@ func seedProduct(t *testing.T, st *store.Store, exit string) int64 {
 		t.Fatalf("seed product: %v", err)
 	}
 	return p.ID
+}
+
+// W6: generate results stamp the claiming agent's linked account as the
+// writer; worker-token claims (no agent) leave authorship unknown.
+func TestGenerateStampsWriter(t *testing.T) {
+	st := openTestStore(t)
+	pid := seedProduct(t, st, "A")
+	svc := NewService(st)
+	acc, err := st.CreateAccountRow(&store.ChannelAccount{Name: "w6w", Platform: "meta_ai", Role: "worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag, _, err := st.CreateAgent("w6B", "B", "", "", "", 1, &acc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := st.ClaimRoutedJob(ag, []string{"generate"}, 600)
+	if err != nil || j != nil {
+		t.Fatalf("empty claim = %+v, %v", j, err)
+	}
+	if _, err := st.CreateJob(JobGenerate, pid, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	j, err = st.ClaimRoutedJob(ag, []string{"generate"}, 600)
+	if err != nil || j == nil {
+		t.Fatalf("claim = %+v, %v", j, err)
+	}
+	res := GenerateResult{Contents: []GenerateItem{{Channel: "blog", Title: "t", Body: "b"}}}
+	if _, _, err := svc.SubmitGenerate(j.ID, res); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := st.ListContents("draft", "", 10)
+	if err != nil || len(contents) != 1 {
+		t.Fatalf("drafts = %+v, %v", contents, err)
+	}
+	got := contents[0].GeneratedByAccountID
+	if got == nil || *got != acc.ID {
+		t.Fatalf("writer = %+v, want %d", got, acc.ID)
+	}
+}
+
+// W1: research stores a topic reading and opens the strategy job.
+func TestSubmitResearch(t *testing.T) {
+	st := openTestStore(t)
+	pid := seedProduct(t, st, "A")
+	svc := NewService(st)
+	j, err := st.CreateJob(JobResearch, pid, `{"topic":"camping"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimNextJob(JobResearch, "w"); err != nil {
+		t.Fatal(err)
+	}
+	done, err := svc.SubmitResearch(j.ID, ResearchResult{
+		TopicTitle: "Camping", KeyPoints: "fuel,safety", Outline: "1-2-3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != StatusDone {
+		t.Fatalf("status = %s", done.Status)
+	}
+	reading, err := st.GetReadingByProduct(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reading.ProductName != "Camping" || reading.DetailCore == "" {
+		t.Fatalf("reading = %+v", reading)
+	}
+	if sj, err := st.ClaimNextJob(JobStrategy, "w"); err != nil || sj == nil {
+		t.Fatalf("strategy job = %+v, %v", sj, err)
+	}
+	if _, err := svc.SubmitResearch(j.ID, ResearchResult{}); err == nil {
+		t.Fatal("double submit accepted")
+	}
+}
+
+// W3-2/4: platform pins validate against the brief; media passes through.
+func TestGeneratePlatformAndMedia(t *testing.T) {
+	st := openTestStore(t)
+	pid := seedProduct(t, st, "A")
+	if err := st.SetProductBrief(pid, `{"channels":[{"channel":"blog","platform":"naver"},{"channel":"blog","platform":"tistory"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(st)
+	j, err := st.CreateJob(JobGenerate, pid, "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimNextJob(JobGenerate, "w"); err != nil {
+		t.Fatal(err)
+	}
+	res := GenerateResult{Contents: []GenerateItem{
+		{Channel: "blog", Title: "a", Body: "x", Platform: "tistory", Media: `{"images":2}`},
+		{Channel: "blog", Title: "b", Body: "y", Platform: "instagram"},
+		{Channel: "blog", Title: "c", Body: "z"},
+	}}
+	if _, _, err := svc.SubmitGenerate(j.ID, res); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := st.ListContents("draft", "", 10)
+	if err != nil || len(contents) != 3 {
+		t.Fatalf("drafts = %+v, %v", contents, err)
+	}
+	byTitle := map[string]*store.Content{}
+	for _, c := range contents {
+		byTitle[c.Title] = c
+	}
+	if byTitle["a"].WantPlatform != "tistory" {
+		t.Fatalf("pin = %q", byTitle["a"].WantPlatform)
+	}
+	if byTitle["a"].MediaSpec != `{"images":2}` {
+		t.Fatalf("media = %q", byTitle["a"].MediaSpec)
+	}
+	if byTitle["b"].WantPlatform != "" {
+		t.Fatalf("bad pin kept: %q", byTitle["b"].WantPlatform)
+	}
+	if byTitle["c"].WantPlatform != "" {
+		t.Fatalf("empty pin = %q", byTitle["c"].WantPlatform)
+	}
+}
+
+// W16: follow-up payloads carry the team brand card.
+func TestPayloadBrand(t *testing.T) {
+	st := openTestStore(t)
+	svc := NewService(st)
+	pid := seedProduct(t, st, "A")
+	tm, err := st.CreateTeam("TB", "", "", 0, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO team_brands(team_id,intro,tone,banned_words,buy_link,updated_at) VALUES(?,'LUNO','친근','최저가','https://shop.test/l','t')`, tm.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetProductTeam(pid, tm.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := svc.brandFor(pid)
+	if got["intro"] != "LUNO" || got["banned"] != "최저가" {
+		t.Fatalf("brand = %v", got)
+	}
+}
+
+// W6: boot-check refuses accounts bound across B+C lanes.
+func TestBootCheck(t *testing.T) {
+	st := openTestStore(t)
+	svc := NewService(st)
+	acc, err := st.CreateAccountRow(&store.ChannelAccount{Name: "w6b", Platform: "meta_ai", Role: "worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, lanes, err := svc.BootCheck(acc.ID)
+	if err != nil || !ok || len(lanes) != 0 {
+		t.Fatalf("unbound = %v %v %v", ok, lanes, err)
+	}
+	if _, _, err := st.CreateAgent("w6bB", "B", "", "", "", 1, &acc.ID); err != nil {
+		t.Fatal(err)
+	}
+	ok, lanes, err = svc.BootCheck(acc.ID)
+	if err != nil || !ok {
+		t.Fatalf("B-only = %v %v %v", ok, lanes, err)
+	}
+	// Bypass the register guard to simulate a legacy split row.
+	if _, err := st.DB().Exec(`INSERT INTO agents(label,lane,account_id,capacity,token_hash,token_prefix,created_at,updated_at) VALUES('w6bC','C',?,1,'x','x','t','t')`, acc.ID); err != nil {
+		t.Fatal(err)
+	}
+	ok, lanes, err = svc.BootCheck(acc.ID)
+	if err != nil || ok {
+		t.Fatalf("B+C split = %v %v %v; want refuse", ok, lanes, err)
+	}
 }
 
 // Parallel claims of one pending job must assign it exactly once.
@@ -299,7 +477,7 @@ func TestJobTypeValidation(t *testing.T) {
 			t.Fatalf("type %q err = %v, want ErrBadJobType", bad, err)
 		}
 	}
-	for _, good := range []string{JobAnalyze, JobStrategy, JobGenerate, JobReview, JobPublish} {
+	for _, good := range []string{JobAnalyze, JobStrategy, JobGenerate, JobReview, JobPublish, JobResearch} {
 		if err := ValidateJobType(good); err != nil {
 			t.Fatalf("type %q err = %v", good, err)
 		}
@@ -316,7 +494,7 @@ func TestSubmitReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	mkDraft := func() int64 {
-		c, err := st.CreateContent(&store.Content{ProductID: pid, Channel: "blog", Body: "b"})
+		c, err := st.CreateContent(&store.Content{ProductID: pid, Channel: "blog", Body: "b https://example.com/item"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -333,11 +511,20 @@ func TestSubmitReview(t *testing.T) {
 		return j.ID
 	}
 	svc := NewService(st)
+	svc.Scheduler = scheduler.NewService(st, nil)
+	if err := st.SetChannelPlatformStatus("instagram", store.PlatformReady); err != nil {
+		t.Fatal(err)
+	}
 
-	// Approve with target -> queued + scheduled + chief note.
-	d1 := mkDraft()
+	// W4: AI-supplied account is ignored; the server assigns from the brief.
+	pb, _ := st.CreateProduct("https://example.com/b", "A", 0, "")
+	if err := st.SetProductBrief(pb.ID, `{"channels":[{"channel":"blog","platform":"instagram"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	cb, _ := st.CreateContent(&store.Content{ProductID: pb.ID, Channel: "blog", Body: "b https://example.com/b"})
+	d1 := cb.ID
 	if _, err := svc.SubmitReview(newReviewJob(), ReviewResult{Decisions: []ReviewDecisionItem{
-		{ContentID: d1, Approve: true, Reason: "good", Account: "racc",
+		{ContentID: d1, Approve: true, Reason: "good", Account: "ghost",
 			Platform: "instagram", ScheduledAt: "2030-01-01T00:00:00Z"},
 	}}); err != nil {
 		t.Fatal(err)
@@ -375,11 +562,18 @@ func TestSubmitReview(t *testing.T) {
 		t.Fatalf("reviews = %+v", revs)
 	}
 
-	// Bad target fails the whole submission; the job stays claimed.
+	// Out-of-scope content fails the whole submission; the job stays claimed.
 	d4 := mkDraft()
-	jid := newReviewJob()
+	if _, err := st.CreateJob(JobReview, pid, `{"content_ids":[999999]}`); err != nil {
+		t.Fatal(err)
+	}
+	cj, err := st.ClaimNextJob(JobReview, "muse-ai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jid := cj.ID
 	if _, err := svc.SubmitReview(jid, ReviewResult{Decisions: []ReviewDecisionItem{
-		{ContentID: d4, Approve: true, Account: "ghost", Platform: "instagram"},
+		{ContentID: d4, Approve: true},
 	}}); !errors.Is(err, ErrBadDecision) {
 		t.Fatalf("err = %v, want ErrBadDecision", err)
 	}

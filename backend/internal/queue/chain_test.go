@@ -5,10 +5,12 @@ import (
 	"testing"
 )
 
-// D21: three rejects on one revision chain create exactly two regenerations,
-// then escalate to a human instead of looping forever. The flow mirrors
-// production: generate drafts link onto the chain, each batch auto-creates
-// its review job, and rejects walk the newest draft.
+// D21+W6: three rejects on one revision chain create exactly two
+// regenerations, then dispose the chain to archived with one info notice
+// instead of looping forever. Superseded originals archive the moment
+// their revision is born. The flow mirrors production: generate drafts
+// link onto the chain, each batch auto-creates its review job, and
+// rejects walk the newest draft.
 func TestRejectCapCountsWholeChain(t *testing.T) {
 	st := openTestStore(t)
 	pid := seedProduct(t, st, "A")
@@ -96,7 +98,7 @@ func TestRejectCapCountsWholeChain(t *testing.T) {
 		t.Fatalf("third draft root = %d, want %d", got.RevisionRootID, first)
 	}
 
-	// Third reject: no new generate job, one human escalation.
+	// Third reject: no new generate job, one info notice, chain disposed.
 	reject(third)
 	if j, err := st.ClaimNextJob(JobGenerate, "w"); err != nil {
 		t.Fatal(err)
@@ -113,5 +115,15 @@ func TestRejectCapCountsWholeChain(t *testing.T) {
 	revs, err := st.ListRevisionIDs(first)
 	if err != nil || len(revs) != 2 || revs[0] != second || revs[1] != third {
 		t.Fatalf("revisions = %v, %v; want [%d %d]", revs, err, second, third)
+	}
+	// W6: superseded originals and the cap-hit chain rest in archived.
+	for _, id := range []int64{first, second, third} {
+		got, err := st.GetContent(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != "archived" {
+			t.Fatalf("content %d status = %s, want archived", id, got.Status)
+		}
 	}
 }

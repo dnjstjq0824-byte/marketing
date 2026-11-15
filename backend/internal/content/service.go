@@ -192,8 +192,14 @@ func (s *Service) ensurePublishJob(c *store.Content, account, platform string) e
 	})
 	// Literal "publish": importing queue here would cycle
 	// (content -> queue -> agent -> session -> content).
-	_, err = s.store.CreateJobFull("publish", c.ID, string(payload), business, priority, false)
-	return err
+	pubJob, err := s.store.CreateJobFull("publish", c.ID, string(payload), business, priority, false)
+	if err != nil {
+		return err
+	}
+	if team, terr := s.store.EffectiveProductTeam(c.ProductID); terr == nil {
+		_ = s.store.SetJobTeam(pubJob.ID, team)
+	}
+	return nil
 }
 
 // ResumeAccount releases an account's held items after re-login, except items
@@ -254,6 +260,43 @@ func (s *Service) RecordManualPublish(id int64, url string) (*store.Content, err
 		// complete it instead of failing.
 		if _, err := s.store.CompletePublishLog(id, c.TargetPlatform, c.TargetAccount,
 			doneAt, strings.TrimSpace(url)); err != nil {
+			return nil, err
+		}
+	}
+	return s.store.GetContent(id)
+}
+
+// ConfirmPublished records the operator's "올라가 있음 / 안 올라감" verdict
+// (S3-D; besides hold/delete, the only human content-state control).
+// published=true completes a queued post exactly like a manual publish
+// record (URL evidence required). published=false keeps the post queued
+// for the next attempt and files a failed log entry for the record.
+func (s *Service) ConfirmPublished(id int64, published bool, url string) (*store.Content, error) {
+	if published {
+		return s.RecordManualPublish(id, url)
+	}
+	c, err := s.store.GetContent(id)
+	if err != nil {
+		return nil, err
+	}
+	if c.Status != policy.StatusQueued && c.Status != "failed" {
+		return nil, errors.New("only queued items can record a failed check")
+	}
+	if strings.TrimSpace(c.TargetAccount) == "" || strings.TrimSpace(c.TargetPlatform) == "" {
+		return nil, errors.New("schedule first: target account and platform are required")
+	}
+	const reason = "operator: not published"
+	log, err := s.store.GetPublishLog(id, c.TargetPlatform, c.TargetAccount)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+	switch {
+	case log != nil:
+		if err := s.store.MarkLogFailed(log.ID, log.Attempts+1, reason); err != nil {
+			return nil, err
+		}
+	default:
+		if _, err := s.store.CreatePublishLog(id, c.TargetPlatform, c.TargetAccount, "failed", reason); err != nil {
 			return nil, err
 		}
 	}

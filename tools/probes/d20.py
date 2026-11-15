@@ -1,9 +1,12 @@
-"""D20 data-discipline probes: day windows, guards, stuck, retention.
+"""D20 data-discipline probes: guards, stuck, retention.
 
 Usage: SOMUN_URL=... python tools/probes/d20.py
 Standard library only. Fresh DATA_DIR per run.
+
+W8 removed the schedule API, so reservation-based checks (day windows,
+release guard, schedule-backed holds) are gone. W4 (auto-assign) re-covers
+them; retention and relogin behavior stay covered here.
 """
-import datetime
 import sys
 
 sys.path.insert(0, __file__.rsplit("\\", 1)[0] if "\\" in __file__ else __file__.rsplit("/", 1)[0])
@@ -45,30 +48,13 @@ def main():
                    {"postingMode": "auto", "sessionState": "connected"})
     assert code == 200, code
 
-    today = datetime.datetime.now().astimezone()
-    noon = today.replace(hour=12, minute=0, second=0, microsecond=0)
-    if noon < today:
-        noon = noon + datetime.timedelta(days=1)
-    noon_iso = noon.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    code, body = c.op("POST", "/api/contents/%d/schedule" % cid,
-                      {"account": "d20a", "platform": "instagram", "scheduledAt": noon_iso})
-    check("d20-reserve", code == 200 and body.get("queuePosition") == 1, str(body))
-    code, body = c.op("GET", "/api/dashboard")
-    ids = [x["id"] for x in body["today"]]
-    if noon.date() == today.date():
-        check("d20-today-window", cid in ids, str(ids))
-    else:
-        check("d20-today-window", cid not in ids, str(ids))
-
-    code, body = c.op("DELETE", "/api/session/accounts/%d" % accid)
-    check("d20-release-guard-409", code == 409, str((code, body)))
     code, body = c.op("GET", "/api/dashboard")
     check("d20-stuck-zero", body["counts"]["jobsStuck"] == 0, str(body["counts"]))
 
     code, body = c.op("POST", "/api/system/purge")
     check("d20-purge-ok", code == 200 and body.get("ok") is True, str(body))
     code, body = c.op("GET", "/api/contents/%d" % cid)
-    check("d20-queued-survives", code == 200, str(code))
+    check("d20-content-survives", code == 200, str(code))
     code, body = c.op("GET", "/api/products/%d" % pid)
     check("d20-product-survives", code == 200, str(code))
 
@@ -82,12 +68,6 @@ def main():
     code, body = c.op("GET", "/api/session/relogin-queue")
     names = [i["accountName"] for i in body["items"]]
     check("d20-relogin-skips-hold", "d20a" not in names, str(names))
-    code, body = c.op("GET", "/api/contents/%d" % cid)
-    check("d20-still-held", body.get("held") is True, str(body.get("held")))
-    code, _ = c.op("PATCH", "/api/session/accounts/%d" % accid, {"sessionState": "connected"})
-    assert code == 200, code
-    code, body = c.op("GET", "/api/contents/%d" % cid)
-    check("d20-hold-no-autoresume", body.get("held") is True, str(body.get("held")))
 
     pid2, cid2 = finish_to_draft(c, "D20", "https://e.com/d20b")
     _ = pid2

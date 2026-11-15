@@ -1,6 +1,7 @@
 package works
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -24,6 +25,10 @@ func openWorksStore(t *testing.T) *store.Store {
 func TestCreateURL(t *testing.T) {
 	st := openWorksStore(t)
 	svc := NewService(st)
+	mkt, err := st.CreateTeam("마케팅1팀", "", "LUNO", 0, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
 	id, err := svc.Create(CreateReq{
 		Inputs:   []InputReq{{Kind: "url", URL: "https://shop.test/p1"}},
 		Channels: []ChannelReq{{Channel: "blog", Platform: "naver", Versions: 2}},
@@ -40,6 +45,82 @@ func TestCreateURL(t *testing.T) {
 	}
 	if p.SourceURL != "https://shop.test/p1" || p.ExitType != "B" || p.BriefJSON == "" {
 		t.Fatalf("product = %+v", p)
+	}
+	if p.TeamID == nil || *p.TeamID != mkt.ID {
+		t.Fatalf("team = %+v, want %d", p.TeamID, mkt.ID)
+	}
+	def, err := st.DefaultTeam()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auto, err := svc.Create(CreateReq{
+		Inputs:   []InputReq{{Kind: "topic", Text: "주제"}},
+		Channels: []ChannelReq{{Channel: "blog", Platform: "naver", Versions: 1}},
+		Business: "낯선사업",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ap, err := st.GetProduct(auto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ap.TeamID == nil || *ap.TeamID != def.ID {
+		t.Fatalf("auto team = %+v, want default %d", ap.TeamID, def.ID)
+	}
+	if _, err := svc.Create(CreateReq{
+		Inputs:   []InputReq{{Kind: "topic", Text: "주제"}},
+		Channels: []ChannelReq{{Channel: "blog", Platform: "naver", Versions: 1}},
+		Team:     "없는팀",
+	}); err == nil {
+		t.Fatal("unknown team accepted")
+	}
+	// W21-4: mode all grows versions to cover eligible accounts.
+	for _, n := range []string{"wb1", "wb2", "wb3"} {
+		if _, err := st.CreateAccountRow(&store.ChannelAccount{Name: n, Platform: "naver_blog",
+			SessionState: "connected", PostingMode: "auto"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vid, err := svc.Create(CreateReq{
+		Inputs:   []InputReq{{Kind: "topic", Text: "주제"}},
+		Channels: []ChannelReq{{Channel: "blog", Platform: "naver", Versions: 1}},
+		Business: "LUNO",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vp, _ := st.GetProduct(vid)
+	var vb struct {
+		Channels []struct {
+			Versions int `json:"versions"`
+		} `json:"channels"`
+	}
+	if err := json.Unmarshal([]byte(vp.BriefJSON), &vb); err != nil {
+		t.Fatal(err)
+	}
+	if len(vb.Channels) != 1 || vb.Channels[0].Versions != 3 {
+		t.Fatalf("versions = %+v, want 3", vb.Channels)
+	}
+	// W1: input typing sticks to the product row.
+	if p.InputKind != "url" || ap.InputKind != "topic" || ap.Topic != "주제" {
+		t.Fatalf("kinds = %s/%s topic %q", p.InputKind, ap.InputKind, ap.Topic)
+	}
+	if ap.TargetPlatforms != `["naver_blog"]` {
+		t.Fatalf("targets = %s", ap.TargetPlatforms)
+	}
+	jobs, err := st.ListRecentJobs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	for _, j := range jobs {
+		if j.RefID == auto && j.Status == "pending" {
+			first = j.Type
+		}
+	}
+	if first != "research" {
+		t.Fatalf("topic first job = %q, want research", first)
 	}
 	d, err := st.WorkDetailByID(id)
 	if err != nil {
@@ -99,7 +180,7 @@ func TestCreateValidation(t *testing.T) {
 		{"bad url", func(r *CreateReq) { r.Inputs[0].URL = "notaurl" }, nil},
 		{"no channel", func(r *CreateReq) { r.Channels = nil }, ErrNoChannel},
 		{"bad channel", func(r *CreateReq) { r.Channels[0].Channel = "tv" }, ErrBadChannel},
-		{"bad versions", func(r *CreateReq) { r.Channels[0].Versions = 9 }, ErrBadVersions},
+		{"bad versions", func(r *CreateReq) { r.Channels[0].Versions = 11 }, ErrBadVersions},
 		{"bad start", func(r *CreateReq) { r.StartAt = "어제" }, ErrBadStart},
 		{"no disclosure", func(r *CreateReq) { r.Affiliate.IsSponsored = true }, ErrNoDisclosure},
 		{"bad media", func(r *CreateReq) {

@@ -29,7 +29,7 @@
           <div class="stepper" role="group" aria-label="버전 수">
             <button @click="bump(c.key, -1)" :disabled="picked[c.key].versions <= 1" aria-label="버전 줄이기">−</button>
             <span class="num">{{ picked[c.key].versions }}</span>
-            <button @click="bump(c.key, 1)" :disabled="picked[c.key].versions >= 4" aria-label="버전 늘리기">＋</button>
+            <button @click="bump(c.key, 1)" :disabled="picked[c.key].versions >= 10" aria-label="버전 늘리기">＋</button>
           </div>
         </div>
       </div>
@@ -38,6 +38,13 @@
     <section class="card" aria-label="사업과 옵션">
       <h2 class="section-title">사업과 옵션</h2>
       <label>사업 <input v-model="business" placeholder="비우면 공용" maxlength="80" /></label>
+      <label>맡길 팀
+        <select v-model="team">
+          <option value="">자동 (사업 전담팀이 맡음)</option>
+          <option v-for="t in teams" :key="t.team.id" :value="String(t.team.id)">{{ t.team.name }}</option>
+        </select>
+        <span class="hint">팀을 고르면 그 팀이 맡고, 자동이면 사업 전담팀이 맡습니다.</span>
+      </label>
       <label class="check"><input v-model="useStart" type="checkbox" /> 발행 시작 시간 정하기</label>
       <input v-if="useStart" v-model="startAt" type="datetime-local" aria-label="발행 시작" />
       <label class="check"><input v-model="sponsored" type="checkbox" /> 제휴·광고입니다</label>
@@ -53,8 +60,8 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { apiFetch } from '../stores/auth.js'
 import { toast } from '../stores/toast.js'
 import { uploads } from '../stores/upload.js'
@@ -62,6 +69,7 @@ import ConfirmModal from '../components/ConfirmModal.vue'
 import Dropzone from '../components/Dropzone.vue'
 
 const router = useRouter()
+const route = useRoute()
 const kinds = ['url', 'image', 'topic']
 const CHANNELS = [
   { key: 'blog', label: '네이버 블로그' },
@@ -81,6 +89,8 @@ const url = ref('')
 const topic = ref('')
 const picked = ref({})
 const business = ref('')
+const team = ref('')
+const teams = ref([])
 const useStart = ref(false)
 const startAt = ref('')
 const sponsored = ref(false)
@@ -105,10 +115,37 @@ function toggleChannel(key) {
   picked.value[key] = { platform: platformsFor(key)[0], versions: 1 }
 }
 
+// W1: default channels follow the connected channel accounts.
+// Only platforms with a brief spelling are preselected; the rest stay
+// manual until their channel kinds exist.
+const PLATFORM_CHANNEL = {
+  naver_blog: ['blog', 'naver'], tistory: ['blog', 'tistory'],
+  instagram: ['instagram', 'instagram'],
+  youtube: ['shortform', 'youtube'], tiktok: ['shortform', 'tiktok'],
+}
+
+async function preselectConnected() {
+  let accounts = []
+  try {
+    const data = await apiFetch('/api/session/accounts')
+    accounts = data.accounts || []
+  } catch {
+    return
+  }
+  const seen = new Set()
+  for (const a of accounts) {
+    if (a.kind === 'agent_service' || a.sessionState !== 'connected') continue
+    const map = PLATFORM_CHANNEL[a.platform]
+    if (!map || seen.has(map[0] + map[1])) continue
+    seen.add(map[0] + map[1])
+    if (!picked.value[map[0]]) picked.value[map[0]] = { platform: map[1], versions: 1 }
+  }
+}
+
 function bump(key, d) {
   const c = picked.value[key]
   if (!c) return
-  c.versions = Math.min(4, Math.max(1, c.versions + d))
+  c.versions = Math.min(10, Math.max(1, c.versions + d))
 }
 
 const doneMedia = computed(() => uploads.filter((r) => r.state === 'done' && r.mediaId).map((r) => r.mediaId))
@@ -116,7 +153,20 @@ const uploading = computed(() => uploads.some((r) => r.state === 'queued' || r.s
 
 const confirmText = computed(() => {
   const n = Object.keys(picked.value).length
-  return `채널 ${n}개로 작업을 만듭니다.`
+  const t = teams.value.find((x) => String(x.team.id) === team.value)
+  return `채널 ${n}개로 작업을 만듭니다.` + (t ? ` (${t.team.name} 맡음)` : '')
+})
+
+onMounted(async () => {
+  try {
+    const data = await apiFetch('/api/teams')
+    teams.value = data.items || []
+  } catch {
+    teams.value = []
+  }
+  if (typeof route.query.team === 'string' && route.query.team) team.value = route.query.team
+  if (typeof route.query.business === 'string' && route.query.business) business.value = route.query.business
+  await preselectConnected()
 })
 
 function validate() {
@@ -153,7 +203,7 @@ async function submit() {
       business: business.value.trim(),
       startAt: useStart.value ? startAt.value : '',
       affiliate: { isSponsored: sponsored.value, disclosure: disclosure.value.trim() },
-      team: '',
+      team: team.value,
     }
     const data = await apiFetch('/api/works', { method: 'POST', body: JSON.stringify(body) })
     toast(`작업 #${data.id}을 만들었습니다`)
@@ -167,7 +217,7 @@ async function submit() {
 </script>
 
 <style scoped>
-.new { display: flex; flex-direction: column; gap: var(--s4); max-width: 720px; }
+.new { display: flex; flex-direction: column; gap: var(--s4); }
 .card {
   background: var(--panel);
   border: 1px solid var(--line-soft);
@@ -223,5 +273,9 @@ label.check input { width: auto; }
 .submitbar .ghost { border: 1px solid var(--line); background: var(--panel); }
 @media (max-width: 900px) {
   .chcfg { flex-wrap: wrap; }
+}
+@media (min-width: 1400px) {
+  .new { display: grid; grid-template-columns: 7fr 5fr; align-items: start; }
+  .new > h1, .new > section:first-of-type, .new > .submitbar { grid-column: 1 / -1; }
 }
 </style>

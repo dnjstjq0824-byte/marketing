@@ -12,9 +12,14 @@
         <li><span class="n" :class="{ on: phase === 'busy' || phase === 'done' }">3</span> 완료 확인</li>
       </ol>
       <label v-if="phase === 'ask' && needsGoogleLogin(account.platform)" class="check">
-        <input v-model="realProfile" type="checkbox" /> 내 크롬으로 열기 (Google 로그인이 막힐 때만, 크롬 완전 종료 필요)
+        <input v-model="realProfile" type="checkbox" :disabled="!!realHolder" /> 내 크롬으로 열기 (Google 로그인이 막힐 때만, 크롬 완전 종료 필요)
       </label>
-      <p v-if="phase === 'ask'" class="muted small">브라우저 열기를 누르면 새 시크릿 창으로 열립니다. 브라우저가 안 뜨면: 파워셸에서 <code>adapter\.venv\Scripts\python -m adapter.login {{ account.name }} {{ account.platform }} --incognito</code> 실행 후 직접 로그인하고, 아래 바로 확인을 누르세요.</p>
+      <p v-if="phase === 'ask' && realHolder" class="muted small">내 크롬은 이미 {{ realHolder }} 계정이 쓰고 있어 이 계정에는 쓸 수 없습니다.</p>
+      <p v-if="phase === 'ask'" class="muted small">브라우저 열기를 누르면 새 시크릿 창으로 열립니다.</p>
+      <details v-if="phase === 'ask'" class="muted small">
+        <summary>브라우저가 안 뜨면</summary>
+        <p>파워셸에서 <code>adapter\.venv\Scripts\python -m adapter.login {{ account.name }} {{ account.platform }} --incognito</code> 실행 후 직접 로그인하고, 아래 바로 확인을 누르세요.</p>
+      </details>
       <p v-if="phase === 'waiting'" class="banner warn">브라우저가 열렸습니다. 로그인을 끝낸 뒤 아래 완료 확인을 누르세요.</p>
       <p v-if="phase === 'busy'" class="banner warn">확인 중입니다. 잠시 기다리세요.</p>
       <p v-if="msg" :class="ok ? 'banner okk' : 'error'">{{ msg }}</p>
@@ -37,6 +42,7 @@ import { GOOGLE_SSO_PLATFORMS, LOGIN_HINT, label, PLATFORM } from '../stores/lab
 const props = defineProps({
   account: { type: Object, required: true },
   next: { type: Object, default: null },
+  realHolder: { type: String, default: '' },
 })
 const emit = defineEmits(['done', 'close', 'next'])
 
@@ -142,6 +148,8 @@ function onBackdrop() {
 .n.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .check { display: flex; align-items: center; gap: var(--s2); }
 .check input { width: auto; }
+details summary { cursor: pointer; font-weight: 700; }
+details p { margin: var(--s1) 0 0; }
 code { background: var(--soft); padding: 0 4px; border-radius: 4px; font-size: 12px; }
 .banner { border-radius: var(--r-md); padding: var(--s3); }
 .banner.warn { background: var(--hold-soft); }

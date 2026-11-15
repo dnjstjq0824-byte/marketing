@@ -62,22 +62,22 @@ def _visible_texts(page):
     return texts
 
 
-def check(account, platform_name, base_url=""):
+def check(account, platform_name, base_url="", json_path=""):
     """Return (verdict, message).
 
     verdict is True (logged in), False (logged out), or None (cannot tell:
-    no session file, unknown platform, no markers pinned, browser error).
+    no session file, unknown platform, browser error). Marker-less custom
+    AI falls back to the default marker set (W15-3).
     """
     try:
-        platform = platforms.get_platform(platform_name)
+        platform = platforms.resolve(platform_name, json_path)
     except KeyError:
         return None, "unknown platform: %s" % platform_name
+    except ValueError as exc:
+        return None, str(exc)
     if not browser.has_session(account):
         return None, "no saved session for %s" % account
-    markers = [m for m in (getattr(platform, "logged_out_markers", ()) or ())
-               if m]
-    if not markers:
-        return None, "no logged-out markers pinned for %s" % platform_name
+    markers = platforms.effective_markers(platform)
     base = (base_url or config.STUB_BASE_URL).rstrip("/")
     try:
         with browser.BrowserSession(account) as sess:
@@ -129,10 +129,18 @@ def check(account, platform_name, base_url=""):
 
 def main(argv):
     if len(argv) < 3:
-        print("usage: python -m adapter.verify <account> <platform>")
+        print("usage: python -m adapter.verify <account> <platform> [--platform-json path]")
         return 2
+    json_path = ""
+    rest = argv[3:]
+    if "--platform-json" in rest:
+        i = rest.index("--platform-json")
+        if i + 1 >= len(rest) or not rest[i + 1]:
+            print("--platform-json needs a path")
+            return 2
+        json_path = rest[i + 1]
     try:
-        verdict, message = check(argv[1], argv[2])
+        verdict, message = check(argv[1], argv[2], json_path=json_path)
     except Exception as exc:
         print("verify error: %s" % exc)
         return 2

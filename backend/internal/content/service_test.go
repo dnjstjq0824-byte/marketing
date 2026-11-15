@@ -90,6 +90,65 @@ func TestRecordManualPublishCompletesPlan(t *testing.T) {
 	}
 }
 
+// "올라가 있음" completes a queued post; "안 올라감" keeps it queued
+// and files a failed log entry instead.
+func TestConfirmPublished(t *testing.T) {
+	st := openContentStore(t)
+	svc := NewService(st)
+
+	yes := seedQueued(t, st, true)
+	got, err := svc.ConfirmPublished(yes, true, "https://example.com/post/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "published" {
+		t.Fatalf("status = %s", got.Status)
+	}
+
+	no := seedQueued(t, st, true)
+	got, err = svc.ConfirmPublished(no, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "queued" {
+		t.Fatalf("status = %s, want queued", got.Status)
+	}
+	rec, err := st.GetPublishLog(no, "instagram", "acc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != "failed" || rec.Note != "operator: not published" {
+		t.Fatalf("log = %+v", rec)
+	}
+
+	// An existing plan row is marked failed rather than duplicated.
+	plan := seedQueued(t, st, true)
+	if _, err := st.CreatePublishLog(plan, "instagram", "acc", "scheduled", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ConfirmPublished(plan, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ = st.GetPublishLog(plan, "instagram", "acc")
+	if rec.Status != "failed" || rec.Attempts != 1 {
+		t.Fatalf("plan log = %+v", rec)
+	}
+
+	// Drafts and unscheduled posts are rejected either way.
+	p, _ := st.CreateProduct("https://example.com/z", "A", 0, "")
+	c, _ := st.CreateContent(&store.Content{ProductID: p.ID, Channel: "blog", Body: "b"})
+	if _, err := svc.ConfirmPublished(c.ID, false, ""); err == nil {
+		t.Fatal("draft not-published accepted")
+	}
+	unsched := seedQueued(t, st, false)
+	if _, err := svc.ConfirmPublished(unsched, false, ""); err == nil {
+		t.Fatal("unscheduled not-published accepted")
+	}
+	if _, err := svc.ConfirmPublished(unsched, true, "notaurl"); err == nil {
+		t.Fatal("bad URL accepted")
+	}
+}
+
 // Non-queued, unscheduled, and bad-URL records are rejected.
 func TestRecordManualPublishRejected(t *testing.T) {
 	st := openContentStore(t)

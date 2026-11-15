@@ -103,6 +103,24 @@ $env:PLAYWRIGHT_E2E = "1"
 adapter\.venv\Scripts\python adapter\test_adapter.py   # 스텁 E2E 포함
 ```
 
+## 실셀렉터 확정 절차 (W5-1, 실세션 필요)
+
+전제: 의장이 테스트 계정으로 해당 플랫폼에 로그인한 세션이 있어야 한다.
+세션 없이 셀렉터를 추측해 적지 않는다.
+
+1. 테스트 계정으로 콘솔에서 로그인한다(연결 화면 → 로그인).
+2. `ADAPTER_SELECTORS_DIR` 폴더에 `<플랫폼>.json`을 만든다.
+   키는 `logged_in_selector`, `compose_path`, `title_selector`,
+   `body_selector`, `submit_selector`, `posted_url_hint`,
+   `file_selector`, `tag_selector` 중 필요한 것만 적는다.
+   예: `{"compose_path": "https://blog.naver.com/아이디/postwrite", ...}`
+3. 서버를 재기동 없이 그대로 두고 테스트 발행 1건을 수행한다.
+   오버레이는 호출마다 읽히므로 저장 즉시 반영된다.
+4. 실패하면 증거 폴더의 `fail_*.png`로 어디서 막혔는지 확인하고
+   셀렉터를 고친다. 성공하면 해당 플랫폼을 `ready`로 바꾼다.
+5. 네이버 스마트에디터 ONE처럼 에디터가 iframe 안에 있으면 별도
+   지정 없이도 `fill_any`/`click_any`가 프레임을 뒤져 찾아준다.
+
 ## 주의
 
 - 세션 파일은 자격과 동급이다. 백업에 포함하지 않고(금고 키·DB와 분리),

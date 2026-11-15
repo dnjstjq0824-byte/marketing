@@ -13,8 +13,13 @@
         <button class="ghost small" @click="openBulk('agent_service')">여러 개 한 번에</button>
       </div>
       <div v-for="g in aiGroups" :key="g.platform" class="group">
-        <h3 class="muted small">{{ g.label }}</h3>
-        <AccountRow v-for="a in g.items" :key="a.id" :account="a" :held="heldOf(a.id)" ai @chat="openChat(a)" @login="openLogin(a)" @unregister="askUnregister(a)" />
+        <h3 class="muted small">{{ g.label }} · {{ g.items.length }}기
+          <span v-if="g.custom"> · 내가 추가한 AI</span>
+          <span v-if="g.chatStatus === 'ok'"> · 대화 연결됨</span>
+          <span v-else-if="g.chatStatus === 'unlinked'"> · 대화 미연결</span>
+          <button v-if="g.custom" class="ghost small" @click="openAIEdit(g.platform)">관리</button>
+        </h3>
+        <AccountRow v-for="a in g.items" :key="a.id" :account="a" :held="heldOf(a.id)" :team="teamOf(a.id)" ai @chat="openChat(a)" @login="openLogin(a)" @unregister="askUnregister(a)" @probe="runProbe(a)" @plan="openPlan(a)" />
         <p v-if="!g.items.length" class="muted small">아직 없습니다.</p>
       </div>
     </section>
@@ -26,12 +31,12 @@
         <button class="ghost small" @click="openBulk('channel')">여러 개 한 번에</button>
       </div>
       <div v-for="g in channelGroups" :key="g.platform" class="group">
-        <h3 class="muted small">{{ g.label }}</h3>
-        <AccountRow v-for="a in g.items" :key="a.id" :account="a" :held="heldOf(a.id)" @login="openLogin(a)" @unregister="askUnregister(a)" @mode="flipMode(a)" />
+        <h3 class="muted small">{{ g.label }} · {{ g.items.length }}개</h3>
+        <AccountRow v-for="a in g.items" :key="a.id" :account="a" :held="heldOf(a.id)" :team="teamOf(a.id)" @login="openLogin(a)" @unregister="askUnregister(a)" @mode="flipMode(a)" />
         <p v-if="!g.items.length" class="muted small">아직 없습니다.</p>
       </div>
     </section>
-    <LoginDialog v-if="loginDlg" :account="loginDlg" :next="nextPending" @done="onLoginDone" @close="loginDlg = null" @next="openLogin" />
+    <LoginDialog v-if="loginDlg" :key="loginDlg.id" :account="loginDlg" :next="nextPending" :real-holder="realHolderName" @done="onLoginDone" @close="loginDlg = null" @next="openLogin" />
     <div v-if="addDlg" class="modal-back" @click.self="addDlg = null">
       <div class="modal" role="dialog" :aria-label="addDlg.kind === 'agent_service' ? 'AI 계정 추가' : '발행 채널 추가'">
         <h3>{{ addDlg.kind === 'agent_service' ? 'AI 계정 추가' : '발행 채널 추가' }}</h3>
@@ -39,9 +44,16 @@
           <label>{{ addDlg.kind === 'agent_service' ? 'AI 종류' : '플랫폼' }}
             <select v-model="addForm.platform">
               <option value="">선택</option>
-              <option v-for="p in addDlg.kind === 'agent_service' ? AI_PLATFORMS : CHANNEL_PLATFORMS" :key="p" :value="p">{{ platformLabel(p) }}</option>
+              <option v-for="p in addDlg.kind === 'agent_service' ? AI_OPTIONS : CHANNEL_PLATFORMS" :key="p" :value="p">{{ platformOptionLabel(p, addDlg.kind) }}</option>
+              <option v-if="addDlg.kind === 'agent_service'" value="__new__">＋ 새 AI 등록</option>
             </select>
           </label>
+          <template v-if="addDlg.kind === 'agent_service' && addForm.platform === '__new__'">
+            <label>AI 키(영문 소문자) <input v-model="newAI.key" placeholder="예: perplexity" /></label>
+            <label>이름 <input v-model="newAI.name" placeholder="예: Perplexity" /></label>
+            <label>로그인 주소(https) <input v-model="newAI.loginUrl" placeholder="https://" /></label>
+          </template>
+          <p v-if="addDlg.kind === 'channel' && addForm.platform && registryStatus(addForm.platform) === 'preparing'" class="muted small">아직 발행 준비중입니다. 계정 등록·로그인은 먼저 할 수 있습니다.</p>
           <label>이름 <input v-model="addForm.name" :placeholder="addDlg.kind === 'agent_service' ? '예: meta-2' : '예: luno-blog-1'" /></label>
           <label>주인 <input v-model="addForm.owner" /></label>
           <label v-if="addDlg.kind === 'agent_service'">역할
@@ -67,9 +79,10 @@
           <label>{{ bulkDlg.kind === 'agent_service' ? 'AI 종류' : '플랫폼' }}
             <select v-model="bulkForm.platform">
               <option value="">선택</option>
-              <option v-for="p in bulkDlg.kind === 'agent_service' ? AI_PLATFORMS : CHANNEL_PLATFORMS" :key="p" :value="p">{{ platformLabel(p) }}</option>
+              <option v-for="p in bulkDlg.kind === 'agent_service' ? AI_OPTIONS : CHANNEL_PLATFORMS" :key="p" :value="p">{{ platformOptionLabel(p, bulkDlg.kind) }}</option>
             </select>
           </label>
+          <p v-if="bulkDlg.kind === 'channel' && bulkForm.platform && registryStatus(bulkForm.platform) === 'preparing'" class="muted small">아직 발행 준비중입니다. 계정 등록·로그인은 먼저 할 수 있습니다.</p>
           <label>개수 (1~50) <input v-model.number="bulkForm.count" type="number" min="1" max="50" /></label>
           <label>주인 <input v-model="bulkForm.owner" /></label>
         </div>
@@ -77,7 +90,44 @@
         <p v-if="bulkMsg" :class="bulkOk ? 'banner okk' : 'error'">{{ bulkMsg }}</p>
         <div class="btnrow">
           <button class="ghost" @click="bulkDlg = null">닫기</button>
-          <button @click="submitBulk">만들기</button>
+          <button v-if="bulkOk && bulkMade > 0" @click="bulkToQueue">이어서 로그인</button>
+          <button v-else @click="submitBulk">만들기</button>
+        </div>
+      </div>
+    </div>
+    <div v-if="aiEdit" class="modal-back" @click.self="aiEdit = null">
+      <div class="modal" role="dialog" :aria-label="aiEdit.name + ' 관리'">
+        <h3>{{ aiEdit.name }} 관리</h3>
+        <p class="muted small">대화 상태: {{ aiEdit.chatStatus === 'ok' ? '연결됨' : '미연결' }} · 로그인 주소만 바꾸면 https로 시작해야 합니다.</p>
+        <div class="form">
+          <label>대화 주소 <input v-model="aiEditForm.chatUrl" /></label>
+          <label>입력창 선택자 <input v-model="aiEditForm.composerSelector" /></label>
+          <label>보내기 선택자 <input v-model="aiEditForm.sendSelector" /></label>
+          <label>답장 선택자 <input v-model="aiEditForm.replySelector" /></label>
+          <label>로그아웃 표시 문구(쉼표) <input v-model="aiEditForm.markers" /></label>
+        </div>
+        <p v-if="aiEditMsg" :class="aiEditOk ? 'banner okk' : 'error'">{{ aiEditMsg }}</p>
+        <div class="btnrow">
+          <button class="ghost danger" @click="deleteAI">삭제</button>
+          <span class="sp"></span>
+          <button class="ghost" @click="aiEdit = null">닫기</button>
+          <button @click="saveAIEdit">저장</button>
+        </div>
+      </div>
+    </div>
+    <div v-if="planDlg" class="modal-back" @click.self="planDlg = null">
+      <div class="modal" role="dialog" :aria-label="planDlg.name + ' 요금제·기능'">
+        <h3>{{ planDlg.name }} 요금제·기능</h3>
+        <div class="form">
+          <label>요금제 표시 <input v-model="planForm.tier" placeholder="예: 무료, Pro" /></label>
+          <div class="checks">
+            <label v-for="c in CAPS" :key="c.key" class="check"><input v-model="planForm.caps" type="checkbox" :value="c.key" /> {{ c.label }}</label>
+          </div>
+        </div>
+        <p v-if="planMsg" class="error">{{ planMsg }}</p>
+        <div class="btnrow">
+          <button class="ghost" @click="planDlg = null">취소</button>
+          <button @click="savePlan">저장</button>
         </div>
       </div>
     </div>
@@ -102,16 +152,34 @@ import LoginDialog from '../components/LoginDialog.vue'
 
 const accounts = ref([])
 const queue = ref([])
+const teams = ref([])
+const registry = ref({})
+const aiPlatforms = ref([])
 const loginDlg = ref(null)
 const addDlg = ref(null)
 const bulkDlg = ref(null)
 const unregTarget = ref(null)
 const chatTarget = ref(null)
+const aiEdit = ref(null)
+const planDlg = ref(null)
 const addForm = ref({ platform: '', name: '', owner: '', role: 'worker', business: '', mode: 'manual' })
 const addMsg = ref('')
+const newAI = ref({ key: '', name: '', loginUrl: '' })
 const bulkForm = ref({ prefix: '', platform: '', owner: '', count: 10 })
 const bulkMsg = ref('')
 const bulkOk = ref(false)
+const bulkMade = ref(0)
+const aiEditForm = ref({ chatUrl: '', composerSelector: '', sendSelector: '', replySelector: '', markers: '' })
+const aiEditMsg = ref('')
+const aiEditOk = ref(false)
+const planForm = ref({ tier: '', caps: [] })
+const planMsg = ref('')
+const CAPS = [
+  { key: 'text', label: '텍스트' },
+  { key: 'image', label: '이미지 생성' },
+  { key: 'video', label: '영상 생성' },
+  { key: 'file', label: '파일 첨부' },
+]
 
 const CHANNEL_PLATFORMS = computed(() => {
   const out = []
@@ -124,26 +192,59 @@ const CHANNEL_PLATFORMS = computed(() => {
 })
 
 function platformLabel(p) {
+  const ai = aiPlatforms.value.find((x) => x.key === p)
+  if (ai && ai.name) return ai.name
   return label(PLATFORM, p, p)
 }
 
+// Server AI list drives the UI; the bundled list is the offline fallback.
+const AI_OPTIONS = computed(() => {
+  if (aiPlatforms.value.length) return aiPlatforms.value.map((x) => x.key)
+  return AI_PLATFORMS
+})
+
+function registryStatus(p) {
+  return registry.value[p] || ''
+}
+
+function platformOptionLabel(p, kind) {
+  if (kind !== 'channel') return platformLabel(p)
+  const st = registryStatus(p)
+  if (st === 'ready') return `${platformLabel(p)} (사용가능)`
+  if (st === 'preparing') return `${platformLabel(p)} (준비중)`
+  return platformLabel(p)
+}
+
 function isAI(a) {
-  return a.kind === 'agent_service' || AI_PLATFORMS.includes(a.platform)
+  if (a.kind === 'agent_service') return true
+  if (aiPlatforms.value.length) return aiPlatforms.value.some((x) => x.key === a.platform)
+  return AI_PLATFORMS.includes(a.platform)
 }
 
 const aiGroups = computed(() => groupAccounts(true))
 const channelGroups = computed(() => groupAccounts(false))
 
 function groupAccounts(ai) {
-  const platforms = ai ? AI_PLATFORMS : CHANNEL_PLATFORMS.value
-  return platforms.map((p) => ({
-    platform: p,
-    label: platformLabel(p),
-    items: accounts.value.filter((a) => a.platform === p && isAI(a) === ai),
-  })).filter((g) => g.items.length || ai)
+  const platforms = ai ? AI_OPTIONS.value : CHANNEL_PLATFORMS.value
+  return platforms.map((p) => {
+    const meta = aiPlatforms.value.find((x) => x.key === p) || {}
+    return {
+      platform: p,
+      label: platformLabel(p),
+      custom: ai && meta.builtin === false,
+      chatStatus: ai ? meta.chatStatus || '' : '',
+      items: accounts.value.filter((a) => a.platform === p && isAI(a) === ai),
+    }
+  }).filter((g) => g.items.length || ai)
 }
 
-const queueTotal = computed(() => queue.value.length)
+const realHolderName = computed(() => {
+  if (!loginDlg.value) return ''
+  const holder = accounts.value.find((a) => a.profileMode === 'real' && a.id !== loginDlg.value.id)
+  return holder ? holder.name : ''
+})
+
+const queueTotal = computed(() => accounts.value.filter((a) => ['pending', 'expired', 'limited'].includes(a.sessionState)).length)
 
 const nextPending = computed(() => {
   if (!loginDlg.value) return null
@@ -161,15 +262,35 @@ const bulkPreview = computed(() => {
 
 async function load() {
   try {
-    const [acc, q] = await Promise.all([
+    const [acc, q, t, reg, ai] = await Promise.all([
       apiFetch('/api/session/accounts'),
       apiFetch('/api/session/relogin-queue'),
+      apiFetch('/api/teams').catch(() => ({ items: [] })),
+      apiFetch('/api/channel-platforms').catch(() => ({ items: [] })),
+      apiFetch('/api/ai-platforms').catch(() => ({ items: [] })),
     ])
     accounts.value = acc.accounts || []
     queue.value = q.items || []
+    teams.value = t.items || []
+    const m = {}
+    for (const p of reg.items || []) m[p.key] = p.status
+    registry.value = m
+    aiPlatforms.value = ai.items || []
   } catch (e) {
     toast(e.message || '불러오기 실패', 'error')
   }
+}
+
+function teamOf(id) {
+  for (const c of teams.value) {
+    const t = c.team || {}
+    const inMembers = (c.memberIds || []).includes(id)
+    const inChannels = (c.channelIds || []).includes(id)
+    if (inMembers || inChannels) {
+      return { id: t.id, name: t.name, leader: t.leaderAccountId === id }
+    }
+  }
+  return null
 }
 
 function openLogin(a) {
@@ -177,15 +298,10 @@ function openLogin(a) {
 }
 
 async function onLoginDone() {
+  // 목록만 새로고침한다. 다음 계정으로 자동 교체하지 않는다:
+  // 완료 다이얼로그가 다른 계정으로 바뀌어 보이는 버그의 원인이었다.
+  // 이어서 로그인은 다이얼로그의 [다음 계정 로그인] 버튼이 맡는다.
   await load()
-  try {
-    const data = await apiFetch('/api/session/login-queue/next', { method: 'POST', body: JSON.stringify({}) })
-    if (data.account) {
-      loginDlg.value = data.account
-      return
-    }
-  } catch { /* queue empty */
-  }
 }
 
 async function startQueue() {
@@ -210,21 +326,35 @@ function heldOf(id) {
 function openAdd(kind) {
   addDlg.value = { kind }
   addForm.value = { platform: '', name: '', owner: '', role: 'worker', business: '', mode: 'manual' }
+  newAI.value = { key: '', name: '', loginUrl: '' }
   addMsg.value = ''
 }
 
 async function submitAdd() {
   addMsg.value = ''
   try {
+    let platform = addForm.value.platform
+    if (addDlg.value.kind === 'agent_service' && platform === '__new__') {
+      const created = await apiFetch('/api/ai-platforms', {
+        method: 'POST',
+        body: JSON.stringify({
+          key: newAI.value.key.trim(), name: newAI.value.name.trim(),
+          loginUrl: newAI.value.loginUrl.trim(),
+        }),
+      })
+      platform = created.key
+      await load()
+    }
     const body = {
-      name: addForm.value.name.trim(), platform: addForm.value.platform,
+      name: addForm.value.name.trim(), platform,
       owner: addForm.value.owner.trim(), business: addForm.value.business.trim(),
       kind: addDlg.value.kind,
     }
     if (addDlg.value.kind === 'agent_service') body.role = addForm.value.role
     const a = await apiFetch('/api/session/accounts', { method: 'POST', body: JSON.stringify(body) })
-    if (addDlg.value.kind === 'channel' && addForm.value.mode === 'auto') {
-      await apiFetch(`/api/session/accounts/${a.id}`, { method: 'PATCH', body: JSON.stringify({ postingMode: 'auto' }) })
+    if (addDlg.value.kind === 'channel') {
+      // New channels default to auto (W0); honor an explicit manual choice.
+      await apiFetch(`/api/session/accounts/${a.id}`, { method: 'PATCH', body: JSON.stringify({ postingMode: addForm.value.mode }) })
     }
     addDlg.value = null
     toast('계정을 만들었습니다. 로그인하세요.')
@@ -239,6 +369,19 @@ function openBulk(kind) {
   bulkForm.value = { prefix: '', platform: '', owner: '', count: 10 }
   bulkMsg.value = ''
   bulkOk.value = false
+  bulkMade.value = 0
+}
+
+async function bulkToQueue() {
+  const platform = bulkForm.value.platform
+  bulkDlg.value = null
+  try {
+    const data = await apiFetch('/api/session/login-queue/next', { method: 'POST', body: JSON.stringify({ platform }) })
+    if (data.account) openLogin(data.account)
+    else toast('대기 중인 로그인이 없습니다')
+  } catch (e) {
+    toast(e.message || '실패', 'error')
+  }
 }
 
 async function submitBulk() {
@@ -254,6 +397,7 @@ async function submitBulk() {
     const made = (data.accounts || []).length
     const fails = data.failures || []
     bulkOk.value = true
+    bulkMade.value = made
     bulkMsg.value = `${made}개 만들었습니다.` + (fails.length ? ` (건너뜀 ${fails.length}개)` : '') + ' 차례로 로그인하세요.'
     await load()
   } catch (e) {
@@ -287,6 +431,97 @@ async function flipMode(a) {
     await load()
   } catch (e) {
     toast(e.message || '실패', 'error')
+  }
+}
+
+function openAIEdit(key) {
+  const p = aiPlatforms.value.find((x) => x.key === key)
+  if (!p) return
+  aiEdit.value = p
+  let markers = ''
+  try {
+    markers = (JSON.parse(p.loggedOutMarkers || '[]') || []).join(', ')
+  } catch { markers = '' }
+  aiEditForm.value = {
+    chatUrl: p.chatUrl || '', composerSelector: p.composerSelector || '',
+    sendSelector: p.sendSelector || '', replySelector: p.replySelector || '',
+    markers,
+  }
+  aiEditMsg.value = ''
+  aiEditOk.value = false
+}
+
+async function saveAIEdit() {
+  aiEditMsg.value = ''
+  try {
+    const markers = aiEditForm.value.markers.split(',').map((s) => s.trim()).filter(Boolean)
+    await apiFetch(`/api/ai-platforms/${aiEdit.value.key}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        chatUrl: aiEditForm.value.chatUrl.trim(),
+        composerSelector: aiEditForm.value.composerSelector.trim(),
+        sendSelector: aiEditForm.value.sendSelector.trim(),
+        replySelector: aiEditForm.value.replySelector.trim(),
+        loggedOutMarkers: JSON.stringify(markers),
+      }),
+    })
+    aiEditOk.value = true
+    aiEditMsg.value = '저장했습니다. 대화 연결 테스트로 확인하세요.'
+    await load()
+  } catch (e) {
+    aiEditOk.value = false
+    aiEditMsg.value = e.message
+  }
+}
+
+async function deleteAI() {
+  aiEditMsg.value = ''
+  try {
+    await apiFetch(`/api/ai-platforms/${aiEdit.value.key}`, { method: 'DELETE' })
+    aiEdit.value = null
+    toast('삭제했습니다')
+    await load()
+  } catch (e) {
+    aiEditOk.value = false
+    aiEditMsg.value = e.message
+  }
+}
+
+async function runProbe(a) {
+  try {
+    toast('대화 연결 테스트 중... (최대 3분)')
+    const res = await apiFetch(`/api/session/accounts/${a.id}/chat-probe`, { method: 'POST' })
+    if (res.ok) toast('대화 연결됨')
+    else toast(res.reason || '대화 미연결', 'error')
+    await load()
+  } catch (e) {
+    toast(e.message || '실패', 'error')
+  }
+}
+
+function openPlan(a) {
+  planDlg.value = a
+  let caps = []
+  try {
+    const arr = JSON.parse(a.capabilities || '[]')
+    if (Array.isArray(arr)) caps = arr
+  } catch { caps = [] }
+  planForm.value = { tier: a.planTier || '', caps }
+  planMsg.value = ''
+}
+
+async function savePlan() {
+  planMsg.value = ''
+  try {
+    await apiFetch(`/api/session/accounts/${planDlg.value.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ planTier: planForm.value.tier, capabilities: JSON.stringify(planForm.value.caps) }),
+    })
+    planDlg.value = null
+    toast('저장했습니다')
+    await load()
+  } catch (e) {
+    planMsg.value = e.message
   }
 }
 
@@ -362,6 +597,11 @@ onMounted(load)
 }
 .modal h3 { margin: 0; }
 .btnrow { display: flex; gap: var(--s2); justify-content: flex-end; }
+.btnrow .sp { flex: 1; }
+.checks { display: flex; gap: var(--s3); flex-wrap: wrap; }
+.check { display: flex; align-items: center; gap: var(--s1); font-weight: 400; }
+.check input { width: auto; }
+button.danger { color: var(--warn); }
 .btnrow button, .ghost {
   border-radius: var(--r-md);
   padding: var(--s2) var(--s4);
@@ -383,5 +623,9 @@ onMounted(load)
 .drawer { width: min(480px, 100%); background: var(--panel); height: 100%; box-shadow: var(--shadow-lg); }
 @media (max-width: 900px) {
   .drawer { width: 100%; }
+}
+@media (min-width: 1400px) {
+  .connect { display: grid; grid-template-columns: 1fr 1fr; align-items: start; }
+  .connect > h1, .connect > .banner { grid-column: 1 / -1; }
 }
 </style>

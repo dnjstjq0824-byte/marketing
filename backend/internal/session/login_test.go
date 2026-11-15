@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -312,6 +313,141 @@ func TestStartLoginIncognito(t *testing.T) {
 	svc.CancelLogin(id)
 	if !gotIncog || gotReal {
 		t.Fatalf("spawn flags real=%v incognito=%v", gotReal, gotIncog)
+	}
+}
+
+// W15-8: only one account may use the operator's real Chrome profile.
+func TestStartLoginRealProfileExclusive(t *testing.T) {
+	svc, _ := loginTestService(t)
+	svc.logins.spawn = stubSpawnLong
+	first := mustRegister(t, svc, "real-1", "meta_ai")
+	second := mustRegister(t, svc, "real-2", "meta_ai")
+	if _, err := svc.StartLogin(first, true, false); err != nil {
+		t.Fatal(err)
+	}
+	defer svc.CancelLogin(first)
+	if _, err := svc.StartLogin(second, true, false); !errors.Is(err, ErrRealProfileTaken) {
+		t.Fatalf("second real err = %v, want ErrRealProfileTaken", err)
+	}
+	// Incognito logins are unaffected by the holder.
+	if _, err := svc.StartLogin(second, false, true); err != nil {
+		t.Fatalf("incognito: %v", err)
+	}
+	svc.CancelLogin(second)
+	row, _ := svc.store.GetAccountRow(first)
+	if row.ProfileMode != "real" {
+		t.Fatalf("profile mode = %q, want real", row.ProfileMode)
+	}
+}
+
+// W15-2: custom AI logins carry their JSON definition to the adapter.
+func TestStartLoginCustomJSONEnv(t *testing.T) {
+	svc, _ := loginTestService(t)
+	if _, err := svc.store.CreateCustomAIPlatform("ppx", "P", "https://x.test/"); err != nil {
+		t.Fatal(err)
+	}
+	var gotEnv []string
+	svc.logins.spawn = func(python, name, platform, confirmFile string, env []string, log *os.File, realProfile, incognito bool) (*exec.Cmd, error) {
+		gotEnv = env
+		return stubSpawnLong(python, name, platform, confirmFile, env, log, realProfile, incognito)
+	}
+	id := mustRegister(t, svc, "px-1", "ppx")
+	if _, err := svc.StartLogin(id, false, true); err != nil {
+		t.Fatal(err)
+	}
+	defer svc.CancelLogin(id)
+	found := ""
+	for _, e := range gotEnv {
+		if strings.HasPrefix(e, "AI_PLATFORM_JSON=") {
+			found = strings.TrimPrefix(e, "AI_PLATFORM_JSON=")
+		}
+	}
+	if found == "" {
+		t.Fatalf("env = %v, want AI_PLATFORM_JSON", gotEnv)
+	}
+	raw, err := os.ReadFile(found)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["name"] != "ppx" || doc["login_url"] != "https://x.test/" {
+		t.Fatalf("doc = %v", doc)
+	}
+}
+
+// W15-9: plan tier and capabilities round-trip with validation.
+func TestSetPlanFields(t *testing.T) {
+	svc, _ := loginTestService(t)
+	id := mustRegister(t, svc, "plan-1", "gemini")
+	tier, caps := "Pro", `["text","image","video"]`
+	a, err := svc.SetPlanFields(id, &tier, &caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.PlanTier != "Pro" || a.Capabilities != `["text","image","video"]` {
+		t.Fatalf("plan = %+v", a)
+	}
+	dup := `["video","video","text"]`
+	a, err = svc.SetPlanFields(id, nil, &dup)
+	if err != nil || a.Capabilities != `["video","text"]` {
+		t.Fatalf("dedup = %+v, %v", a, err)
+	}
+	bad := `["teleport"]`
+	if _, err := svc.SetPlanFields(id, nil, &bad); !errors.Is(err, ErrBadCapabilities) {
+		t.Fatalf("bad caps err = %v", err)
+	}
+	if _, err := svc.SetPlanFields(9999, &tier, nil); !errors.Is(err, ErrNoAccount) {
+		t.Fatalf("missing err = %v", err)
+	}
+}
+
+// W15-4: probe success stores selectors + ok; failure marks unlinked.
+func TestChatProbeStoresOutcome(t *testing.T) {
+	svc, _ := loginTestService(t)
+	if _, err := svc.store.CreateCustomAIPlatform("ppx", "P", "https://x.test/"); err != nil {
+		t.Fatal(err)
+	}
+	id := mustRegister(t, svc, "px-1", "ppx")
+	svc.probeRunner = func(name, platform string) (map[string]any, error) {
+		if name != "px-1" || platform != "ppx" {
+			t.Errorf("probe(%q, %q)", name, platform)
+		}
+		return map[string]any{"ok": true, "composer_selector": "textarea",
+			"send_selector": "button", "reply_selector": ".a",
+			"chat_url": "https://x.test/chat", "has_file_input": true}, nil
+	}
+	res, err := svc.ChatProbe(id)
+	if err != nil || !res.OK {
+		t.Fatalf("probe = %+v, %v", res, err)
+	}
+	p, _ := svc.store.GetAIPlatform("ppx")
+	if p.ChatStatus != "ok" || p.ComposerSelector != "textarea" || p.ChatURL != "https://x.test/chat" {
+		t.Fatalf("platform = %+v", p)
+	}
+	row, _ := svc.store.GetAccountRow(id)
+	if row.Capabilities != `["text","file"]` {
+		t.Fatalf("capabilities = %q", row.Capabilities)
+	}
+	svc.probeRunner = func(name, platform string) (map[string]any, error) {
+		return map[string]any{"ok": false, "reason": "no composer found"}, nil
+	}
+	res, err = svc.ChatProbe(id)
+	if err != nil || res.OK || res.Reason != "no composer found" {
+		t.Fatalf("probe = %+v, %v", res, err)
+	}
+	p, _ = svc.store.GetAIPlatform("ppx")
+	if p.ChatStatus != "unlinked" {
+		t.Fatalf("status = %q", p.ChatStatus)
+	}
+	if _, err := svc.ChatProbe(9999); !errors.Is(err, ErrNoAccount) {
+		t.Fatalf("missing err = %v", err)
+	}
+	ch := mustRegister(t, svc, "ch-1", "naver_blog")
+	if _, err := svc.ChatProbe(ch); !errors.Is(err, ErrBadPlatform) {
+		t.Fatalf("channel err = %v", err)
 	}
 }
 

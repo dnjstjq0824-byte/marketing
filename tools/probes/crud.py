@@ -52,63 +52,21 @@ def main():
     check("product-patch", code == 200 and body["name"] == "n", str(body))
     code, body = c.op("DELETE", "/api/products/%d/images/999999" % pid)
     check("image-404", code == 404, str(code))
-    code, body = c.op("PATCH", "/api/products/%d/reading" % pid, {"productName": "pn"})
-    check("reading-norow-404", code == 404, str(code))
-    code, body = c.op("PATCH", "/api/products/999999/reading", {"productName": "pn"})
-    check("reading-404", code == 404, str(code))
-    code, body = c.op("PATCH", "/api/products/%d/strategy" % pid, {"angle": "a"})
-    check("strategy-norow-404", code == 404, str(code))
-    code, body = c.op("POST", "/api/products/%d/affiliate-links" % pid,
-                      {"partnerName": "p", "url": "notaurl"})
-    check("aff-badurl-400", code == 400, str(code))
-    code, body = c.op("POST", "/api/products/%d/affiliate-links" % pid,
-                      {"partnerName": "p", "url": "https://e.com/go"})
-    check("aff-add", code == 201, str(code))
-    lid = body["affiliateLink"]["id"]
-    code, body = c.op("PATCH", "/api/products/%d/affiliate-links/%d" % (pid, lid),
-                      {"partnerName": "p2", "url": "https://e.com/go2"})
-    check("aff-patch", code == 200, str(code))
-    code, body = c.op("DELETE", "/api/products/%d/affiliate-links/%d" % (pid, lid))
-    check("aff-del", code == 200, str(code))
+    # W8 removed the manual endpoints (PATCH reading/strategy, affiliate
+    # CRUD, PATCH contents, metrics + publish-log writes). Reads below.
 
     gid = finish_chain_to_draft(c, pid)
     _ = gid
-    code, body = c.op("PATCH", "/api/products/%d/reading" % pid, {"productName": "pn"})
-    check("reading-patch", code == 200 and body.get("productName") == "pn", str(body))
-    code, body = c.op("PATCH", "/api/products/%d/strategy" % pid, {"angle": "ax"})
-    check("strategy-patch", code == 200 and body.get("angle") == "ax", str(body))
     code, body = c.op("GET", "/api/contents?status=draft")
     cid = [x for x in body["contents"] if x["productId"] == pid][0]["id"]
-    code, body = c.op("PATCH", "/api/contents/%d" % cid, {"title": "t2", "body": "b2"})
-    check("content-patch", code == 200 and body["title"] == "t2", str(code))
     code, body = c.op("GET", "/api/contents/999999")
     check("content-404", code == 404, str(code))
     code, body = c.op("GET", "/api/contents/%d/reviews" % cid)
     check("reviews-empty", code == 200 and body["reviews"] == [], str(body))
-    code, body = c.op("POST", "/api/metrics",
-                      {"contentId": cid, "channel": "blog", "exposures": 0,
-                       "inflows": None, "orders": None, "inquiries": None})
-    check("metric-add", code == 201 and body.get("causeClass"), str(body))
-    mid = body["id"]
-    code, body = c.op("PATCH", "/api/metrics/%d" % mid,
-                      {"checkUrl": True, "checkSession": True, "checkDisplay": True, "note": ""})
-    check("metric-check", code == 200 and body["checkUrl"] is True, str(body))
-    code, body = c.op("DELETE", "/api/metrics/%d" % mid)
-    check("metric-del", code == 200, str(code))
-    code, body = c.op("POST", "/api/publish-logs",
-                      {"contentId": cid, "channel": "blog", "account": "a", "status": "done", "note": ""})
-    check("log-done-409", code == 409, str(code))
-    code, body = c.op("POST", "/api/publish-logs",
-                      {"contentId": cid, "channel": "blog", "account": "a", "status": "scheduled", "note": ""})
-    check("log-add", code == 201, str(code))
-    logid = body["id"]
-    code, body = c.op("POST", "/api/publish-logs",
-                      {"contentId": cid, "channel": "blog", "account": "a", "status": "scheduled", "note": ""})
-    check("log-dup-409", code == 409, str(code))
-    code, body = c.op("PATCH", "/api/publish-logs/%d" % logid, {"status": "held", "note": "h"})
-    check("log-patch", code == 200, str(code))
-    code, body = c.op("DELETE", "/api/publish-logs/%d" % logid)
-    check("log-del", code == 200, str(code))
+    code, body = c.op("GET", "/api/metrics")
+    check("metrics-list", code == 200 and body["metrics"] == [], str(body))
+    code, body = c.op("GET", "/api/publish-logs")
+    check("logs-list", code == 200 and body["logs"] == [], str(body))
 
     code, body = c.op("POST", "/api/session/accounts", {"name": "", "role": "worker"})
     check("acc-noname-400", code == 400, str(code))
@@ -169,6 +127,24 @@ def main():
     check("notif-read-404", code == 404, str(code))
     code, body = c.op("POST", "/api/notifications/read-all")
     check("notif-readall", code == 200, str(code))
+
+    code, body = c.op("GET", "/api/settings/automation")
+    check("settings-defaults", code == 200 and body.get("dailyCap") == 3
+          and body.get("enabled") is True, str(body))
+    body["dailyCap"] = 5
+    body["enabled"] = False
+    code, body = c.op("PUT", "/api/settings/automation", body)
+    check("settings-save", code == 200 and body.get("dailyCap") == 5, str(body))
+    bad = dict(body)
+    bad["dailyCap"] = -1
+    code, _ = c.op("PUT", "/api/settings/automation", bad)
+    check("settings-bad-400", code == 400, str(code))
+    code, body = c.op("GET", "/api/automation")
+    check("automation-alias", code == 200 and body.get("enabled") is False, str(body))
+    code, body = c.op("PUT", "/api/automation", {"enabled": True})
+    check("automation-flip", code == 200 and body.get("enabled") is True, str(body))
+    code, body = c.op("GET", "/api/system/version")
+    check("version", code == 200 and body.get("app") and body.get("schema"), str(body))
 
     code, body = c.op("POST", "/api/auth/logout")
     check("logout", code == 200, str(code))

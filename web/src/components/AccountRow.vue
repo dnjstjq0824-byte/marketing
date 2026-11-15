@@ -3,9 +3,13 @@
     <div class="who">
       <strong>{{ account.name }}</strong>
       <StatusChip :kind="stateKind">{{ stateText }}</StatusChip>
+      <RouterLink v-if="team" :to="'/teams/' + team.id" class="teamchip">{{ team.name }}</RouterLink>
+      <span v-else class="muted small">무소속</span>
+      <span v-if="team && team.leader" class="leader">팀장</span>
       <span v-if="held > 0" class="muted small">대기 {{ held }}건</span>
     </div>
     <p class="muted small">{{ metaLine }}</p>
+    <p v-if="ai && (account.planTier || capsText || account.chatStatus)" class="muted small">{{ aiMetaLine }}</p>
     <div class="btns">
       <button v-if="ai" class="ghost small" @click="$emit('chat')">대화</button>
       <button v-if="account.sessionState !== 'connected'" class="small primary" @click="$emit('login')">로그인</button>
@@ -14,6 +18,8 @@
     </div>
     <div v-if="menu" class="menu" role="menu">
       <button v-if="account.sessionState === 'connected'" role="menuitem" @click="act('login')">로그인 다시</button>
+      <button v-if="ai && account.sessionState === 'connected'" role="menuitem" @click="act('probe')">대화 연결 테스트</button>
+      <button v-if="ai" role="menuitem" @click="act('plan')">요금제·기능</button>
       <button role="menuitem" class="danger" @click="act('unregister')">해제</button>
     </div>
   </div>
@@ -28,8 +34,9 @@ const props = defineProps({
   account: { type: Object, required: true },
   ai: { type: Boolean, default: false },
   held: { type: Number, default: 0 },
+  team: { type: Object, default: null },
 })
-const emit = defineEmits(['chat', 'login', 'unregister', 'mode'])
+const emit = defineEmits(['chat', 'login', 'unregister', 'mode', 'probe', 'plan'])
 const menu = ref(false)
 
 const stateKey = computed(() => {
@@ -60,6 +67,27 @@ const metaLine = computed(() => {
   return parts.join(' · ')
 })
 
+const CAP_LABEL = { text: '텍스트', image: '이미지', video: '영상', file: '파일' }
+
+const capsText = computed(() => {
+  try {
+    const arr = JSON.parse(props.account.capabilities || '[]')
+    if (!Array.isArray(arr) || !arr.length) return ''
+    return arr.map((c) => CAP_LABEL[c] || c).join('·')
+  } catch {
+    return ''
+  }
+})
+
+const aiMetaLine = computed(() => {
+  const parts = []
+  if (props.account.planTier) parts.push(props.account.planTier)
+  if (capsText.value) parts.push(capsText.value)
+  if (props.account.chatStatus === 'ok') parts.push('대화 연결됨')
+  else if (props.account.chatStatus === 'unlinked') parts.push('대화 미연결')
+  return parts.join(' · ')
+})
+
 function act(which) {
   menu.value = false
   emit(which)
@@ -75,8 +103,20 @@ function act(which) {
   gap: var(--s1);
   position: relative;
 }
-.who { display: flex; align-items: center; gap: var(--s2); }
+.who { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
 .who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.teamchip {
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  border-radius: 999px;
+  padding: 1px 10px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.teamchip:hover { text-decoration: underline; }
+.leader { font-size: 12px; font-weight: 800; color: var(--hold); white-space: nowrap; }
 .btns { display: flex; gap: var(--s2); }
 .btns button, .ghost {
   border-radius: var(--r-md);

@@ -148,9 +148,30 @@ func (s *Service) Register(label, lane, host, businesses, platforms string, capa
 		if _, err := s.store.GetAccountRow(*accountID); err != nil {
 			return nil, "", fmt.Errorf("unknown account id %d", *accountID)
 		}
+		if err := s.checkLaneSplit(0, lane, *accountID); err != nil {
+			return nil, "", err
+		}
 	}
 	return s.store.CreateAgent(strings.TrimSpace(label), lane, strings.TrimSpace(host),
 		strings.TrimSpace(businesses), strings.TrimSpace(platforms), capacity, accountID)
+}
+
+// checkLaneSplit refuses to bind one account across both the B (generate)
+// and C (review) lanes: a writer must never review its own drafts (W6).
+// selfID excludes the agent being updated from the bound lanes.
+func (s *Service) checkLaneSplit(selfID int64, lane string, accountID int64) error {
+	lanes, err := s.store.LanesForAccountExcept(accountID, selfID)
+	if err != nil {
+		return err
+	}
+	has := map[string]bool{strings.ToUpper(strings.TrimSpace(lane)): true}
+	for _, l := range lanes {
+		has[strings.ToUpper(strings.TrimSpace(l))] = true
+	}
+	if has["B"] && has["C"] {
+		return fmt.Errorf("account %d spans lanes B+C: one account cannot write and review", accountID)
+	}
+	return nil
 }
 
 // Rotate replaces an agent token, returning the one-time plaintext.
@@ -196,6 +217,9 @@ func (s *Service) Update(id int64, lane, host, businesses, platforms string, cap
 	if accountID != nil {
 		if _, err := s.store.GetAccountRow(*accountID); err != nil {
 			return nil, fmt.Errorf("unknown account id %d", *accountID)
+		}
+		if err := s.checkLaneSplit(id, lane, *accountID); err != nil {
+			return nil, err
 		}
 	}
 	a.Lane, a.Host, a.Businesses, a.Platforms = lane, host, businesses, platforms

@@ -32,15 +32,17 @@ type Agent struct {
 	Failed24h    int    `json:"failed24h,omitempty"`
 }
 
-// LaneTypes maps lanes to claimable job types (D24).
+// LaneTypes maps lanes to claimable job types (D24). T is the W16 team
+// executor: one PC process claiming the whole AI chain for its team.
 var LaneTypes = map[string][]string{
-	"A": {"analyze", "strategy"},
+	"A": {"analyze", "strategy", "research"},
 	"B": {"generate"},
 	"C": {"review"},
 	"P": {"publish"},
+	"T": {"analyze", "strategy", "generate", "review", "research"},
 }
 
-// ValidLane reports whether lane is A/B/C/P.
+// ValidLane reports whether lane is A/B/C/P/T.
 func ValidLane(lane string) bool {
 	_, ok := LaneTypes[lane]
 	return ok

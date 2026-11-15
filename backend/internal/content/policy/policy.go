@@ -2,15 +2,20 @@
 // groups, and mandatory notices (§5, §7). It depends on nothing.
 package policy
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Content statuses: draft -> review -> approved -> queued -> published.
+// archived is terminal: reject-cap disposal (W6) with no return.
 const (
 	StatusDraft     = "draft"
 	StatusReview    = "review"
 	StatusApproved  = "approved"
 	StatusQueued    = "queued"
 	StatusPublished = "published"
+	StatusArchived  = "archived"
 )
 
 // forward is the single allowed forward step from each status.
@@ -28,13 +33,25 @@ var backward = map[string]string{
 	StatusQueued:   StatusApproved,
 }
 
-// ValidateTransition allows one forward step or one allowed regression.
-// Skips and multi-step regressions are rejected.
+// archivable lists the non-terminal statuses that may be disposed to
+// archived (W6): reject-cap chains and superseded rejected originals.
+var archivable = map[string]bool{
+	StatusDraft:    true,
+	StatusReview:   true,
+	StatusApproved: true,
+	StatusQueued:   true,
+}
+
+// ValidateTransition allows one forward step, one allowed regression, or
+// disposal to archived. Skips and multi-step regressions are rejected.
 func ValidateTransition(from, to string) error {
 	if to == forward[from] {
 		return nil
 	}
 	if to == backward[from] {
+		return nil
+	}
+	if to == StatusArchived && archivable[from] {
 		return nil
 	}
 	return fmt.Errorf("transition %s -> %s is not allowed", from, to)
@@ -71,6 +88,9 @@ var manualPlatforms = map[string]bool{
 }
 
 // GroupOf returns the channel group for a platform, or false when unknown.
+//
+// Deprecated: new code reads the channel_platforms registry (W21-1) instead.
+// Kept for the frozen manual Schedule path and its tests.
 func GroupOf(platform string) (string, bool) {
 	if officialPlatforms[platform] {
 		return GroupOfficialAPI, true
@@ -98,3 +118,24 @@ const AILabelText = "이 콘텐츠에는 AI 가상인물이 추천·보증 주�
 
 // UnclassifiedCause labels zero/missing metrics without interpretation.
 const UnclassifiedCause = "원인 미분류"
+
+// AssembleBody is the single post assembler (W5-2). Every publish path
+// (P-lane payload, API executor) sends exactly this body:
+// sponsored disclosure first, raw body, AI label when a persona endorses,
+// buy-link CTA lines last. Nothing is escaped or trimmed.
+func AssembleBody(sponsored bool, body string, persona bool, buyLinks []string) string {
+	parts := make([]string, 0, 3+len(buyLinks))
+	if sponsored {
+		parts = append(parts, DisclosureText)
+	}
+	parts = append(parts, body)
+	if persona {
+		parts = append(parts, AILabelText)
+	}
+	for _, link := range buyLinks {
+		if link != "" {
+			parts = append(parts, "구매 링크: "+link)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}

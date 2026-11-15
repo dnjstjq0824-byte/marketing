@@ -15,6 +15,35 @@ POSTS = {}
 SEQ = [0]
 
 
+def parse_multipart(body, content_type):
+    """Minimal multipart/form-data parser (no cgi module needed)."""
+    fields, files = {}, []
+    marker = "boundary="
+    if marker not in content_type:
+        return fields, files
+    boundary = content_type.split(marker, 1)[1].split(";")[0].strip().encode()
+    for chunk in body.split(b"--" + boundary):
+        if b"Content-Disposition" not in chunk:
+            continue
+        head, _, content = chunk.partition(b"\r\n\r\n")
+        if content.endswith(b"\r\n"):
+            content = content[:-2]
+        disp = head.decode("latin1", "replace").strip().split("\r\n", 1)[0]
+        name = ""
+        filename = ""
+        for token in disp.split(";"):
+            token = token.strip()
+            if token.startswith("name="):
+                name = token[5:].strip('"')
+            elif token.startswith("filename="):
+                filename = token[9:].strip('"')
+        if filename:
+            files.append(filename)
+        elif name:
+            fields[name] = content.decode("utf-8", "replace")
+    return fields, files
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -47,19 +76,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send(200, "please <a href='/login'>login</a> first")
             else:
                 self._send(200, "<a href='/compose'>compose</a>"
-                                "<form method='post'>"
+                                "<form method='post' enctype='multipart/form-data'>"
                                 "<input name='title'/><textarea name='body'></textarea>"
+                                "<input name='tags'/>"
+                                "<input name='file' type='file'/>"
                                 "<button type='submit'>post</button></form>")
         elif self.path.startswith("/post/"):
-            title, body = POSTS.get(self.path, ("?", "?"))
-            self._send(200, "<h1>%s</h1><p>%s</p>" % (title, body))
+            post = POSTS.get(self.path, ("?", "?", [], ""))
+            title, body, files, tags = post if len(post) == 4 else (post[0], post[1], [], "")
+            items = "".join("<li>%s</li>" % f for f in files)
+            self._send(200, "<h1>%s</h1><p>%s</p><p class='tags'>%s</p><ul>%s</ul>"
+                            % (title, body, tags, items))
         else:
             self._send(404, "nope")
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
-        fields = dict(pair.split("=", 1) for pair in
-                      self.rfile.read(length).decode().split("&") if "=" in pair)
+        raw = self.rfile.read(length)
+        ctype = self.headers.get("Content-Type", "")
+        is_multi = ctype.startswith("multipart/")
+        if is_multi:
+            fields, files = parse_multipart(raw, ctype)
+        else:
+            fields = dict(pair.split("=", 1) for pair in
+                          raw.decode().split("&") if "=" in pair)
+            files = []
+        self._multi = is_multi
         if self.path == "/login":
             if fields.get("username") and fields.get("password"):
                 self._send(302, "", {"Set-Cookie": "session=1; Path=/", "Location": "/compose"})
@@ -71,8 +113,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             SEQ[0] += 1
             url = "/post/%d" % SEQ[0]
-            POSTS[url] = (urllib.parse.unquote_plus(fields.get("title", "")),
-                          urllib.parse.unquote_plus(fields.get("body", "")))
+            title, body_ = fields.get("title", ""), fields.get("body", "")
+            tags = fields.get("tags", "")
+            if not self._multi:
+                title = urllib.parse.unquote_plus(title)
+                body_ = urllib.parse.unquote_plus(body_)
+                tags = urllib.parse.unquote_plus(tags)
+            POSTS[url] = (title, body_, files, tags)
             self._send(302, "", {"Location": url})
         else:
             self._send(404, "nope")

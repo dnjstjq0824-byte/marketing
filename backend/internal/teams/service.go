@@ -22,6 +22,8 @@ var (
 	ErrNotAgent       = errors.New("only AI agent accounts can be team members")
 	ErrNotChannel     = errors.New("only publishing accounts can be team channels")
 	ErrDupMember      = errors.New("duplicate account in member list")
+	ErrBadDistMode    = errors.New("distribution_mode must be all or one")
+	ErrBadDistCap     = errors.New("distribution_cap must be 1..50")
 )
 
 var validRoles = map[string]bool{
@@ -85,7 +87,8 @@ func (s *Service) checkBusinesses(businesses []string, excludeID int64) ([]strin
 
 // Update writes mutable fields; nil pointers leave values alone.
 func (s *Service) Update(id int64, name, description *string, businesses []string, setBusinesses bool,
-	roleMode *string, maxConcurrency *int, enabled *bool) (*store.Team, error) {
+	roleMode *string, maxConcurrency *int, enabled *bool,
+	distributionMode *string, distributionCap *int) (*store.Team, error) {
 	t, err := s.store.GetTeam(id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -120,6 +123,18 @@ func (s *Service) Update(id int64, name, description *string, businesses []strin
 	}
 	if enabled != nil {
 		t.Enabled = *enabled
+	}
+	if distributionMode != nil {
+		if *distributionMode != "all" && *distributionMode != "one" {
+			return nil, ErrBadDistMode
+		}
+		t.DistributionMode = *distributionMode
+	}
+	if distributionCap != nil {
+		if *distributionCap < 1 || *distributionCap > 50 {
+			return nil, ErrBadDistCap
+		}
+		t.DistributionCap = *distributionCap
 	}
 	if err := s.store.UpdateTeam(t); err != nil {
 		if errors.Is(err, store.ErrDuplicate) {
@@ -162,6 +177,11 @@ func (s *Service) Delete(id int64) (moved, running int, err error) {
 	}
 	running, err = s.store.CountTeamRunning(strings.Split(t.Businesses, ","))
 	if err != nil {
+		return 0, 0, err
+	}
+	// W16: in-flight works and jobs move to the default team with the
+	// members; otherwise the team delete violates team_id references.
+	if err := s.store.ReassignTeamWorks(id, def.ID); err != nil {
 		return 0, 0, err
 	}
 	if err := s.store.DeleteTeam(id); err != nil {
@@ -426,14 +446,16 @@ func workingSplit(running, members int) (working, idle int) {
 
 // TeamCard is one S7 list row.
 type TeamCard struct {
-	Team         *store.Team  `json:"team"`
-	Businesses   []string     `json:"businesses"`
-	MemberCount  int          `json:"memberCount"`
-	ChannelCount int          `json:"channelCount"`
-	Working      int          `json:"working"`
-	Idle         int          `json:"idle"`
-	Faces        []string     `json:"faces"`
-	Unready      int          `json:"unready"`
+	Team         *store.Team    `json:"team"`
+	Businesses   []string       `json:"businesses"`
+	MemberCount  int            `json:"memberCount"`
+	ChannelCount int            `json:"channelCount"`
+	MemberIDs    []int64        `json:"memberIds"`
+	ChannelIDs   []int64        `json:"channelIds"`
+	Working      int            `json:"working"`
+	Idle         int            `json:"idle"`
+	Faces        []string       `json:"faces"`
+	Unready      int            `json:"unready"`
 	Stats        *store.TeamStats `json:"stats"`
 }
 
@@ -493,9 +515,17 @@ func (s *Service) card(t *store.Team) (*TeamCard, error) {
 		return nil, err
 	}
 	working, idle := workingSplit(stats.Running, len(members))
+	memberIDs := []int64{}
+	for _, m := range members {
+		memberIDs = append(memberIDs, m.AccountID)
+	}
+	if channels == nil {
+		channels = []int64{}
+	}
 	return &TeamCard{
 		Team: t, Businesses: biz, MemberCount: len(members),
-		ChannelCount: len(channels), Working: working, Idle: idle,
+		ChannelCount: len(channels), MemberIDs: memberIDs, ChannelIDs: channels,
+		Working: working, Idle: idle,
 		Faces: faces, Unready: unready, Stats: stats,
 	}, nil
 }

@@ -48,30 +48,44 @@ def is_chattable(platform):
 
 
 def parse_chat_args(argv):
-    """Split chat args. Returns (account, platform, message, fresh, thread).
+    """Split chat args. Returns (account, platform, message, fresh, thread, probe, json_path, attach).
 
-    Raises ValueError(message) on bad input. --fresh/--thread may appear
-    anywhere after the platform; they are removed from the message.
+    Raises ValueError(message) on bad input. Flags may appear anywhere
+    after the platform; they are removed from the message.
     """
     if len(argv) < 4:
         raise ValueError("usage: python -m adapter.chat <account> <platform> "
-                         "[--fresh] [--thread key] <message>")
-    fresh, thread, words = False, "", []
+                         "[--fresh] [--thread key] [--probe] [--platform-json path] "
+                         "[--attach path]... <message>")
+    fresh, thread, probe, json_path, words, attach = False, "", False, "", [], []
     rest = list(argv[3:])
     i = 0
     while i < len(rest):
         token = rest[i]
         if token == "--fresh":
             fresh = True
+        elif token == "--probe":
+            probe = True
         elif token == "--thread":
             if i + 1 >= len(rest) or not rest[i + 1] or rest[i + 1].startswith("--"):
                 raise ValueError("--thread needs a key")
             thread = rest[i + 1]
             i += 1
+        elif token == "--platform-json":
+            if i + 1 >= len(rest) or not rest[i + 1] or rest[i + 1].startswith("--"):
+                raise ValueError("--platform-json needs a path")
+            json_path = rest[i + 1]
+            i += 1
+        elif token == "--attach":
+            if i + 1 >= len(rest) or not rest[i + 1] or rest[i + 1].startswith("--"):
+                raise ValueError("--attach needs a path")
+            attach.append(rest[i + 1])
+            i += 1
         else:
             words.append(token)
         i += 1
-    return argv[1], argv[2], " ".join(words), fresh, browser.safe_name(thread) if thread else ""
+    return (argv[1], argv[2], " ".join(words), fresh,
+            browser.safe_name(thread) if thread else "", probe, json_path, attach)
 
 
 def thread_path(account, thread):
@@ -251,20 +265,31 @@ def type_multiline(page, text):
 
 
 def chat(account, platform_name, message, base_url="", timeout_sec=120,
-         fresh=False, thread=""):
-    """Send one message, return {"reply": ...}."""
-    platform = platforms.get_platform(platform_name)
+         fresh=False, thread="", json_path="", attachments=None):
+    """Send one message, return {"reply": ...}.
+
+    attachments uploads local files through the chat file input first
+    (W2-2). A chat surface without a file input refuses loudly.
+    """
+    try:
+        platform = platforms.resolve(platform_name, json_path)
+    except ValueError as exc:
+        raise ChatUnavailable(str(exc))
     if not is_chattable(platform):
         if not getattr(platform, "chat_enabled", True):
             raise ChatUnavailable("platform %s chat is disabled" % platform_name)
         raise ChatUnavailable("platform %s chat selectors not pinned yet"
                               % platform_name)
-    if not browser.has_session(account):
-        raise NeedsLogin("account %s: save a login session first (adapter.login)"
-                         % account)
     text = (message or "").strip()
     if not text:
         raise ChatFailed("empty message")
+    files = [p for p in (attachments or []) if p]
+    for path in files:
+        if not os.path.isfile(path):
+            raise ChatFailed("attachment not found: %s" % path)
+    if not browser.has_session(account):
+        raise NeedsLogin("account %s: NO_SESSION save a login session first (adapter.login)"
+                         % account)
     base = (base_url or config.STUB_BASE_URL).rstrip("/")
     lock = ThreadLock(account, thread)
     if not lock.__enter__():
@@ -273,9 +298,20 @@ def chat(account, platform_name, message, base_url="", timeout_sec=120,
         fresh = True
     try:
         return _chat_locked(account, platform, platform_name, text, base,
-                            timeout_sec, fresh, thread)
+                            timeout_sec, fresh, thread, files)
     finally:
         lock.__exit__()
+
+
+def attach_files(page, paths):
+    """Upload local files through the chat file input (W2-2)."""
+    if not paths:
+        return
+    try:
+        control = page.locator("input[type='file']").first
+        control.set_input_files(paths)
+    except Exception as exc:
+        raise ChatFailed("chat has no file input for attachments: %s" % exc)
 
 
 def _thread_start_url(platform, account, thread, fresh):
@@ -302,7 +338,7 @@ MUSE_NEW_CHAT_SELECTOR = "button[aria-label='새로운 사이드 채팅']"
 
 
 def _chat_locked(account, platform, platform_name, text, base, timeout_sec,
-                 fresh, thread):
+                 fresh, thread, files=None):
     with browser.BrowserSession(account) as sess:
         page = sess.page
         start_url = _thread_start_url(platform, account, thread, fresh)
@@ -328,6 +364,7 @@ def _chat_locked(account, platform, platform_name, text, base, timeout_sec,
                 _muse_new_side_chat(page)
             _click_composer(page, platform)
         baseline = _stable_count(page, platform)
+        attach_files(page, files or [])
         type_multiline(page, text)
         _click_send(page, platform)
         home = (base + platform.chat_path if base else platform.chat_path).rstrip("/")
@@ -483,15 +520,188 @@ def _reply_text(page, selector, platform=None):
     return text
 
 
+# W15-4 chat probe: composer candidates, last visible wins.
+PROBE_COMPOSERS = ("textarea:visible",
+                   "[contenteditable='true']:visible",
+                   "[role='textbox']:visible")
+
+PROBE_MESSAGE = "OK"
+
+# Send-button fallback near the composer (Enter is always tried first).
+PROBE_SEND_FALLBACKS = ("button[type='submit']:visible",
+                        "button[aria-label*='send' i]:visible",
+                        "button[aria-label*='보내기']:visible")
+
+
+def generalize_url(url):
+    """Collapse digit runs so thread URLs become reusable patterns."""
+    import re as _re
+    return _re.sub(r"\d+", "*", url or "")
+
+
+def _last_visible(page, selector):
+    """The last visible match, or None. Never raises."""
+    try:
+        found = page.locator(selector).all()
+    except Exception:
+        return None
+    for el in reversed(found):
+        try:
+            if el.is_visible():
+                return el
+        except Exception:
+            continue
+    return None
+
+
+def _candidate_selector(el):
+    """Best stable selector for an element: data-* id, else tag+class."""
+    try:
+        for attr in ("data-testid", "data-message-role", "data-role",
+                     "data-conversation-role", "id"):
+            value = el.get_attribute(attr)
+            if value:
+                tag = el.evaluate("e => e.tagName.toLowerCase()")
+                return "%s[%s='%s']" % (tag, attr, value)
+        cls = (el.get_attribute("class") or "").strip().split()
+        tag = el.evaluate("e => e.tagName.toLowerCase()")
+        if cls:
+            return "%s.%s" % (tag, ".".join(cls[:2]))
+        return tag
+    except Exception:
+        return ""
+
+
+def probe(account, platform_name, json_path="", timeout_sec=90):
+    """Auto-detect chat selectors (W15-4). Returns a JSON-able dict.
+
+    Sends PROBE_MESSAGE once through the saved session and reports the
+    composer/send/reply selectors plus the thread URL pattern. ok=False
+    carries a reason; the server stores unlinked and never retries alone.
+    """
+    try:
+        platform = platforms.resolve(platform_name, json_path)
+    except (KeyError, ValueError) as exc:
+        return {"ok": False, "reason": "unknown platform: %s" % exc}
+    if not browser.has_session(account):
+        raise NeedsLogin("account %s: NO_SESSION save a login session first (adapter.login)"
+                         % account)
+    chat_url = platform.chat_path
+    if not chat_url or chat_url == "TBD":
+        chat_url = platform.login_path
+    with browser.BrowserSession(account) as sess:
+        page = sess.page
+        page.goto(chat_url, timeout=45000)
+        page.wait_for_load_state("domcontentloaded")
+        before_url = page.url
+        composer_sel, composer = "", None
+        for cand in PROBE_COMPOSERS:
+            composer = _last_visible(page, cand)
+            if composer is not None:
+                composer_sel = cand
+                break
+        if composer is None:
+            return {"ok": False, "reason": "no composer found",
+                    "chat_url": before_url}
+        before = set()
+        try:
+            for text in page.locator("div:visible, p:visible").all_text_contents():
+                if text and text.strip():
+                    before.add(text.strip()[:200])
+        except Exception:
+            pass
+        try:
+            composer.click(timeout=10000)
+            composer.fill(PROBE_MESSAGE)
+        except Exception as exc:
+            return {"ok": False, "reason": "composer not fillable: %s" % exc,
+                    "composer_selector": composer_sel, "chat_url": before_url}
+        send_sel, sent = "Enter", False
+        try:
+            composer.press("Enter")
+            sent = True
+        except Exception:
+            pass
+        if not sent:
+            for cand in PROBE_SEND_FALLBACKS:
+                try:
+                    btn = page.locator(cand).first
+                    btn.click(timeout=5000)
+                    send_sel, sent = cand, True
+                    break
+                except Exception:
+                    continue
+        if not sent:
+            return {"ok": False, "reason": "message not sendable",
+                    "composer_selector": composer_sel, "chat_url": before_url}
+        reply_sel, reply_text, end = "", "", time.time() + timeout_sec
+        while time.time() < end:
+            time.sleep(POLL_SEC)
+            try:
+                texts = page.locator("div:visible, p:visible").all_text_contents()
+            except Exception:
+                continue
+            fresh = [t.strip()[:200] for t in texts
+                     if t and t.strip() and t.strip()[:200] not in before
+                     and PROBE_MESSAGE not in t]
+            if not fresh:
+                continue
+            try:
+                blocks = page.locator("div:visible, p:visible").all()
+            except Exception:
+                continue
+            for el in reversed(blocks):
+                try:
+                    body = (el.inner_text() or "").strip()[:200]
+                except Exception:
+                    continue
+                if body and body in fresh:
+                    reply_sel = _candidate_selector(el)
+                    reply_text = body[:120]
+                    break
+            if reply_sel:
+                break
+        after_url = page.url
+        if not reply_sel:
+            return {"ok": False, "reason": "no reply block appeared",
+                    "composer_selector": composer_sel,
+                    "send_selector": send_sel, "chat_url": after_url,
+                    "thread_url": after_url}
+        try:
+            has_file = page.locator("input[type='file']").count() > 0
+        except Exception:
+            has_file = False
+        return {"ok": True, "composer_selector": composer_sel,
+                "send_selector": send_sel, "reply_selector": reply_sel,
+                "reply_sample": reply_text, "chat_url": after_url,
+                "thread_url": after_url,
+                "thread_url_pattern": generalize_url(after_url)
+                if after_url != before_url else "",
+                "has_file_input": has_file}
+
+
 def main(argv):
     try:
-        account, platform_name, message, fresh, thread = parse_chat_args(argv)
+        (account, platform_name, message, fresh, thread,
+         is_probe, json_path, attach) = parse_chat_args(argv)
     except ValueError as exc:
         print(str(exc))
         return 2
+    if is_probe:
+        try:
+            result = probe(account, platform_name, json_path=json_path)
+        except NeedsLogin as exc:
+            print(str(exc))
+            return 2
+        except Exception as exc:
+            print(json.dumps({"ok": False, "reason": "probe error: %s" % exc}))
+            return 1
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
     try:
         result = chat(account, platform_name, message,
-                      fresh=fresh, thread=thread)
+                      fresh=fresh, thread=thread, json_path=json_path,
+                      attachments=attach)
     except (NeedsLogin, ChatUnavailable) as exc:
         print(str(exc))
         return 2

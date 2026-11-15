@@ -10,7 +10,7 @@
       <div class="head">
         <div>
           <h1 class="page-title">{{ data.product.name || data.product.sourceUrl }}</h1>
-          <p class="muted small">{{ data.product.business || '공용 사업' }} · {{ data.product.sourceUrl }}</p>
+          <p class="muted small">{{ data.product.business || '공용 사업' }} · {{ data.product.sourceUrl }} · 맡은 팀: {{ teamName }}</p>
         </div>
         <div class="btnrow">
           <button v-if="!allHeld" class="ghost" @click="setHeld(true)">멈추기</button>
@@ -29,6 +29,7 @@
             <StatusChip v-if="p.held" kind="hold">멈춤</StatusChip>
           </div>
           <p class="muted small">{{ p.channel }} · {{ p.targetPlatform || '플랫폼 미정' }} · {{ p.targetAccount || '계정 미정' }} · 조회 {{ p.views }}</p>
+          <p v-if="p.lastNote" class="muted small note">↩ {{ p.lastNote }}</p>
           <div class="prow btns">
             <button v-if="!p.held" class="ghost small" @click="holdPost(p.id, true)">멈추기</button>
             <button v-else class="ghost small" @click="holdPost(p.id, false)">다시 진행</button>
@@ -65,6 +66,7 @@
         <p v-if="publishMsg" :class="publishOk ? 'banner okk' : 'error'">{{ publishMsg }}</p>
         <div class="btnrow">
           <button class="ghost" @click="publishTarget = null; publishMsg = ''">닫기</button>
+          <button class="ghost" @click="denyPublish">안 올라감</button>
           <button @click="confirmPublish">올라가 있음</button>
         </div>
       </div>
@@ -88,6 +90,7 @@ const router = useRouter()
 const id = route.params.id
 const data = ref(null)
 const log = ref([])
+const teams = ref([])
 const loading = ref(true)
 const loadError = ref(false)
 const confirmDelete = ref(false)
@@ -97,6 +100,13 @@ const publishMsg = ref('')
 const publishOk = ref(false)
 
 const allHeld = computed(() => (data.value?.contents || []).length > 0 && (data.value.contents.every((p) => p.held)))
+
+const teamName = computed(() => {
+  const t = data.value?.brief?.team
+  if (!t) return '자동'
+  const found = teams.value.find((x) => String(x.team.id) === String(t))
+  return found ? found.team.name : '알 수 없는 팀'
+})
 
 function shortTime(iso) {
   return (iso || '').slice(5, 16).replace('T', ' ')
@@ -112,12 +122,14 @@ function stateKind(p) {
 async function load() {
   loadError.value = false
   try {
-    const [d, l] = await Promise.all([
+    const [d, l, t] = await Promise.all([
       apiFetch(`/api/works/${id}`),
       apiFetch(`/api/works/${id}/ai-log`),
+      apiFetch('/api/teams').catch(() => ({ items: [] })),
     ])
     data.value = d
     log.value = l.items || []
+    teams.value = t.items || []
   } catch {
     loadError.value = true
   } finally {
@@ -168,10 +180,24 @@ async function regenPost(postId) {
 async function confirmPublish() {
   publishMsg.value = ''
   try {
-    await apiFetch(`/api/contents/${publishTarget.value.id}/publish-record`, { method: 'POST', body: JSON.stringify({ url: publishUrl.value }) })
+    await apiFetch(`/api/works/${id}/posts/${publishTarget.value.id}/confirm-published`, { method: 'POST', body: JSON.stringify({ published: true, url: publishUrl.value }) })
     publishOk.value = true
     publishMsg.value = '기록했습니다.'
     publishUrl.value = ''
+    await load()
+  } catch (e) {
+    publishOk.value = false
+    publishMsg.value = e.message
+  }
+}
+
+async function denyPublish() {
+  publishMsg.value = ''
+  try {
+    await apiFetch(`/api/works/${id}/posts/${publishTarget.value.id}/confirm-published`, { method: 'POST', body: JSON.stringify({ published: false }) })
+    publishTarget.value = null
+    publishUrl.value = ''
+    toast('다음 발행에서 다시 시도합니다')
     await load()
   } catch (e) {
     publishOk.value = false
@@ -196,7 +222,7 @@ onMounted(load)
 </script>
 
 <style scoped>
-.detail { display: flex; flex-direction: column; gap: var(--s4); max-width: 860px; }
+.detail { display: flex; flex-direction: column; gap: var(--s4); }
 .back { font-size: 13px; }
 .head { display: flex; align-items: flex-start; gap: var(--s4); }
 .head > div:first-child { flex: 1; min-width: 0; }
@@ -238,4 +264,11 @@ onMounted(load)
 .modal input { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); background: var(--panel); width: 100%; }
 .modal h3 { margin: 0; }
 .error { color: var(--warn); }
+@media (min-width: 1400px) {
+  .detail { display: grid; grid-template-columns: 7fr 5fr; align-items: start; }
+  .detail > .back, .detail > .head, .detail > :deep(.stages) { grid-column: 1 / -1; }
+  .detail > section[aria-label="게시물"] { grid-column: 1; }
+  .detail > section[aria-label="첨부"] { grid-column: 1; }
+  .detail > section[aria-label="AI 대화 기록"] { grid-column: 2; grid-row: span 2; }
+}
 </style>

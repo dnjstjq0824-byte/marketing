@@ -74,15 +74,8 @@ def seed_full(c, business):
     detail = body
     cid = [x for x in c.op("GET", "/api/contents?status=draft")[1]["contents"]
            if x["productId"] == pid][0]["id"]
-    code, _ = c.op("POST", "/api/products/%d/affiliate-links" % pid,
-                   {"partnerName": "p", "url": "https://e.com/go"})
-    assert code == 201, code
-    code, _ = c.op("POST", "/api/metrics", {"contentId": cid, "channel": "blog"})
-    assert code == 201, code
-    code, _ = c.op("POST", "/api/publish-logs",
-                   {"contentId": cid, "channel": "blog", "account": "a",
-                    "status": "scheduled", "note": ""})
-    assert code == 201, code
+    # W8: affiliate/metrics/publish-log manual writes are gone; cascade
+    # coverage for those lives in Go store tests now.
     rid = claim_review(c, pid)
     code, _ = c.wk("POST", "/api/worker/jobs/%d/result" % rid,
                    {"decisions": [{"content_id": cid, "approve": True, "reason": "ok",
@@ -114,10 +107,6 @@ def main():
     check("del-content", code == 200, str(code))
     code, _ = c.op("GET", "/api/contents/%d" % cid)
     check("del-content-gone", code == 404, str(code))
-    code, body = c.op("GET", "/api/publish-logs")
-    check("del-logs-cascade", code == 200 and body["logs"] == [], str(body))
-    code, body = c.op("GET", "/api/metrics")
-    check("del-metrics-cascade", code == 200 and body["metrics"] == [], str(body))
 
     pid2, _, _ = seed_full(c, "delbiz2")
     code, body = c.op("DELETE", "/api/products/%d" % pid2)
@@ -132,26 +121,9 @@ def main():
         files = os.listdir(ups) if os.path.isdir(ups) else []
         check("del-uploads-clean", files == [], str(files))
 
-    code, body = c.op("POST", "/api/session/accounts", {"name": "delq", "role": "worker"})
-    accid = body["id"]
-    code, _ = c.op("PATCH", "/api/session/accounts/%d" % accid,
-                   {"postingMode": "auto", "sessionState": "connected"})
-    _, cid3 = seed_content_only(c)
-    code, _ = c.op("POST", "/api/contents/%d/schedule" % cid3,
-                   {"account": "delq", "platform": "instagram", "scheduledAt": ""})
-    code, body = c.op("DELETE", "/api/session/accounts/%d" % accid)
-    check("del-account-guard-409", code == 409, str((code, body)))
+    # W8: the schedule API is gone, so the reservation-guard probe has no
+    # HTTP setup path. The guard stays in code; W4 (auto-assign) re-covers it.
     summary("DELETE")
-
-
-def seed_content_only(c):
-    code, body = c.op("POST", "/api/products",
-                      {"sourceUrl": "https://e.com/guard", "exitType": "A"})
-    pid = body["product"]["id"]
-    finish_chain(c, pid)
-    code, body = c.op("GET", "/api/contents?status=draft")
-    cid = [x for x in body["contents"] if x["productId"] == pid][0]["id"]
-    return pid, cid
 
 
 if __name__ == "__main__":

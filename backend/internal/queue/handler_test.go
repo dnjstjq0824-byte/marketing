@@ -38,6 +38,40 @@ func authed(req *http.Request) {
 	req.Header.Set("X-Worker-Name", "test-worker")
 }
 
+// W9: production refuses fake- workers on claim and result paths.
+func TestFakeRefusedInProduction(t *testing.T) {
+	st := openHandlerStore(t)
+	h := testHandler(st)
+	h.Production = true
+	req := httptest.NewRequest("GET", "/api/worker/jobs/next?type=analyze", nil)
+	req.Header.Set("Authorization", "Bearer "+testWorkerToken)
+	req.Header.Set("X-Worker-Name", "fake-probe")
+	rec := httptest.NewRecorder()
+	h.Auth(http.HandlerFunc(h.Next)).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("fake claim: got %d, want 403", rec.Code)
+	}
+	req = httptest.NewRequest("POST", "/api/worker/jobs/1/result", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+testWorkerToken)
+	req.Header.Set("X-Worker-Name", "fake-probe")
+	req.SetPathValue("id", "1")
+	rec = httptest.NewRecorder()
+	h.Auth(http.HandlerFunc(h.Result)).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("fake result: got %d, want 403", rec.Code)
+	}
+	// Same fake worker is allowed outside production.
+	h.Production = false
+	req = httptest.NewRequest("GET", "/api/worker/jobs/next?type=analyze", nil)
+	req.Header.Set("Authorization", "Bearer "+testWorkerToken)
+	req.Header.Set("X-Worker-Name", "fake-probe")
+	rec = httptest.NewRecorder()
+	h.Auth(http.HandlerFunc(h.Next)).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dev fake claim: got %d, want 200", rec.Code)
+	}
+}
+
 func TestWorkerAuthRequired(t *testing.T) {
 	st := openHandlerStore(t)
 	h := testHandler(st)

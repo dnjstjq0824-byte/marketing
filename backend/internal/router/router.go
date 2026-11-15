@@ -3,6 +3,7 @@ package router
 
 import (
 	"encoding/json"
+	"errors"
 	"mime"
 	"net/http"
 	"os"
@@ -45,6 +46,8 @@ type Deps struct {
 	Agents   *agent.Service
 	Executor *executor.Service
 	Chat     *chat.Service
+	// FileKey signs worker media URLs (W5-3). Empty refuses all.
+	FileKey []byte
 }
 
 // New builds the full HTTP handler tree.
@@ -52,14 +55,16 @@ func New(d *Deps) http.Handler {
 	mux := http.NewServeMux()
 	authH := auth.NewHandler(d.Auth)
 	queueH := queue.NewHandler(d.Queue, d.Agents, d.Config.WorkerToken, d.Config.Env != "production")
+	queueH.Production = d.Config.Env == "production"
 	agentH := agent.NewHandler(d.Agents)
 	productH := product.NewHandler(d.Product, d.Store, d.Config.UploadDir)
 	contentH := content.NewHandler(d.Content, d.Store)
 	sessionH := session.NewHandler(d.Session)
 	notifyH := notify.NewHandler(d.Notify)
-	execH := executor.NewHandler(d.Executor)
 	chatH := chat.NewHandler(d.Chat)
-	mediaH := media.NewHandler(media.NewService(d.Store, d.Config.UploadDir))
+	mediaSvc := media.NewService(d.Store, d.Config.UploadDir)
+	mediaSvc.FileKey = d.FileKey
+	mediaH := media.NewHandler(mediaSvc)
 	worksH := works.NewHandler(works.NewService(d.Store), d.Store, d.Config.UploadDir)
 	teamsH := teams.NewHandler(teams.NewService(d.Store), d.Store)
 
@@ -83,46 +88,26 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/products/{id}", op(http.HandlerFunc(productH.Detail)))
 	mux.Handle("DELETE /api/products/{id}", op(http.HandlerFunc(productH.Delete)))
 	mux.Handle("PATCH /api/products/{id}", op(http.HandlerFunc(productH.Update)))
-	mux.Handle("PATCH /api/products/{id}/reading", op(http.HandlerFunc(productH.UpdateReading)))
-	mux.Handle("PATCH /api/products/{id}/strategy", op(http.HandlerFunc(productH.UpdateStrategy)))
 	mux.Handle("DELETE /api/products/{id}/images/{imageId}", op(http.HandlerFunc(productH.DeleteImage)))
-	mux.Handle("POST /api/products/{id}/affiliate-links", op(http.HandlerFunc(productH.CreateAffiliate)))
-	mux.Handle("PATCH /api/products/{id}/affiliate-links/{linkId}", op(http.HandlerFunc(productH.UpdateAffiliate)))
-	mux.Handle("DELETE /api/products/{id}/affiliate-links/{linkId}", op(http.HandlerFunc(productH.DeleteAffiliate)))
 
 	mux.Handle("GET /api/contents", op(http.HandlerFunc(contentH.List)))
 	mux.Handle("GET /api/contents/{id}", op(http.HandlerFunc(contentH.Detail)))
-	mux.Handle("PATCH /api/contents/{id}", op(http.HandlerFunc(contentH.Update)))
 	mux.Handle("DELETE /api/contents/{id}", op(http.HandlerFunc(contentH.Delete)))
-	mux.Handle("POST /api/contents/{id}/schedule", op(http.HandlerFunc(contentH.Schedule)))
-	mux.Handle("POST /api/contents/{id}/publish-record", op(http.HandlerFunc(contentH.RecordPublish)))
 	mux.Handle("GET /api/contents/{id}/reviews", op(http.HandlerFunc(contentH.ListReviews)))
-	mux.Handle("GET /api/publish/plan", op(http.HandlerFunc(sessionH.PublishPlan)))
-	mux.Handle("GET /api/publish-queue", op(http.HandlerFunc(contentH.PublishQueue)))
 	mux.Handle("GET /api/publish-logs", op(http.HandlerFunc(contentH.ListPublishLogs)))
-	mux.Handle("POST /api/publish-logs", op(http.HandlerFunc(contentH.CreatePublishLog)))
-	mux.Handle("PATCH /api/publish-logs/{id}", op(http.HandlerFunc(contentH.UpdatePublishLog)))
-	mux.Handle("DELETE /api/publish-logs/{id}", op(http.HandlerFunc(contentH.DeletePublishLog)))
 	mux.Handle("GET /api/metrics", op(http.HandlerFunc(contentH.ListMetrics)))
-	mux.Handle("POST /api/metrics", op(http.HandlerFunc(contentH.CreateMetric)))
-	mux.Handle("PATCH /api/metrics/{id}", op(http.HandlerFunc(contentH.UpdateMetricChecks)))
-	mux.Handle("DELETE /api/metrics/{id}", op(http.HandlerFunc(contentH.DeleteMetric)))
 
 	mux.Handle("GET /api/session/accounts", op(http.HandlerFunc(sessionH.ListAccounts)))
 	mux.Handle("POST /api/session/accounts", op(http.HandlerFunc(sessionH.RegisterAccount)))
 	mux.Handle("POST /api/session/accounts/bulk", op(http.HandlerFunc(sessionH.RegisterBulk)))
 	mux.Handle("POST /api/session/login-queue/next", op(http.HandlerFunc(sessionH.NextLogin)))
 	mux.Handle("PATCH /api/session/accounts/{id}", op(http.HandlerFunc(sessionH.UpdateAccount)))
-	mux.Handle("POST /api/session/check", op(http.HandlerFunc(sessionH.CheckNow)))
 	mux.Handle("GET /api/session/relogin-queue", op(http.HandlerFunc(sessionH.ReloginQueue)))
-	mux.Handle("POST /api/session/accounts/{id}/wake", op(http.HandlerFunc(sessionH.Wake)))
 	mux.Handle("POST /api/session/accounts/{id}/login-start", op(http.HandlerFunc(sessionH.LoginStart)))
 	mux.Handle("POST /api/session/accounts/{id}/login-finish", op(http.HandlerFunc(sessionH.LoginFinish)))
 	mux.Handle("POST /api/session/accounts/{id}/login-cancel", op(http.HandlerFunc(sessionH.LoginCancel)))
+	mux.Handle("POST /api/session/accounts/{id}/chat-probe", op(http.HandlerFunc(sessionH.ChatProbe)))
 	mux.Handle("GET /api/jobs", op(http.HandlerFunc(queueH.ListForOperator)))
-	mux.Handle("POST /api/jobs/{id}/cancel", op(http.HandlerFunc(queueH.CancelForOperator)))
-	mux.Handle("DELETE /api/jobs/{id}", op(http.HandlerFunc(queueH.DeleteForOperator)))
-	mux.Handle("POST /api/jobs/{id}/requeue", op(http.HandlerFunc(agentH.Requeue)))
 	mux.Handle("DELETE /api/session/accounts/{id}", op(http.HandlerFunc(sessionH.Unregister)))
 
 	mux.Handle("GET /api/agents", op(http.HandlerFunc(agentH.List)))
@@ -139,11 +124,20 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/notifications", op(http.HandlerFunc(notifyH.List)))
 	mux.Handle("POST /api/notifications/{id}/read", op(http.HandlerFunc(notifyH.Read)))
 	mux.Handle("POST /api/notifications/read-all", op(http.HandlerFunc(notifyH.ReadAll)))
-	mux.Handle("GET /api/executor/config", op(http.HandlerFunc(execH.GetConfig)))
-	mux.Handle("POST /api/executor/config", op(http.HandlerFunc(execH.SetConfig)))
 	mux.Handle("POST /api/system/backup", op(http.HandlerFunc(d.backup)))
 	mux.Handle("GET /api/system/backups", op(http.HandlerFunc(d.backupList)))
 	mux.Handle("POST /api/system/purge", op(http.HandlerFunc(d.purge)))
+	mux.Handle("GET /api/system/version", op(http.HandlerFunc(d.version)))
+	mux.Handle("GET /api/channel-platforms", op(http.HandlerFunc(d.listPlatforms)))
+	mux.Handle("PATCH /api/channel-platforms/{key}", op(http.HandlerFunc(d.patchPlatform)))
+	mux.Handle("GET /api/ai-platforms", op(http.HandlerFunc(d.listAIPlatforms)))
+	mux.Handle("POST /api/ai-platforms", op(http.HandlerFunc(d.createAIPlatform)))
+	mux.Handle("PATCH /api/ai-platforms/{key}", op(http.HandlerFunc(d.patchAIPlatform)))
+	mux.Handle("DELETE /api/ai-platforms/{key}", op(http.HandlerFunc(d.deleteAIPlatform)))
+	mux.Handle("GET /api/settings/automation", op(http.HandlerFunc(d.getAutomationSettings)))
+	mux.Handle("PUT /api/settings/automation", op(http.HandlerFunc(d.putAutomationSettings)))
+	mux.Handle("GET /api/automation", op(http.HandlerFunc(d.getAutomation)))
+	mux.Handle("PUT /api/automation", op(http.HandlerFunc(d.putAutomation)))
 
 	// Worker-authenticated (§5).
 	wk := queueH.Auth
@@ -155,6 +149,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("POST /api/worker/jobs/{id}/heartbeat", wk(http.HandlerFunc(agentH.JobHeartbeat)))
 	mux.Handle("POST /api/worker/chat/send", wk(http.HandlerFunc(chatH.Send)))
 	mux.Handle("GET /api/worker/chat/pending", wk(http.HandlerFunc(chatH.Pending)))
+	mux.Handle("GET /api/worker/boot-check", wk(http.HandlerFunc(queueH.BootCheck)))
 
 	mux.Handle("POST /api/chat/send", op(http.HandlerFunc(chatH.Send)))
 	mux.Handle("GET /api/chat/pending", op(http.HandlerFunc(chatH.Pending)))
@@ -170,6 +165,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/works/{id}/ai-log", op(http.HandlerFunc(worksH.AILog)))
 	mux.Handle("POST /api/works/{id}/posts/{postId}/hold", op(http.HandlerFunc(worksH.HoldPost)))
 	mux.Handle("POST /api/works/{id}/posts:generate", op(http.HandlerFunc(worksH.RegeneratePost)))
+	mux.Handle("POST /api/works/{id}/posts/{postId}/confirm-published", op(http.HandlerFunc(contentH.ConfirmPublished)))
 
 	mux.Handle("POST /api/media/uploads", op(http.HandlerFunc(mediaH.Init)))
 	mux.Handle("PUT /api/media/uploads/{id}/parts/{n}", op(http.HandlerFunc(mediaH.PutPart)))
@@ -177,6 +173,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/media", op(http.HandlerFunc(mediaH.List)))
 	mux.Handle("GET /api/media/{id}", op(http.HandlerFunc(mediaH.Detail)))
 	mux.Handle("GET /api/media/{id}/file", op(http.HandlerFunc(mediaH.File)))
+	mux.Handle("GET /api/media/{id}/signed", http.HandlerFunc(mediaH.SignedFile))
 	mux.Handle("POST /api/media/zip", op(http.HandlerFunc(mediaH.Zip)))
 	mux.Handle("DELETE /api/media/{id}", op(http.HandlerFunc(mediaH.Delete)))
 
@@ -337,7 +334,199 @@ func (d *Deps) backup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Deps) backupList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"backups": store.ListBackups(d.Config.BackupDir)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"backups": store.ListBackups(d.Config.BackupDir),
+		"keep":    d.Config.BackupKeep,
+	})
+}
+
+func (d *Deps) version(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"app": config.AppVersion, "schema": store.SchemaVersion})
+}
+
+func (d *Deps) listPlatforms(w http.ResponseWriter, r *http.Request) {
+	items, err := d.Store.ListChannelPlatforms()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot list platforms")
+		return
+	}
+	if items == nil {
+		items = []*store.ChannelPlatform{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (d *Deps) patchPlatform(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := d.Store.SetChannelPlatformStatus(key, strings.TrimSpace(req.Status)); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "platform not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	p, _ := d.Store.GetChannelPlatform(key)
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (d *Deps) listAIPlatforms(w http.ResponseWriter, r *http.Request) {
+	items, err := d.Store.ListAIPlatforms()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot list AI platforms")
+		return
+	}
+	if items == nil {
+		items = []*store.AIPlatform{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (d *Deps) createAIPlatform(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Key      string `json:"key"`
+		Name     string `json:"name"`
+		LoginURL string `json:"loginUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	p, err := d.Store.CreateCustomAIPlatform(req.Key, req.Name, req.LoginURL)
+	if err != nil {
+		if errors.Is(err, store.ErrDuplicate) {
+			writeError(w, http.StatusConflict, "platform key already exists")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, p)
+}
+
+func (d *Deps) patchAIPlatform(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	p, err := d.Store.GetAIPlatform(key)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "AI platform not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot load AI platform")
+		return
+	}
+	var req struct {
+		Name              *string `json:"name"`
+		LoginURL          *string `json:"loginUrl"`
+		ChatURL           *string `json:"chatUrl"`
+		LoggedOutMarkers  *string `json:"loggedOutMarkers"`
+		ComposerSelector  *string `json:"composerSelector"`
+		SendSelector      *string `json:"sendSelector"`
+		ReplySelector     *string `json:"replySelector"`
+		ReplyBodySelector *string `json:"replyBodySelector"`
+		BusySelector      *string `json:"busySelector"`
+		DoneSelector      *string `json:"doneSelector"`
+		ThreadURLPattern  *string `json:"threadUrlPattern"`
+		Icon              *string `json:"icon"`
+		Color             *string `json:"color"`
+		ChatStatus        *string `json:"chatStatus"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	apply := func(dst *string, v *string) {
+		if v != nil {
+			*dst = strings.TrimSpace(*v)
+		}
+	}
+	apply(&p.Name, req.Name)
+	apply(&p.LoginURL, req.LoginURL)
+	apply(&p.ChatURL, req.ChatURL)
+	apply(&p.LoggedOutMarkers, req.LoggedOutMarkers)
+	apply(&p.ComposerSelector, req.ComposerSelector)
+	apply(&p.SendSelector, req.SendSelector)
+	apply(&p.ReplySelector, req.ReplySelector)
+	apply(&p.ReplyBodySelector, req.ReplyBodySelector)
+	apply(&p.BusySelector, req.BusySelector)
+	apply(&p.DoneSelector, req.DoneSelector)
+	apply(&p.ThreadURLPattern, req.ThreadURLPattern)
+	apply(&p.Icon, req.Icon)
+	apply(&p.Color, req.Color)
+	apply(&p.ChatStatus, req.ChatStatus)
+	if err := d.Store.UpdateAIPlatform(p); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	updated, _ := d.Store.GetAIPlatform(key)
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (d *Deps) deleteAIPlatform(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if err := d.Store.DeleteCustomAIPlatform(key); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "AI platform not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": key})
+}
+
+func (d *Deps) getAutomationSettings(w http.ResponseWriter, r *http.Request) {
+	s, err := store.GetAutomationSettings(d.Store.DB())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load settings")
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+func (d *Deps) putAutomationSettings(w http.ResponseWriter, r *http.Request) {
+	var s store.AutomationSettings
+	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := store.SetAutomationSettings(d.Store.DB(), s); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+func (d *Deps) getAutomation(w http.ResponseWriter, r *http.Request) {
+	s, err := store.GetAutomationSettings(d.Store.DB())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load automation state")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": s.Enabled})
+}
+
+func (d *Deps) putAutomation(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "enabled is required")
+		return
+	}
+	s, err := store.SetAutomationEnabled(d.Store.DB(), *req.Enabled)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot save automation state")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": s.Enabled})
 }
 
 func (d *Deps) purge(w http.ResponseWriter, r *http.Request) {

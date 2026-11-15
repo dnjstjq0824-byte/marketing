@@ -20,6 +20,48 @@ from adapter import config
 from adapter import session_post
 
 
+def download_images(images, server_url):
+    """Fetch payload images via signed URLs into TEMP; verify sha256.
+
+    Returns local paths. Any mismatch or failure raises: a wrong image must
+    never post silently (W5-3).
+    """
+    import hashlib
+    import os
+    import tempfile
+    import urllib.request
+
+    paths = []
+    for item in images or []:
+        url = item.get("url") or ""
+        want = (item.get("sha256") or "").lower()
+        if not url or not want:
+            raise ValueError("image entry lacks url/sha256: %r" % (item,))
+        if url.startswith("/"):
+            url = server_url.rstrip("/") + url
+        fd, path = tempfile.mkstemp(prefix="somun-img-", suffix=".bin")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as res:
+                data = res.read()
+            digest = hashlib.sha256(data).hexdigest()
+            if digest != want:
+                raise ValueError("sha256 mismatch for %s" % url)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            raise
+        paths.append(path)
+    return paths
+
+
 def publish_handler(job_payload):
     account = (job_payload.get("account") or "").strip()
     platform = (job_payload.get("platform") or "").strip()
@@ -27,15 +69,24 @@ def publish_handler(job_payload):
         raise ValueError("publish payload lacks account/platform")
     platform = config.platform_map().get(platform, platform)
     base_url = config.STUB_BASE_URL if platform == "stubboard" else ""
+    attachments = download_images(job_payload.get("images") or [], config.SERVER_URL)
+    tags = [t for t in (job_payload.get("tags") or []) if t]
     try:
         return session_post.post(
             account, platform,
             job_payload.get("title") or "", job_payload.get("body") or "",
-            base_url=base_url,
+            base_url=base_url, attachments=attachments, tags=tags,
         )
     except session_post.NeedsLogin as exc:
         raise RuntimeError("%s -- run: adapter\\.venv\\Scripts\\python -m adapter.login %s %s"
                            % (exc, account, platform))
+    finally:
+        import os
+        for path in attachments:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def main():

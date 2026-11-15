@@ -284,29 +284,6 @@ func (h *Handler) JobHeartbeat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"leaseUntil": lease})
 }
 
-// Requeue handles POST /api/jobs/{id}/requeue (operator): failed to pending.
-func (h *Handler) Requeue(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid job id")
-		return
-	}
-	job, err := h.svc.Requeue(id)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "job not found")
-			return
-		}
-		if errors.Is(err, store.ErrNotFailed) {
-			writeError(w, http.StatusConflict, "only failed jobs can be requeued")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "cannot requeue job")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"job": job})
-}
-
 func pathID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(r.PathValue("id"), 10, 64)
 }

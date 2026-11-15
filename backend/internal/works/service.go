@@ -18,6 +18,7 @@ import (
 const (
 	jobAnalyze  = "analyze"
 	jobGenerate = "generate"
+	jobResearch = "research"
 )
 
 var (
@@ -116,7 +117,7 @@ func (s *Service) Create(req CreateReq) (int64, error) {
 		if !validChannels[c.Channel] || strings.TrimSpace(c.Platform) == "" || len(c.Platform) > 40 {
 			return 0, ErrBadChannel
 		}
-		if c.Versions < 1 || c.Versions > 4 {
+		if c.Versions < 1 || c.Versions > 10 {
 			return 0, ErrBadVersions
 		}
 	}
@@ -155,8 +156,13 @@ func (s *Service) Create(req CreateReq) (int64, error) {
 			return 0, err
 		}
 	}
+	teamID, err := s.store.ResolveWorkTeam(req.Team, strings.TrimSpace(req.Business))
+	if err != nil {
+		return 0, err
+	}
+	channels := s.effectiveChannels(req.Channels, teamID)
 	brief, _ := json.Marshal(map[string]any{
-		"inputs": req.Inputs, "channels": req.Channels,
+		"inputs": req.Inputs, "channels": channels,
 		"business": strings.TrimSpace(req.Business), "startAt": startAt,
 		"affiliate": map[string]any{"isSponsored": req.Affiliate.IsSponsored, "disclosure": disclosure},
 		"team": strings.TrimSpace(req.Team),
@@ -172,13 +178,159 @@ func (s *Service) Create(req CreateReq) (int64, error) {
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"product_id": p.ID, "source_url": sourceURL, "topic": topic,
-		"images": images, "channels": req.Channels,
+		"images": images, "channels": channels,
 		"affiliate": map[string]any{"isSponsored": req.Affiliate.IsSponsored, "disclosure": disclosure},
 	})
-	if _, err := s.store.CreateJob(jobAnalyze, p.ID, string(payload)); err != nil {
-		return 0, fmt.Errorf("auto-create analyze job: %w", err)
+	// W1: typed inputs. Topic-only works research instead of parsing.
+	kind := "topic"
+	if sourceURL != "" {
+		kind = "url"
+	} else if len(mediaIDs) > 0 {
+		kind = "image"
+	}
+	targets, _ := json.Marshal(targetList(channels))
+	if err := s.store.SetProductInput(p.ID, kind, topic, string(targets)); err != nil {
+		return 0, err
+	}
+	// W18-2: industry tag for the banned-word lists, auto-detected from
+	// the business/topic text; the product API accepts an override.
+	if industry := detectIndustry(strings.TrimSpace(req.Business) + " " + topic + " " + sourceURL); industry != "" {
+		if err := s.store.SetProductIndustry(p.ID, industry); err != nil {
+			return 0, err
+		}
+	}
+	// W16: the work belongs to one team from birth; every downstream job
+	// inherits it.
+	if err := s.store.SetProductTeam(p.ID, teamID); err != nil {
+		return 0, err
+	}
+	firstJob := jobAnalyze
+	if kind == "topic" {
+		firstJob = jobResearch
+	}
+	job, err := s.store.CreateJob(firstJob, p.ID, string(payload))
+	if err != nil {
+		return 0, fmt.Errorf("auto-create %s job: %w", firstJob, err)
+	}
+	if err := s.store.SetJobTeam(job.ID, teamID); err != nil {
+		return 0, err
 	}
 	return p.ID, nil
+}
+
+// industryKeywords maps signal words to W18-2 industry tags.
+var industryKeywords = []struct {
+	tag   string
+	words []string
+}{
+	{"cosmetics", []string{"화장품", "cosmetic", "스킨", "마스크팩", "선크림", "에센스", "앰플", "쿠션", "네일", "nail"}},
+	{"health", []string{"건강", "health", "영양제", "supplement", "유산균", "프로바이오틱스", "비타민", "오메가", "관절", "혈압", "당뇨"}},
+	{"food", []string{"식품", "food", "맛집", "다이어트", "diet", "꿀", "honey", "커피", "음료", "과자", "라면"}},
+}
+
+// detectIndustry tags a work for the banned-word lists. First match wins;
+// no signal means common-only.
+func detectIndustry(haystack string) string {
+	lowered := strings.ToLower(haystack)
+	for _, group := range industryKeywords {
+		for _, w := range group.words {
+			if strings.Contains(lowered, strings.ToLower(w)) {
+				return group.tag
+			}
+		}
+	}
+	return ""
+}
+
+// targetList canonicalizes the brief's platform spellings for W1 queries.
+func targetList(channels []ChannelReq) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range channels {
+		plat := canonicalPlatform(c.Platform)
+		if plat == "" || seen[plat] {
+			continue
+		}
+		seen[plat] = true
+		out = append(out, plat)
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out
+}
+
+// canonicalPlatform maps brief platform spellings to account platforms.
+// It mirrors the scheduler's mapping; briefs predate the registry.
+func canonicalPlatform(p string) string {
+	if strings.TrimSpace(strings.ToLower(p)) == "naver" {
+		return "naver_blog"
+	}
+	return strings.ToLower(strings.TrimSpace(p))
+}
+
+// effectiveChannels applies the team's W21-4 distribution: mode one pins
+// every channel to a single version; mode all grows versions to cover the
+// eligible accounts, bounded by the team cap and the hard ceiling.
+func (s *Service) effectiveChannels(in []ChannelReq, teamID int64) []ChannelReq {
+	out := make([]ChannelReq, 0, len(in))
+	t, err := s.store.GetTeam(teamID)
+	if err != nil {
+		return in
+	}
+	if t.DistributionMode == "one" {
+		for _, c := range in {
+			c.Versions = 1
+			out = append(out, c)
+		}
+		return out
+	}
+	cap := t.DistributionCap
+	if cap < 1 {
+		cap = 5
+	}
+	if cap > 10 {
+		cap = 10
+	}
+	accounts, err := s.store.ListAccountRows()
+	if err != nil {
+		return in
+	}
+	linked := map[int64]bool{}
+	if ids, err := s.store.ListTeamChannelIDs(teamID); err == nil && len(ids) > 0 {
+		for _, id := range ids {
+			linked[id] = true
+		}
+	}
+	for _, c := range in {
+		plat := canonicalPlatform(c.Platform)
+		eligible := 0
+		for _, a := range accounts {
+			if a.Kind == "agent_service" || a.Platform != plat {
+				continue
+			}
+			if a.SessionState != "connected" || a.PostingMode != "auto" {
+				continue
+			}
+			if len(linked) > 0 && !linked[a.ID] {
+				continue
+			}
+			eligible++
+		}
+		n := c.Versions
+		if eligible > n {
+			n = eligible
+		}
+		if n > cap {
+			n = cap
+		}
+		if n < 1 {
+			n = 1
+		}
+		c.Versions = n
+		out = append(out, c)
+	}
+	return out
 }
 
 func normalizeStart(raw string) (string, error) {

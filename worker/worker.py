@@ -19,6 +19,7 @@ No real-agent connection code lives here.
 """
 
 import json
+import sys
 import threading
 import time
 import traceback
@@ -97,17 +98,23 @@ class WorkerClient:
         _, payload = self._request("POST", "/api/worker/jobs/%s/heartbeat" % job_id, {})
         return payload.get("leaseUntil")
 
-    def chat(self, account_id, message):
+    def chat(self, account_id, message, thread="", attachments=None):
         """Send one message through a connected AI account; return the reply.
 
         Slow runs answer 202; this polls the pending handle until the reply
-        lands or CHAT_TIMEOUT_SEC passes.
+        lands or CHAT_TIMEOUT_SEC passes. Empty thread means the account
+        default thread; pass a key to continue a named thread (W13).
+        attachments lists server-side file paths the AI should see (W2-2).
         """
         old_timeout, self.timeout = self.timeout, config.CHAT_TIMEOUT_SEC
+        body = {"accountId": account_id, "message": message}
+        if thread:
+            body["thread"] = thread
+        if attachments:
+            body["attachments"] = list(attachments)
         try:
             code, payload = self._request_with_status(
-                "POST", "/api/worker/chat/send",
-                {"accountId": account_id, "message": message})
+                "POST", "/api/worker/chat/send", body)
         finally:
             self.timeout = old_timeout
         if code != 202:
@@ -275,15 +282,57 @@ def _process_job(client, handlers, job, job_id):
         print("result registration failed: %s" % exc, flush=True)
 
 
+def rendered_or_static(url):
+    """Fetch page text, rendered first (W2-1), static GET as fallback.
+
+    Returns (text, shots): shots holds the screenshot + downloaded images
+    for chat attachments (empty on the static path).
+    """
+    try:
+        from adapter import fetch as fetch_mod
+    except ImportError:
+        return ai_tasks.fetch_page_text(url), []
+    try:
+        result = fetch_mod.fetch(url)
+    except Exception:
+        return ai_tasks.fetch_page_text(url), []
+    shots = []
+    if result.get("screenshot"):
+        shots.append(result["screenshot"])
+    shots.extend(result.get("images") or [])
+    text = result.get("text") or ""
+    if not text.strip():
+        text = ai_tasks.fetch_page_text(url)
+    return text, shots
+
+
 def make_real_handlers(client, account_id):
     """Handlers that execute jobs through a connected AI account."""
 
     def run(job_type, payload):
         facts = dict(payload or {})
-        if job_type == "analyze" and facts.get("source_url"):
-            facts["page_text"] = ai_tasks.fetch_page_text(facts["source_url"])
-        prompt = ai_tasks.build_prompt(job_type, facts)
-        reply = client.chat(account_id, prompt)
+        attachments = []
+        if job_type == "analyze":
+            if facts.get("source_url"):
+                text, shots = rendered_or_static(facts["source_url"])
+                facts["page_text"] = text
+                attachments.extend(shots)
+            for img in facts.get("images") or []:
+                if img and img not in attachments:
+                    attachments.append(img)
+        prompt, cut_note = ai_tasks.fit_prompt(job_type, facts)
+        if cut_note:
+            prompt += cut_note
+        # W13: one thread per product so context accumulates per product
+        # instead of mixing every product into the account default thread.
+        thread = ""
+        try:
+            pid = int(facts.get("product_id") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0:
+            thread = "p%d" % pid
+        reply = client.chat(account_id, prompt, thread, attachments=attachments)
         return ai_tasks.parse_reply(job_type, reply)
 
     return {
@@ -291,20 +340,59 @@ def make_real_handlers(client, account_id):
         "strategy": lambda payload: run("strategy", payload),
         "generate": lambda payload: run("generate", payload),
         "review": lambda payload: run("review", payload),
+        "research": lambda payload: run("research", payload),
     }
 
 
-def main():
-    from test_worker import ANALYZE_HANDLER, GENERATE_HANDLER, REVIEW_HANDLER, STRATEGY_HANDLER
+def resolve_mode(argv, real_ai, account_id):
+    """Return "real" or "fake" for this boot.
+
+    W9: fake handlers run only with an explicit --fake flag. Anything else
+    without real-AI wiring refuses to boot (SystemExit 2) so fake drafts can
+    never slip silently into a real queue.
+    """
+    if real_ai and account_id > 0:
+        return "real"
+    if "--fake" in (argv or []):
+        return "fake"
+    raise SystemExit(2)
+
+
+def main(argv=None):
+    args = sys.argv[1:] if argv is None else argv
+    try:
+        mode = resolve_mode(args, config.REAL_AI, config.CHAT_ACCOUNT_ID)
+    except SystemExit:
+        print("worker refuses to boot: set SOMUN_REAL_AI=1 and "
+              "SOMUN_CHAT_ACCOUNT_ID, or pass --fake for test loops",
+              flush=True)
+        raise
 
     client = WorkerClient()
-    if config.REAL_AI and config.CHAT_ACCOUNT_ID > 0:
+    if mode == "real":
         print("worker %s -> %s (REAL AI via account %d)"
               % (client.name, client.server_url, config.CHAT_ACCOUNT_ID),
               flush=True)
+        try:
+            _, payload = client._request(
+                "GET", "/api/worker/boot-check?accountId=%d"
+                % config.CHAT_ACCOUNT_ID)
+        except WorkerError as exc:
+            print("worker refuses to boot: boot-check unreachable (%s)"
+                  % exc, flush=True)
+            raise SystemExit(2)
+        if not payload.get("ok"):
+            print("worker refuses to boot: %s"
+                  % (payload.get("reason") or "account spans B+C lanes"),
+                  flush=True)
+            raise SystemExit(2)
         handlers = make_real_handlers(client, config.CHAT_ACCOUNT_ID)
     else:
-        print("worker %s -> %s (test handlers)" % (client.name, client.server_url), flush=True)
+        from test_worker import ANALYZE_HANDLER, GENERATE_HANDLER, REVIEW_HANDLER, STRATEGY_HANDLER
+        if not client.name.startswith("fake-"):
+            client.name = "fake-" + client.name
+        print("worker %s -> %s (FAKE handlers, test loop only)"
+              % (client.name, client.server_url), flush=True)
         handlers = {"analyze": ANALYZE_HANDLER, "strategy": STRATEGY_HANDLER,
                     "generate": GENERATE_HANDLER, "review": REVIEW_HANDLER}
     try:

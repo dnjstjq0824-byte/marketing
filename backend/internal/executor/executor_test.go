@@ -3,9 +3,12 @@ package executor
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"somun/internal/config"
+	"somun/internal/content/policy"
 	"somun/internal/publisher"
 	"somun/internal/session"
 	"somun/internal/store"
@@ -16,11 +19,13 @@ type fakePub struct {
 	calls    int
 	err      error
 	url      string
+	lastBody string
 }
 
 func (f *fakePub) Platform() string { return f.platform }
 func (f *fakePub) Publish(ctx context.Context, req publisher.Request) (publisher.Result, error) {
 	f.calls++
+	f.lastBody = req.Body
 	if f.err != nil {
 		return publisher.Result{}, f.err
 	}
@@ -77,6 +82,78 @@ func seedQueued(t *testing.T, st *store.Store, pid int64, account string) int64 
 	return c.ID
 }
 
+// W5-2: the executor sends the assembled body (disclosure + buy CTA).
+func TestTickAssemblesBody(t *testing.T) {
+	fake := &fakePub{platform: "instagram", url: "https://e.com/p/1"}
+	svc, st, sess := newExec(t, map[string]publisher.Publisher{"instagram": fake})
+	p, _ := st.CreateProduct("https://example.com/x", "A", 0, "")
+	if _, err := st.CreateAffiliateLink(p.ID, "shop", "https://shop.test/1"); err != nil {
+		t.Fatal(err)
+	}
+	acc := seedAccount(t, sess, "ready")
+	sess.SetSessionState(acc, session.StateConnected, "")
+	sess.SetPostingMode(acc, session.PostingAuto)
+	cid := seedQueued(t, st, p.ID, "ready")
+	if _, err := st.DB().Exec(`UPDATE contents SET is_sponsored=1 WHERE id=?`, cid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Tick(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(fake.lastBody, policy.DisclosureText) {
+		t.Fatalf("body = %q", fake.lastBody)
+	}
+	if !strings.Contains(fake.lastBody, "https://shop.test/1") {
+		t.Fatalf("no buy link: %q", fake.lastBody)
+	}
+}
+
+// W0: fresh installs run the executor (heartbeat default > 0).
+func TestTickDefaultOn(t *testing.T) {
+	fake := &fakePub{platform: "instagram", url: "https://e.com/p/1"}
+	st := openExecStore(t)
+	sess, err := session.NewService(st, filepath.Join(t.TempDir(), ".vault.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(st, sess, map[string]publisher.Publisher{"instagram": fake},
+		store.ExecutorConfig{HeartbeatMin: config.DefaultExecutorHeartbeatMin, MinIntervalMin: 0, MaxActive: 4})
+	p, _ := st.CreateProduct("https://example.com/x", "A", 0, "")
+	acc := seedAccount(t, sess, "ready")
+	sess.SetSessionState(acc, session.StateConnected, "")
+	sess.SetPostingMode(acc, session.PostingAuto)
+	seedQueued(t, st, p.ID, "ready")
+	n, err := svc.Tick(time.Now())
+	if err != nil || n != 1 || fake.calls != 1 {
+		t.Fatalf("fresh tick: n=%d calls=%d err=%v", n, fake.calls, err)
+	}
+}
+
+// W0: stopped automation publishes nothing, even when items are due.
+func TestTickRespectsAutomationSwitch(t *testing.T) {
+	fake := &fakePub{platform: "instagram", url: "https://e.com/p/1"}
+	svc, st, sess := newExec(t, map[string]publisher.Publisher{"instagram": fake})
+	p, _ := st.CreateProduct("https://example.com/x", "A", 0, "")
+	acc := seedAccount(t, sess, "ready")
+	sess.SetSessionState(acc, session.StateConnected, "")
+	sess.SetPostingMode(acc, session.PostingAuto)
+	seedQueued(t, st, p.ID, "ready")
+	if _, err := store.SetAutomationEnabled(st.DB(), false); err != nil {
+		t.Fatal(err)
+	}
+	n, err := svc.Tick(time.Now())
+	if err != nil || n != 0 || fake.calls != 0 {
+		t.Fatalf("tick while off: n=%d calls=%d err=%v", n, fake.calls, err)
+	}
+	if _, err := store.SetAutomationEnabled(st.DB(), true); err != nil {
+		t.Fatal(err)
+	}
+	n, err = svc.Tick(time.Now())
+	if err != nil || n != 1 || fake.calls != 1 {
+		t.Fatalf("tick after on: n=%d calls=%d err=%v", n, fake.calls, err)
+	}
+}
+
 // Verdict x execution matrix: only ready+official runs.
 func TestTickVerdictMatrix(t *testing.T) {
 	fake := &fakePub{platform: "instagram", url: "https://e.com/p/1"}
@@ -96,7 +173,8 @@ func TestTickVerdictMatrix(t *testing.T) {
 
 	manAcc := seedAccount(t, sess, "man")
 	sess.SetSessionState(manAcc, session.StateConnected, "")
-	seedQueued(t, st, p.ID, "man") // posting stays manual
+	sess.SetPostingMode(manAcc, session.PostingManual)
+	seedQueued(t, st, p.ID, "man") // posting explicitly manual
 
 	discAcc := seedAccount(t, sess, "disc")
 	sess.SetPostingMode(discAcc, session.PostingAuto)

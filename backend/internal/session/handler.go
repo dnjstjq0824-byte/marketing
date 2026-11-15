@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Handler serves slot/session endpoints.
@@ -130,10 +129,13 @@ type updateRequest struct {
 	Role           *string `json:"role"`
 	Business       *string `json:"business"`
 	PostingMode    *string `json:"postingMode"`
+	DailyCap       *int    `json:"dailyCap"`
 	LoginID        *string `json:"loginId"`
 	Password       *string `json:"password"`
 	Kind           *string `json:"kind"`
 	PlatformUserID *string `json:"platformUserId"`
+	PlanTier       *string `json:"planTier"`
+	Capabilities   *string `json:"capabilities"`
 }
 
 // UpdateAccount handles PATCH /api/session/accounts/{id}: session state
@@ -218,6 +220,20 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.DailyCap != nil {
+		account, err = h.svc.SetDailyCap(id, *req.DailyCap)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrNoAccount):
+				writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrBadDailyCap):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, "cannot set daily cap")
+			}
+			return
+		}
+	}
 	if req.Kind != nil || req.PlatformUserID != nil {
 		account, err = h.svc.SetKindFields(id, req.Kind, req.PlatformUserID)
 		if err != nil {
@@ -228,6 +244,20 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err.Error())
 			default:
 				writeError(w, http.StatusInternalServerError, "cannot set kind fields")
+			}
+			return
+		}
+	}
+	if req.PlanTier != nil || req.Capabilities != nil {
+		account, err = h.svc.SetPlanFields(id, req.PlanTier, req.Capabilities)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrNoAccount):
+				writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrBadCapabilities):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, "cannot set plan fields")
 			}
 			return
 		}
@@ -282,27 +312,6 @@ func (h *Handler) Unregister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
-}
-
-// CheckNow handles POST /api/session/check (light inspection skeleton).
-func (h *Handler) CheckNow(w http.ResponseWriter, r *http.Request) {
-	n := h.svc.CheckNow()
-	writeJSON(w, http.StatusOK, map[string]any{"checked": n})
-}
-
-// Wake handles POST /api/session/accounts/{id}/wake (assigned sessions only).
-func (h *Handler) Wake(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid account id")
-		return
-	}
-	a, err := h.svc.Wake(id)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, a)
 }
 
 // LoginStart handles POST /api/session/accounts/{id}/login-start: opens the
@@ -397,9 +406,26 @@ func (h *Handler) LoginCancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"cancelled": true})
 }
 
-// PublishPlan handles GET /api/publish/plan.
-func (h *Handler) PublishPlan(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": h.svc.PublishPlan(time.Now())})
+// ChatProbe handles POST /api/session/accounts/{id}/chat-probe (W15-4).
+func (h *Handler) ChatProbe(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid account id")
+		return
+	}
+	res, err := h.svc.ChatProbe(id)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNoAccount):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrBadPlatform):
+			writeError(w, http.StatusBadRequest, "AI 플랫폼 계정이 아닙니다")
+		default:
+			writeError(w, http.StatusInternalServerError, "cannot probe chat")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // ReloginQueue handles GET /api/session/relogin-queue.

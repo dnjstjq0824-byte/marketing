@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"somun/internal/content/policy"
 	"somun/internal/publisher"
 	"somun/internal/session"
 	"somun/internal/store"
@@ -58,6 +59,9 @@ func (s *Service) SetConfig(cfg store.ExecutorConfig) (store.ExecutorConfig, err
 
 // Tick executes due items once. Heartbeat 0 stops execution (verdicts only).
 func (s *Service) Tick(now time.Time) (int, error) {
+	if !s.store.AutomationEnabled() {
+		return 0, nil // W0: stopped automation publishes nothing.
+	}
 	cfg, err := s.Config()
 	if err != nil {
 		return 0, err
@@ -137,8 +141,15 @@ func (s *Service) executeOne(it *session.PlanItem, cfg store.ExecutorConfig, now
 	if err != nil {
 		return s.failAttempt(rec, content.ID, "credentials unavailable", cfg, now)
 	}
+	var buyLinks []string
+	if links, err := s.store.ListAffiliateLinks(content.ProductID); err == nil {
+		for _, l := range links {
+			buyLinks = append(buyLinks, l.URL)
+		}
+	}
+	body := policy.AssembleBody(content.IsSponsored, content.Body, content.IsVirtualPersona, buyLinks)
 	res, err := pub.Publish(context.Background(), publisher.Request{
-		ContentID: content.ID, Channel: channel, Title: content.Title, Body: content.Body,
+		ContentID: content.ID, Channel: channel, Title: content.Title, Body: body,
 		Account: it.Account, LoginID: loginID, Password: password,
 	})
 	if err != nil {

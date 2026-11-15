@@ -1,7 +1,8 @@
 """Platform registry for session login/posting (D9/D27).
 
-Login order: AI services first (Meta AI, Claude), channels last (Naver,
-Tistory). Each platform declares login/compose URLs plus CSS selectors.
+Login order: AI services first (Meta AI, Claude), channels last (blogs,
+then SNS-first: Instagram, Threads, Facebook, X, TikTok, YouTube).
+Each platform declares login/compose URLs plus CSS selectors.
 Compose selectors need real account sessions to pin down; they stay TBD and
 login still works (manual login + console confirmation), while posting
 refuses until the selectors are pinned.
@@ -42,6 +43,10 @@ class Platform:
     reply_extract_js: str = ""
     # False keeps a pinned platform out of chat (e.g. generation stalls).
     chat_enabled: bool = True
+    # File input for image attachments ("" = platform takes text only).
+    file_selector: str = ""
+    # Tag input ("" = platform takes no tags via automation).
+    tag_selector: str = ""
 
 
 # ChatGPT turns carry no per-message DOM hook: the assistant header
@@ -86,6 +91,8 @@ PLATFORMS = {
         body_selector="textarea[name='body']",
         submit_selector="button[type='submit']",
         posted_url_hint="/post/",
+        file_selector="input[type='file']",
+        tag_selector="input[name='tags']",
     ),
     # AI services first. Login is manual (SSO hops included); the operator
     # confirms in the console, so no logged-in selector is required.
@@ -216,12 +223,185 @@ PLATFORMS = {
         posted_url_hint=".tistory.com/",
         notes=("Selectors need a real account session to pin down (P0-1).",),
     ),
+    # SNS-first channels (phase 3): login opens the real page for manual
+    # sign-in; compose selectors stay TBD until W5-1 pins them.
+    "instagram": Platform(
+        name="instagram",
+        login_path="https://www.instagram.com/accounts/login/",
+        logged_in_selector="TBD",
+        compose_path="TBD",
+        title_selector="TBD",
+        body_selector="TBD",
+        submit_selector="TBD",
+        posted_url_hint="instagram.com/p/",
+        notes=("Selectors need a real account session to pin down (W5-1).",),
+        logged_out_markers=("Log in", "Sign up", "로그인"),
+    ),
+    "threads": Platform(
+        name="threads",
+        login_path="https://www.threads.com/login",
+        logged_in_selector="TBD",
+        compose_path="TBD",
+        title_selector="TBD",
+        body_selector="TBD",
+        submit_selector="TBD",
+        posted_url_hint="threads.com/",
+        notes=("Selectors need a real account session to pin down (W5-1).",),
+        logged_out_markers=("Log in", "로그인"),
+    ),
+    "facebook": Platform(
+        name="facebook",
+        login_path="https://www.facebook.com/login/",
+        logged_in_selector="TBD",
+        compose_path="TBD",
+        title_selector="TBD",
+        body_selector="TBD",
+        submit_selector="TBD",
+        posted_url_hint="facebook.com/",
+        notes=("Selectors need a real account session to pin down (W5-1).",),
+        logged_out_markers=("Log in", "Sign Up", "로그인"),
+    ),
+    "x": Platform(
+        name="x",
+        login_path="https://x.com/i/flow/login",
+        logged_in_selector="TBD",
+        compose_path="TBD",
+        title_selector="TBD",
+        body_selector="TBD",
+        submit_selector="TBD",
+        posted_url_hint="x.com/",
+        notes=("Selectors need a real account session to pin down (W5-1).",),
+        logged_out_markers=("Log in", "Sign up", "로그인"),
+    ),
+    "tiktok": Platform(
+        name="tiktok",
+        login_path="https://www.tiktok.com/login",
+        logged_in_selector="TBD",
+        compose_path="TBD",
+        title_selector="TBD",
+        body_selector="TBD",
+        submit_selector="TBD",
+        posted_url_hint="tiktok.com/",
+        notes=("Selectors need a real account session to pin down (W5-1).",),
+        logged_out_markers=("Log in", "Sign up", "로그인"),
+    ),
+    "youtube": Platform(
+        name="youtube",
+        login_path="https://accounts.google.com/ServiceLogin?service=youtube",
+        logged_in_selector="TBD",
+        compose_path="TBD",
+        title_selector="TBD",
+        body_selector="TBD",
+        submit_selector="TBD",
+        posted_url_hint="youtube.com/",
+        notes=("Selectors need a real account session to pin down (W5-1).",),
+        logged_out_markers=("Sign in", "로그인"),
+    ),
+    "blogger": Platform(
+        name="blogger",
+        login_path="https://accounts.google.com/ServiceLogin?service=blogger",
+        logged_in_selector="TBD",
+        compose_path="TBD",
+        title_selector="TBD",
+        body_selector="TBD",
+        submit_selector="TBD",
+        posted_url_hint="blogger.com/",
+        notes=("Selectors need a real account session to pin down (W5-1).",),
+        logged_out_markers=("Sign in", "로그인"),
+    ),
+    "wordpress": Platform(
+        name="wordpress",
+        login_path="https://wordpress.com/log-in",
+        logged_in_selector="TBD",
+        compose_path="TBD",
+        title_selector="TBD",
+        body_selector="TBD",
+        submit_selector="TBD",
+        posted_url_hint="wordpress.com/",
+        notes=("Selectors need a real account session to pin down (W5-1).",),
+        logged_out_markers=("Log In", "Sign Up", "로그인"),
+    ),
 }
 
 
 def get_platform(name):
     """Return the Platform or raise KeyError for unknown names."""
     return PLATFORMS[name]
+
+
+# W15-3 fallback when a custom AI ships no logged-out markers.
+DEFAULT_MARKERS = ("Log in", "Sign in", "Sign up", "로그인")
+
+
+def effective_markers(platform):
+    """Logged-out markers, defaulting when the definition ships none."""
+    markers = tuple(m for m in (getattr(platform, "logged_out_markers", ()) or ()) if m)
+    return markers or DEFAULT_MARKERS
+
+
+def from_dict(data):
+    """Build a Platform from a server JSON definition (W15-2).
+
+    data uses the store.AIPlatformJSON shape. Compose/posting fields stay
+    TBD: external definitions drive login/verify/chat only.
+    """
+    if not isinstance(data, dict) or not data.get("name"):
+        raise ValueError("bad platform definition: name is required")
+    login_url = data.get("login_url") or ""
+    if not login_url.startswith("https://"):
+        raise ValueError("bad platform definition: login_url must be https")
+    markers = data.get("logged_out_markers") or []
+    if isinstance(markers, str):
+        markers = [markers]
+    return Platform(
+        name=data["name"],
+        login_path=login_url,
+        logged_in_selector="TBD",
+        compose_path="TBD",
+        title_selector="TBD",
+        body_selector="TBD",
+        submit_selector="TBD",
+        posted_url_hint=login_url.split("://", 1)[1].split("/", 1)[0],
+        logged_out_markers=tuple(m for m in markers if m),
+        chat_path=data.get("chat_url") or login_url,
+        composer_selector=data.get("composer_selector") or "TBD",
+        send_selector=data.get("send_selector") or "TBD",
+        reply_selector=data.get("reply_selector") or "TBD",
+        reply_body_selector=data.get("reply_body_selector") or "",
+        busy_selector=data.get("busy_selector") or "",
+        done_selector=data.get("done_selector") or "",
+    )
+
+
+def load_definition_file(path):
+    """Read one JSON platform definition, raising ValueError on any flaw."""
+    import json as _json
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = _json.load(handle)
+    except OSError as exc:
+        raise ValueError("cannot read platform definition: %s" % exc)
+    except ValueError as exc:
+        raise ValueError("bad platform definition JSON: %s" % exc)
+    return from_dict(data)
+
+
+def resolve(name, json_path=""):
+    """Return the Platform for a login/verify/chat call (W15-2).
+
+    An explicit JSON path wins, then the AI_PLATFORM_JSON environment
+    file, then the code registry. A definition naming another platform
+    is refused instead of silently swapped.
+    """
+    import os as _os
+    path = json_path or _os.environ.get("AI_PLATFORM_JSON", "")
+    if path:
+        platform = load_definition_file(path)
+        if platform.name != name:
+            raise ValueError("platform definition names %r, want %r"
+                             % (platform.name, name))
+        return platform
+    return get_platform(name)
 
 
 def is_configured(platform):
@@ -233,3 +413,43 @@ def is_configured(platform):
         for field in ("logged_in_selector", "compose_path", "title_selector",
                       "body_selector", "submit_selector")
     )
+
+
+# W5-1: pinned selectors live outside the code. ADAPTER_SELECTORS_DIR holds
+# one <platform>.json per file with any Platform field to override; the
+# merge below lets operators pin real selectors without a code deploy.
+import dataclasses as _dataclasses
+import json as _json
+import os as _os
+
+
+def load_overlay(name):
+    """Return the selector overrides for one platform ({} when absent).
+
+    Unknown fields are ignored; unreadable files fail loudly so a typo
+    never silently disables a pinned platform.
+    """
+    directory = _os.environ.get("ADAPTER_SELECTORS_DIR", "")
+    if not directory:
+        return {}
+    path = _os.path.join(directory, name + ".json")
+    if not _os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = _json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise ValueError("bad selector overlay %s: %s" % (path, exc))
+    if not isinstance(data, dict):
+        raise ValueError("bad selector overlay %s: not an object" % path)
+    known = {f.name for f in _dataclasses.fields(Platform)}
+    return {k: v for k, v in data.items()
+            if k in known and isinstance(v, str) and v}
+
+
+def with_overlay(platform):
+    """Return the platform with its selector overlay merged in."""
+    overrides = load_overlay(platform.name)
+    if not overrides:
+        return platform
+    return _dataclasses.replace(platform, **overrides)

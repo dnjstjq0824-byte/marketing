@@ -4,7 +4,7 @@
     <aside class="side">
       <RouterLink to="/" class="brand">
         <span class="mark" aria-hidden="true">●</span>
-        <span class="brand-t"><strong>SOMUN</strong></span>
+        <span class="brand-t"><strong>SOMUN</strong><small>마케팅 코어</small></span>
       </RouterLink>
       <RouterLink to="/new" class="newbtn"><span class="mi" aria-hidden="true">＋</span> <span class="lbl">새 작업</span></RouterLink>
       <nav aria-label="주 메뉴">
@@ -205,10 +205,11 @@ onUnmounted(() => {
 <style scoped>
 .shell { display: flex; min-height: 100vh; }
 .side {
-  width: 220px;
+  width: 236px;
   flex-shrink: 0;
   background: var(--panel);
   border-right: 1px solid var(--line-soft);
+  box-shadow: 2px 0 12px -8px rgba(29, 39, 51, 0.25);
   padding: var(--s5) var(--s4);
   display: flex;
   flex-direction: column;
@@ -217,8 +218,22 @@ onUnmounted(() => {
   top: 0;
   height: 100vh;
 }
-.brand { display: flex; align-items: center; gap: var(--s2); text-decoration: none; color: var(--ink); font-size: 18px; }
-.brand .mark { color: var(--accent); }
+.brand { display: flex; align-items: center; gap: var(--s3); text-decoration: none; color: var(--ink); padding: var(--s1) var(--s2); }
+.brand .mark {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+}
+.brand-t { display: flex; flex-direction: column; line-height: 1.25; }
+.brand-t strong { font-size: 19px; letter-spacing: 1.5px; }
+.brand-t small { font-size: 12px; color: var(--muted); }
 .newbtn {
   display: block;
   text-align: center;
@@ -228,34 +243,45 @@ onUnmounted(() => {
   padding: var(--s3);
   text-decoration: none;
   font-weight: 700;
+  font-size: 15px;
+  box-shadow: var(--shadow);
 }
+.newbtn:hover { background: var(--accent-dark); color: #fff; }
 .side nav { display: flex; flex-direction: column; gap: 2px; }
 .side nav a {
   display: flex;
   align-items: center;
   gap: var(--s3);
-  padding: var(--s2) var(--s3);
+  padding: var(--s3);
   border-radius: var(--r-md);
   text-decoration: none;
   color: var(--ink-soft);
+  font-size: 15px;
 }
-.side nav a[aria-current="page"] { background: var(--accent-soft); color: var(--ink); font-weight: 700; }
-.side nav .mi { width: 20px; text-align: center; }
+.side nav a:hover { background: var(--soft); color: var(--ink); }
+.side nav a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 800;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.side nav .mi { width: 22px; text-align: center; font-size: 17px; }
 .side-foot { margin-top: auto; }
 .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .topbar {
-  height: 56px;
+  height: 60px;
   display: flex;
   align-items: center;
   gap: var(--s4);
   padding: 0 var(--s6);
   border-bottom: 1px solid var(--line-soft);
+  box-shadow: 0 1px 2px rgba(29, 39, 51, 0.06);
   background: var(--panel);
   position: sticky;
   top: 0;
   z-index: 50;
 }
-.topbar .title { font-size: 18px; }
+.topbar .title { font-size: 20px; font-weight: 800; letter-spacing: -0.3px; }
 .top-right { margin-left: auto; display: flex; align-items: center; gap: var(--s3); }
 .auto-chip {
   display: flex;
@@ -265,9 +291,11 @@ onUnmounted(() => {
   background: var(--panel);
   color: var(--ink);
   border-radius: 999px;
-  padding: var(--s1) var(--s3);
-  font-size: 13px;
+  padding: var(--s2) var(--s4);
+  font-size: 14px;
+  font-weight: 600;
 }
+.auto-chip:hover { background: var(--soft); }
 .auto-chip.off { color: var(--muted); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #bbb; display: inline-block; }
 .dot.on { background: var(--ok); }
@@ -278,9 +306,10 @@ onUnmounted(() => {
   color: var(--ink);
   border-radius: var(--r-md);
   padding: var(--s2);
-  font-size: 18px;
+  font-size: 19px;
   position: relative;
 }
+.iconbtn:hover { background: var(--soft); border-color: var(--line-soft); }
 .bdg {
   position: absolute;
   top: 0;
@@ -319,7 +348,7 @@ onUnmounted(() => {
 .nmsg { flex: 1; }
 .ntime { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .offlineband { background: var(--ink-soft); color: #fff; text-align: center; padding: var(--s2); font-size: 13px; }
-.main { padding: var(--s6); max-width: 1264px; width: 100%; margin: 0 auto; }
+.main { padding: var(--s6); width: 100%; }
 .tabs { display: none; }
 .sheet-back {
   position: fixed;
@@ -400,8 +429,10 @@ onUnmounted(() => {
 }
 @media (min-width: 901px) and (max-width: 1279px) {
   .side { width: 64px; padding: var(--s5) var(--s2); align-items: center; }
+  .side .brand { justify-content: center; padding: 0; }
   .side .brand-t, .side .lbl, .side-foot { display: none; }
-  .side nav a { justify-content: center; }
+  .side nav a { justify-content: center; padding: var(--s2); }
+  .side nav a[aria-current="page"] { box-shadow: none; }
   .newbtn { width: 44px; height: 44px; padding: 0; border-radius: 50%; font-size: 20px; }
 }
 </style>

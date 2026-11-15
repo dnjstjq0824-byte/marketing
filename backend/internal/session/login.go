@@ -24,6 +24,9 @@ var (
 	ErrNotLoggedIn  = errors.New("브라우저에서 로그인이 끝나지 않았습니다. 로그인 후 다시 완료 확인을 누르세요")
 	ErrUnverifiable = errors.New("로그인 확인 불가")
 	ErrBadPlatform  = errors.New("로그인할 플랫폼이 지정되지 않았습니다")
+	// ErrRealProfileTaken guards the single real-Chrome account (W15-8):
+	// the operator's own profile holds one identity only.
+	ErrRealProfileTaken = errors.New("내 크롬은 이미 다른 계정이 쓰고 있습니다")
 )
 
 // SafeAccountName mirrors adapter.browser.safe_name: runs of anything outside
@@ -60,8 +63,10 @@ type loginProc struct {
 	cmd         *exec.Cmd
 	confirmFile string
 	logPath     string
-	done        chan struct{}
-	exitCode    int
+	// platformJSON is the temp AI definition file (custom platforms only).
+	platformJSON string
+	done         chan struct{}
+	exitCode     int
 }
 
 // adapterBusyExit is adapter.login's exit code for a locked real profile.
@@ -178,27 +183,50 @@ func (s *Service) StartLogin(id int64, realProfile, incognito bool) (int, error)
 			return 0, ErrLoginBusy
 		}
 	}
+	// W15-8: the operator's own Chrome profile serves one account only.
+	if realProfile && !incognito {
+		if held, herr := s.realProfileHolder(id); herr != nil {
+			return 0, herr
+		} else if held != "" {
+			return 0, fmt.Errorf("%w (%s)", ErrRealProfileTaken, held)
+		}
+	}
 	confirm, err := loginConfirmFile()
 	if err != nil {
+		return 0, err
+	}
+	// W15-2: custom AI definitions ride along as a temp JSON file the
+	// adapter reads via AI_PLATFORM_JSON. Builtin and channel platforms
+	// keep the adapter's code registry (empty path).
+	platformJSON, err := s.writeAIPlatformJSON(platform)
+	if err != nil {
+		os.Remove(confirm)
 		return 0, err
 	}
 	logFile, err := os.CreateTemp("", "somun-login-*.log")
 	if err != nil {
 		os.Remove(confirm)
+		os.Remove(platformJSON)
 		return 0, err
 	}
 	logPath := logFile.Name()
 	profiles, _ := filepath.Abs(filepath.Join(s.loginDataDir, "profiles"))
 	evidence, _ := filepath.Abs(filepath.Join(s.loginDataDir, "uploads", "evidence"))
+	childEnv := []string{"PROFILES_DIR=" + profiles, "EVIDENCE_DIR=" + evidence}
+	if platformJSON != "" {
+		childEnv = append(childEnv, "AI_PLATFORM_JSON="+platformJSON)
+	}
 	cmd, err := s.logins.spawn(s.loginPython, row.Name, platform, confirm,
-		[]string{"PROFILES_DIR=" + profiles, "EVIDENCE_DIR=" + evidence}, logFile, realProfile, incognito)
+		childEnv, logFile, realProfile, incognito)
 	logFile.Close() // the child keeps its own descriptor
 	if err != nil {
 		os.Remove(confirm)
 		os.Remove(logPath)
+		os.Remove(platformJSON)
 		return 0, fmt.Errorf("login browser start: %w", err)
 	}
-	p := &loginProc{cmd: cmd, confirmFile: confirm, logPath: logPath, done: make(chan struct{}), exitCode: -1}
+	p := &loginProc{cmd: cmd, confirmFile: confirm, logPath: logPath,
+		platformJSON: platformJSON, done: make(chan struct{}), exitCode: -1}
 	go waitLogin(cmd, p)
 	select {
 	case <-p.done:
@@ -206,6 +234,7 @@ func (s *Service) StartLogin(id int64, realProfile, incognito bool) (int, error)
 		tail := readLogTail(p.logPath)
 		os.Remove(confirm)
 		os.Remove(logPath)
+		os.Remove(platformJSON)
 		if p.exitCode == adapterBusyExit {
 			if tail != "" && !strings.Contains(tail, "Chrome이 실행 중") {
 				return 0, fmt.Errorf("%w: %s", ErrProfileBusy, tail)
@@ -219,11 +248,38 @@ func (s *Service) StartLogin(id int64, realProfile, incognito bool) (int, error)
 	case <-time.After(startFailWait):
 	}
 	s.logins.procs[id] = p
+	// Remember the browser flavor for the W15-8 single-real guard.
+	mode := "incognito"
+	if realProfile && !incognito {
+		mode = "real"
+	}
+	row.ProfileMode = mode
+	_ = s.store.UpdateAccountRow(row)
 	pid := 0
 	if cmd.Process != nil {
 		pid = cmd.Process.Pid
 	}
 	return pid, nil
+}
+
+// realProfileHolder names the other account on the operator's Chrome, if any.
+func (s *Service) realProfileHolder(exceptID int64) (string, error) {
+	rows, err := s.store.ListAccountRows()
+	if err != nil {
+		return "", err
+	}
+	for _, row := range rows {
+		if row.ID != exceptID && row.ProfileMode == "real" {
+			return row.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// writeAIPlatformJSON materializes a custom AI definition for the adapter.
+// Builtin, channel, and unknown platforms return "" (code registry).
+func (s *Service) writeAIPlatformJSON(platform string) (string, error) {
+	return s.store.AIPlatformJSON(platform)
 }
 
 // Verify verdicts from adapter.verify.
@@ -325,7 +381,12 @@ func (s *Service) runVerify(name, platform string) (string, string) {
 	cmd := exec.CommandContext(ctx, s.loginPython, "-m", "adapter.verify", name, platform)
 	cmd.Dir = repoRootFromPython(s.loginPython)
 	profiles, _ := filepath.Abs(filepath.Join(s.loginDataDir, "profiles"))
-	cmd.Env = append(os.Environ(), "PROFILES_DIR="+profiles, "PYTHONUTF8=1")
+	env := append(os.Environ(), "PROFILES_DIR="+profiles, "PYTHONUTF8=1")
+	if jsonPath, jerr := s.writeAIPlatformJSON(platform); jerr == nil && jsonPath != "" {
+		defer os.Remove(jsonPath)
+		env = append(env, "AI_PLATFORM_JSON="+jsonPath)
+	}
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	message := strings.TrimSpace(string(out))
 	if err == nil {
@@ -341,6 +402,43 @@ func (s *Service) runVerify(name, platform string) (string, string) {
 		message = err.Error()
 	}
 	return verifyUnknown, message
+}
+
+// execProbe runs adapter.chat --probe (headless) with a generous timeout
+// and parses its single-line JSON verdict.
+func (s *Service) execProbe(name, platform string) (map[string]any, error) {
+	if s.loginPython == "" {
+		return nil, ErrNoAdapter
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, s.loginPython, "-m", "adapter.chat", name, platform, "--probe")
+	cmd.Dir = repoRootFromPython(s.loginPython)
+	profiles, _ := filepath.Abs(filepath.Join(s.loginDataDir, "profiles"))
+	env := append(os.Environ(), "PROFILES_DIR="+profiles, "PYTHONUTF8=1", "HEADLESS=true")
+	if jsonPath, jerr := s.writeAIPlatformJSON(platform); jerr == nil && jsonPath != "" {
+		defer os.Remove(jsonPath)
+		env = append(env, "AI_PLATFORM_JSON="+jsonPath)
+	}
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	line := strings.TrimSpace(string(out))
+	// The probe prints exactly one JSON line; take the last line in case
+	// the venv preamble leaks a warning.
+	if i := strings.LastIndex(line, "\n"); i >= 0 {
+		line = strings.TrimSpace(line[i+1:])
+	}
+	var doc map[string]any
+	if jerr := json.Unmarshal([]byte(line), &doc); jerr != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("probe timed out")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("probe failed: %s", line)
+		}
+		return nil, fmt.Errorf("probe returned bad JSON: %s", line)
+	}
+	return doc, nil
 }
 
 // CancelLogin kills an in-flight headed login. It is idempotent.
@@ -363,6 +461,7 @@ func (s *Service) stopLogin(id int64, p *loginProc) {
 	}
 	os.Remove(p.confirmFile)
 	os.Remove(p.logPath)
+	os.Remove(p.platformJSON)
 	if s.logins != nil {
 		s.logins.mu.Lock()
 		if cur, ok := s.logins.procs[id]; ok && cur == p {

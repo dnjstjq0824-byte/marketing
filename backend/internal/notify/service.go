@@ -21,6 +21,7 @@ const (
 	KindBackupFail    = "backup_failed"
 	KindOverdueHold   = "overdue_hold"
 	KindReviewHuman   = "review_human"
+	KindTeamHandoff   = "team_handoff"
 )
 
 var severityByKind = map[string]string{

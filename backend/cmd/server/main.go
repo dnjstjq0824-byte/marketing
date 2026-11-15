@@ -25,6 +25,7 @@ import (
 	"somun/internal/publisher"
 	"somun/internal/queue"
 	"somun/internal/router"
+	"somun/internal/scheduler"
 	"somun/internal/session"
 	"somun/internal/store"
 )
@@ -128,6 +129,9 @@ func run() error {
 	chatSvc.Configure(cfg.DataDir, adapterPython())
 	chatSvc.AttachSession(sessionSvc)
 	notifySvc := notify.NewService(st)
+	schedulerSvc := scheduler.NewService(st, notifySvc)
+	schedulerSvc.FileKey = sessionSvc.FileKey()
+	queueSvc.Scheduler = schedulerSvc
 	claimHub := agent.NewHub()
 	store.OnJobCreated = claimHub.Notify
 	agentSvc := agent.NewService(st, claimHub, cfg.LeaseSec, cfg.LongpollMaxSec)
@@ -154,6 +158,14 @@ func run() error {
 	sessionSvc.OnSessionState = func(id int64, name, prev, next string) {
 		if _, err := notifySvc.SessionState(id, name, prev, next); err != nil {
 			log.Printf("notify session %s: %v", name, err)
+		}
+		// W4: a fresh connection reassigns approved-but-waiting contents.
+		if next == session.StateConnected && prev != session.StateConnected {
+			if n, err := schedulerSvc.ReassignPending(); err != nil {
+				log.Printf("scheduler reassign: %v", err)
+			} else if n > 0 {
+				log.Printf("scheduler reassigned %d approved item(s) on %s connect", n, name)
+			}
 		}
 	}
 
@@ -187,7 +199,7 @@ func run() error {
 	}
 	srv := &http.Server{
 		Addr:         cfg.BindAddr + ":" + cfg.Port,
-		Handler:      router.New(&router.Deps{Config: cfg, Store: st, Auth: authSvc, Queue: queueSvc, Content: contentSvc, Product: productSvc, Session: sessionSvc, Notify: notifySvc, Agents: agentSvc, Executor: execSvc, Chat: chatSvc}),
+		Handler:      router.New(&router.Deps{Config: cfg, Store: st, Auth: authSvc, Queue: queueSvc, Content: contentSvc, Product: productSvc, Session: sessionSvc, Notify: notifySvc, Agents: agentSvc, Executor: execSvc, Chat: chatSvc, FileKey: sessionSvc.FileKey()}),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: writeTimeout,
 	}

@@ -53,6 +53,7 @@
         <div class="sect-head">
           <h2 class="section-title">진행 중인 작업</h2>
           <span class="sp"></span>
+          <RouterLink :to="assignLink" class="ghost small link">이 팀에 맡기기</RouterLink>
           <RouterLink to="/works" class="small">전체 →</RouterLink>
         </div>
         <ul class="rows">
@@ -116,6 +117,15 @@
         </div>
         <div class="setrow">
           <label>동시 실행 최대 <input v-model.number="settingsForm.maxConcurrency" type="number" min="0" max="99" class="num" /></label>
+          <button class="ghost small" @click="saveSettings">저장</button>
+        </div>
+        <div class="setrow">
+          <span>계정 분배</span>
+          <label class="chk"><input type="radio" value="all" v-model="settingsForm.distributionMode" @change="saveSettings" /> 계정마다 다른 글로 모두 올리기</label>
+          <label class="chk"><input type="radio" value="one" v-model="settingsForm.distributionMode" @change="saveSettings" /> 계정 1개에만 올리기</label>
+        </div>
+        <div class="setrow">
+          <label>분배 상한 <input v-model.number="settingsForm.distributionCap" type="number" min="1" max="50" class="num" /></label>
           <button class="ghost small" @click="saveSettings">저장</button>
         </div>
       </section>
@@ -244,7 +254,7 @@ const chanIds = ref([])
 const chanMsg = ref('')
 const brandEdit = ref(false)
 const brandForm = ref({ intro: '', tone: '', banned: '', buyLink: '' })
-const settingsForm = ref({ roleMode: 'auto', maxConcurrency: 0 })
+const settingsForm = ref({ roleMode: 'auto', maxConcurrency: 0, distributionMode: 'all', distributionCap: 5 })
 const roleKeys = ['analyze', 'strategy', 'generate', 'review']
 
 const id = computed(() => route.params.id)
@@ -252,6 +262,13 @@ const bizLine = computed(() => {
   const raw = team.value.businesses || ''
   const list = raw.split(',').map((s) => s.trim()).filter(Boolean)
   return list.length ? list.join(' · ') + ' 전담' : ''
+})
+const assignLink = computed(() => {
+  const raw = team.value.businesses || ''
+  const first = raw.split(',').map((s) => s.trim()).filter(Boolean)[0] || ''
+  const query = { team: String(team.value.id || '') }
+  if (first) query.business = first
+  return { path: '/new', query }
 })
 const working = computed(() => Math.min(stats.value.runningWorks || 0, members.value.length))
 const idle = computed(() => members.value.length - working.value)
@@ -292,7 +309,7 @@ async function load() {
     works.value = d.works || []
     channels.value = d.channels || []
     stats.value = d.stats || stats.value
-    settingsForm.value = { roleMode: team.value.roleMode || 'auto', maxConcurrency: team.value.maxConcurrency || 0 }
+    settingsForm.value = { roleMode: team.value.roleMode || 'auto', maxConcurrency: team.value.maxConcurrency || 0, distributionMode: team.value.distributionMode || 'all', distributionCap: team.value.distributionCap || 5 }
   } catch (e) {
     loadMsg.value = e.message || '팀을 불러오지 못했습니다'
   }
@@ -466,7 +483,7 @@ async function saveSettings() {
   try {
     team.value = await apiFetch(`/api/teams/${id.value}`, {
       method: 'PATCH',
-      body: JSON.stringify({ roleMode: settingsForm.value.roleMode, maxConcurrency: settingsForm.value.maxConcurrency || 0 }),
+      body: JSON.stringify({ roleMode: settingsForm.value.roleMode, maxConcurrency: settingsForm.value.maxConcurrency || 0, distributionMode: settingsForm.value.distributionMode, distributionCap: settingsForm.value.distributionCap || 5 }),
     })
     toast('팀 설정을 저장했습니다')
   } catch (e) {
@@ -521,6 +538,17 @@ onMounted(load)
 <style scoped>
 .page-head { display: flex; align-items: baseline; gap: var(--s3); margin-bottom: var(--s1); }
 .back { text-decoration: none; color: var(--ink-soft); white-space: nowrap; }
+.link {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: var(--r-md);
+  padding: var(--s1) var(--s2);
+  font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.link:hover { background: var(--soft); }
 .page-head .page-title { margin: 0; font-size: 20px; }
 .sub { font-size: 14px; font-weight: 400; }
 .sp { flex: 1; }

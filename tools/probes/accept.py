@@ -1,10 +1,15 @@
-"""Acceptance probes 1-9 (APPENDIX D) against a live server.
+"""Acceptance probes 1-5 + disclosure insert + worker/operator isolation.
 
 Usage (fresh DATA_DIR, default dev secrets):
     python tools/probes/accept.py
     SOMUN_URL=http://127.0.0.1:18080 python tools/probes/accept.py
 
 Standard library only. Exits nonzero on the first failure.
+
+W8 removed the operator manual endpoints (PATCH /api/contents, schedule,
+affiliate/metrics/publish-log writes), so the old probes 6/8/9 that drove
+the state machine over HTTP are gone. Transition coverage lives in Go
+service tests now; W4 (auto-assign) re-covers scheduling over HTTP.
 """
 import json
 import os
@@ -203,120 +208,21 @@ def make_draft(tok, exit_type="A"):
 make_draft.n = 100
 
 
-def patch_content(tok, cid, body, worker=False):
-    return req("PATCH", "/api/contents/%d" % cid, body, tok, worker=worker)
-
-
-def test_transitions(tok):
-    _, c1 = make_draft(tok)
-    code, _ = patch_content(tok, c1, {"status": "review"})
-    check("6-draft-review", code == 200, str(code))
-    code, _ = patch_content(tok, c1, {"status": "draft"})
-    check("6-review-draft", code == 200, str(code))
-    code, body = patch_content(tok, c1, {"status": "approved"})
-    check("6-draft-approved-400", code == 400, str((code, body)))
-    code, _ = patch_content(tok, c1, {"status": "review"})
-    code, body = patch_content(tok, c1, {"status": "queued"})
-    check("6-review-queued-400", code == 400, str((code, body)))
-    code, _ = patch_content(tok, c1, {"status": "approved"})
-    code, body = patch_content(tok, c1, {"status": "draft"})
-    check("6-approved-draft-400", code == 400, str((code, body)))
-    # queued -> approved back-step needs a reservation; use a second draft.
-    _, c2 = make_draft(tok)
-    reg_account(tok, "qa-1")
-    set_mode(tok, "qa-1", "auto")
-    set_session(tok, "qa-1", "connected")
-    code, body = req("POST", "/api/contents/%d/schedule" % c2,
-                     {"account": "qa-1", "platform": "instagram", "scheduledAt": ""}, tok)
-    check("6-queue-setup", code == 200, str((code, body)))
-    code, _ = patch_content(tok, c2, {"status": "approved"})
-    check("6-queued-approved", code == 200, str(code))
-    code, _ = patch_content(tok, c2, {"status": "queued"})
-    code, body = patch_content(tok, c2, {"status": "published"})
-    check("6-queued-published-409", code == 409, str((code, body)))
-    code, body = patch_content(None, c2, {"title": "x"}, worker=True)
-    check("6-worker-patch-401", code == 401, str((code, body)))
-
-
-ACCOUNTS = {}
-
-
-def reg_account(tok, name):
-    if name in ACCOUNTS:
-        return ACCOUNTS[name]
-    code, body = req("POST", "/api/session/accounts",
-                     {"name": name, "platform": "instagram", "role": "worker"}, tok)
-    if code != 201:
-        raise ProbeError("register %s: %s %s" % (name, code, body))
-    ACCOUNTS[name] = body["id"]
-    return ACCOUNTS[name]
-
-
-def set_mode(tok, name, mode):
-    code, body = req("PATCH", "/api/session/accounts/%d" % ACCOUNTS[name],
-                     {"postingMode": mode}, tok)
-    if code != 200:
-        raise ProbeError("mode %s=%s: %s %s" % (name, mode, code, body))
-
-
-def set_session(tok, name, state):
-    code, body = req("PATCH", "/api/session/accounts/%d" % ACCOUNTS[name],
-                     {"sessionState": state}, tok)
-    if code != 200:
-        raise ProbeError("session %s=%s: %s %s" % (name, state, code, body))
-
-
-def test_disclosure(tok):
+def test_disclosure_insert(tok):
     _, cid = make_draft(tok, exit_type="B")
     code, body = req("GET", "/api/contents/%d" % cid, token=tok)
     check("7-inserted", code == 200 and body.get("disclosure"), str(body)[:200])
-    code, body = patch_content(tok, cid, {"title": "new", "body": "new body"})
-    check("7-edit-keeps", code == 200 and body.get("disclosure"), str(body)[:200])
 
 
-def test_hold_isolation(tok):
-    _, c1 = make_draft(tok)
-    _, c2 = make_draft(tok)
-    reg_account(tok, "accA")
-    reg_account(tok, "accB")
-    set_mode(tok, "accA", "auto")
-    set_mode(tok, "accB", "auto")
-    set_session(tok, "accA", "connected")
-    set_session(tok, "accB", "connected")
-    for cid, acc in ((c1, "accA"), (c2, "accB")):
-        code, _ = req("POST", "/api/contents/%d/schedule" % cid,
-                      {"account": acc, "platform": "instagram", "scheduledAt": ""}, tok)
-        if code != 200:
-            raise ProbeError("reserve %s: %d" % (acc, code))
-    set_session(tok, "accA", "expired")
-    code, a = req("GET", "/api/contents/%d" % c1, token=tok)
-    code, b = req("GET", "/api/contents/%d" % c2, token=tok)
-    check("8-only-A-held", a.get("held") is True and b.get("held") is not True, str((a.get("held"), b.get("held"))))
-    code, body = req("GET", "/api/session/relogin-queue", token=tok)
-    names = [i["accountName"] for i in body.get("items", [])]
-    check("8-relogin-A-only", "accA" in names and "accB" not in names, str(names))
-    set_session(tok, "accA", "connected")
-    code, a = req("GET", "/api/contents/%d" % c1, token=tok)
-    check("8-resumed", a.get("held") is not True, str(a.get("held")))
-
-
-def test_schedule_rules(tok):
-    _, c1 = make_draft(tok)
-    _, c2 = make_draft(tok)
-    reg_account(tok, "accC")
-    set_mode(tok, "accC", "auto")
-    set_session(tok, "accC", "connected")
-    code, body = req("POST", "/api/contents/%d/schedule" % c1,
-                     {"account": "accC", "platform": "instagram",
-                      "scheduledAt": "2001-01-01T00:00:00Z"}, tok)
-    check("9-past-400", code == 400, str((code, body)))
-    at = "2031-06-01T09:00:00Z"
-    code, b1 = req("POST", "/api/contents/%d/schedule" % c1,
-                   {"account": "accC", "platform": "instagram", "scheduledAt": at}, tok)
-    code, b2 = req("POST", "/api/contents/%d/schedule" % c2,
-                   {"account": "accC", "platform": "instagram", "scheduledAt": at}, tok)
-    check("9-serial", b1.get("queuePosition") == 1 and b2.get("queuePosition") == 2,
-          str((b1.get("queuePosition"), b2.get("queuePosition"))))
+def test_worker_cannot_use_operator(tok):
+    code, body = req("POST", "/api/session/accounts",
+                     {"name": "iso-1", "role": "worker"}, tok)
+    if code != 201:
+        raise ProbeError("iso seed: %s %s" % (code, body))
+    accid = body["id"]
+    code, body = req("PATCH", "/api/session/accounts/%d" % accid,
+                     {"postingMode": "auto"}, worker=True)
+    check("8-worker-op-401", code == 401, str((code, body)))
 
 
 def drain_pending():
@@ -343,11 +249,9 @@ def main():
     test_fail_no_requeue(tok)
     test_unknowns(tok)
     drain_pending()
-    test_transitions(tok)
-    test_disclosure(tok)
-    test_hold_isolation(tok)
-    test_schedule_rules(tok)
-    print("ACCEPT 9/9 PASS", flush=True)
+    test_disclosure_insert(tok)
+    test_worker_cannot_use_operator(tok)
+    print("ACCEPT 7/7 PASS", flush=True)
 
 
 if __name__ == "__main__":

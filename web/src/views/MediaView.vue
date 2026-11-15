@@ -231,4 +231,7 @@ onUnmounted(revokeBlobs)
 @media (max-width: 900px) {
   .tiles { grid-template-columns: repeat(3, 1fr); }
 }
+@media (min-width: 1600px) {
+  .tiles { grid-template-columns: repeat(8, 1fr); }
+}
 </style>

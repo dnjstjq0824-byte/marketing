@@ -15,28 +15,22 @@ var (
 	ErrBadDecision    = errors.New("invalid review decision")
 )
 
-// ValidateJobType accepts only the five specified job types.
+// ValidateJobType accepts only the specified job types.
 func ValidateJobType(t string) error {
-	if t != JobAnalyze && t != JobStrategy && t != JobGenerate && t != JobReview && t != JobPublish {
+	if t != JobAnalyze && t != JobStrategy && t != JobGenerate && t != JobReview && t != JobPublish && t != JobResearch {
 		return ErrBadJobType
 	}
 	return nil
 }
 
-// ValidateReviewResult checks decision shapes. Target fields travel together:
-// account without platform (or vice versa) is rejected here; existence and
-// timing are checked at apply time.
+// ValidateReviewResult checks decision shapes. W4: target fields are worker
+// echoes and are ignored, so only the content reference is validated here.
 func ValidateReviewResult(res ReviewResult) error {
 	if len(res.Decisions) == 0 {
 		return ErrEmptyDecisions
 	}
 	for _, d := range res.Decisions {
 		if d.ContentID <= 0 {
-			return ErrBadDecision
-		}
-		account := strings.TrimSpace(d.Account)
-		platform := strings.ToLower(strings.TrimSpace(d.Platform))
-		if (account == "") != (platform == "") {
 			return ErrBadDecision
 		}
 	}

@@ -208,15 +208,29 @@ type Product struct {
 	Priority  int    `json:"priority"`
 	Business  string `json:"business"`
 	BriefJSON string `json:"-"`
+	// TeamID owns the work (W16). NULL resolves to the default team.
+	TeamID *int64 `json:"teamId"`
+	// InputKind url|image|topic + Topic + TargetPlatforms (W1).
+	InputKind       string `json:"inputKind"`
+	Topic           string `json:"topic"`
+	TargetPlatforms string `json:"targetPlatforms"`
+	// Industry drives the W18-2 wordlists (cosmetics/health/food/"").
+	Industry  string `json:"industry"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
 }
 
-const productCols = `id,name,source_url,exit_type,priority,business,brief_json,created_at,updated_at`
+const productCols = `id,name,source_url,exit_type,priority,business,brief_json,team_id,input_kind,topic,target_platforms,industry,created_at,updated_at`
 
 func scanProduct(row interface{ Scan(...any) error }) (*Product, error) {
 	p := &Product{}
-	err := row.Scan(&p.ID, &p.Name, &p.SourceURL, &p.ExitType, &p.Priority, &p.Business, &p.BriefJSON, &p.CreatedAt, &p.UpdatedAt)
+	var team sql.NullInt64
+	err := row.Scan(&p.ID, &p.Name, &p.SourceURL, &p.ExitType, &p.Priority, &p.Business, &p.BriefJSON, &team,
+		&p.InputKind, &p.Topic, &p.TargetPlatforms, &p.Industry, &p.CreatedAt, &p.UpdatedAt)
+	if team.Valid {
+		v := team.Int64
+		p.TeamID = &v
+	}
 	return p, err
 }
 
@@ -280,8 +294,33 @@ func (s *Store) SetProductBrief(id int64, briefJSON string) error {
 	return err
 }
 
+// SetProductIndustry records the W18-2 industry tag.
+func (s *Store) SetProductIndustry(id int64, industry string) error {
+	_, err := s.db.Exec(`UPDATE products SET industry=?, updated_at=? WHERE id=?`, industry, nowUTC(), id)
+	return err
+}
+
+// SetProductInput records the W1 input typing: kind url|image|topic, the
+// topic text, and the canonical target platform list (JSON array).
+func (s *Store) SetProductInput(id int64, kind, topic, targets string) error {
+	_, err := s.db.Exec(`UPDATE products SET input_kind=?, topic=?, target_platforms=?, updated_at=? WHERE id=?`,
+		kind, topic, targets, nowUTC(), id)
+	return err
+}
+
 // UpdateProduct rewrites the editable product fields.
 func (s *Store) UpdateProduct(id int64, name, sourceURL, exitType string, priority int, business string) error {
+	return s.UpdateProductFull(id, name, sourceURL, exitType, priority, business, "")
+}
+
+// UpdateProductFull rewrites a product including the industry tag. Empty
+// industry keeps the stored value.
+func (s *Store) UpdateProductFull(id int64, name, sourceURL, exitType string, priority int, business, industry string) error {
+	if industry != "" {
+		if _, err := s.db.Exec(`UPDATE products SET industry=? WHERE id=?`, industry, id); err != nil {
+			return err
+		}
+	}
 	res, err := s.db.Exec(`UPDATE products SET name=?, source_url=?, exit_type=?, priority=?, business=?, updated_at=?
 		WHERE id=?`, name, sourceURL, exitType, priority, business, nowUTC(), id)
 	if err != nil {
@@ -551,17 +590,24 @@ type Job struct {
 	Priority   int    `json:"priority"`
 	Attempts   int    `json:"attempts"`
 	LeaseUntil string `json:"leaseUntil"`
+	// TeamID owns the job (W16). NULL resolves to the default team.
+	TeamID *int64 `json:"teamId"`
 }
 
 func scanJob(rows interface{ Scan(...any) error }) (*Job, error) {
 	j := &Job{}
+	var team sql.NullInt64
 	err := rows.Scan(&j.ID, &j.Type, &j.RefID, &j.Status, &j.WorkerName, &j.Payload,
 		&j.Result, &j.Error, &j.CreatedAt, &j.ClaimedAt, &j.FinishedAt,
-		&j.AgentID, &j.Business, &j.Priority, &j.Attempts, &j.LeaseUntil)
+		&j.AgentID, &j.Business, &j.Priority, &j.Attempts, &j.LeaseUntil, &team)
+	if team.Valid {
+		v := team.Int64
+		j.TeamID = &v
+	}
 	return j, err
 }
 
-const jobCols = `id,type,ref_id,status,worker_name,payload,result,error,created_at,claimed_at,finished_at,agent_id,business,priority,attempts,lease_until`
+const jobCols = `id,type,ref_id,status,worker_name,payload,result,error,created_at,claimed_at,finished_at,agent_id,business,priority,attempts,lease_until,team_id`
 
 // CreateJob enqueues a pending job. Routing columns inherit from the
 // referenced product when it exists (all current flows reference products).
@@ -624,6 +670,9 @@ func (s *Store) CountOpenJobs(jobType string, refID int64) (int, error) {
 // ClaimNextJob atomically assigns the oldest pending job of a type.
 // Returns (nil, nil) when no job waits.
 func (s *Store) ClaimNextJob(jobType, worker string) (*Job, error) {
+	if !s.AutomationEnabled() {
+		return nil, nil // W0: stopped automation claims nothing.
+	}
 	s.claimMu.Lock()
 	defer s.claimMu.Unlock()
 	ctx := context.Background()
@@ -792,8 +841,15 @@ type Content struct {
 	HoldReason       string `json:"holdReason"`
 	RevisionOf       int64  `json:"revisionOf"`
 	RevisionRootID   int64  `json:"revisionRootId"`
-	CreatedAt        string `json:"createdAt"`
-	UpdatedAt        string `json:"updatedAt"`
+	// GeneratedByAccountID is the linked AI account that wrote the draft
+	// (W6 writer≠reviewer). NULL for legacy and unlinked-agent drafts.
+	GeneratedByAccountID *int64 `json:"generatedByAccountId,omitempty"`
+	// MediaSpec is the worker's media shopping list (W3-4, JSON).
+	MediaSpec string `json:"mediaSpec,omitempty"`
+	// WantPlatform pins the brief entry (W3-2); empty = first match.
+	WantPlatform string `json:"wantPlatform,omitempty"`
+	CreatedAt    string `json:"createdAt"`
+	UpdatedAt    string `json:"updatedAt"`
 	// Revisions is transport-only: chain siblings, set by the detail handler.
 	Revisions []int64 `json:"revisions,omitempty"`
 }
@@ -801,15 +857,20 @@ type Content struct {
 func scanContent(row interface{ Scan(...any) error }) (*Content, error) {
 	c := &Content{}
 	var sponsored, persona, held int
+	var genBy sql.NullInt64
 	err := row.Scan(&c.ID, &c.ProductID, &c.Channel, &c.TargetPlatform, &c.ChannelGroup,
 		&c.Title, &c.Body, &c.Disclosure, &sponsored, &persona, &c.AILabel, &c.Status,
 		&c.TargetAccount, &c.ScheduledAt, &c.ReserveSeq, &held, &c.HoldReason,
-		&c.RevisionOf, &c.RevisionRootID, &c.CreatedAt, &c.UpdatedAt)
+		&c.RevisionOf, &c.RevisionRootID, &genBy, &c.MediaSpec, &c.WantPlatform, &c.CreatedAt, &c.UpdatedAt)
 	c.IsSponsored, c.IsVirtualPersona, c.Held = sponsored == 1, persona == 1, held == 1
+	if genBy.Valid {
+		v := genBy.Int64
+		c.GeneratedByAccountID = &v
+	}
 	return c, err
 }
 
-const contentCols = `id,product_id,channel,target_platform,channel_group,title,body,disclosure,is_sponsored,is_virtual_persona,ai_label,status,target_account,scheduled_at,reserve_seq,held,hold_reason,revision_of,revision_root_id,created_at,updated_at`
+const contentCols = `id,product_id,channel,target_platform,channel_group,title,body,disclosure,is_sponsored,is_virtual_persona,ai_label,status,target_account,scheduled_at,reserve_seq,held,hold_reason,revision_of,revision_root_id,generated_by_account_id,media_spec,want_platform,created_at,updated_at`
 
 func boolInt(b bool) int {
 	if b {
@@ -823,11 +884,15 @@ func boolInt(b bool) int {
 // (RevisionOf/RevisionRootID) is kept.
 func (s *Store) CreateContent(c *Content) (*Content, error) {
 	now := nowUTC()
+	var genBy any
+	if c.GeneratedByAccountID != nil {
+		genBy = *c.GeneratedByAccountID
+	}
 	res, err := s.db.Exec(`INSERT INTO contents(product_id,channel,target_platform,channel_group,title,body,
-		disclosure,is_sponsored,is_virtual_persona,ai_label,status,target_account,scheduled_at,held,hold_reason,revision_of,revision_root_id,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, c.ProductID, c.Channel, "", "", c.Title, c.Body,
+		disclosure,is_sponsored,is_virtual_persona,ai_label,status,target_account,scheduled_at,held,hold_reason,revision_of,revision_root_id,generated_by_account_id,media_spec,want_platform,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, c.ProductID, c.Channel, "", "", c.Title, c.Body,
 		c.Disclosure, boolInt(c.IsSponsored), boolInt(c.IsVirtualPersona), c.AILabel, "draft", "", "", 0, "",
-		c.RevisionOf, c.RevisionRootID, now, now)
+		c.RevisionOf, c.RevisionRootID, genBy, c.MediaSpec, c.WantPlatform, now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -890,6 +955,27 @@ func (s *Store) ListQueuedByGroup(group string) ([]*Content, error) {
 	rows, err := s.ro.Query(`SELECT `+contentCols+` FROM contents
 		WHERE status='queued' AND channel_group=?
 		ORDER BY (scheduled_at=''), scheduled_at ASC, reserve_seq ASC, id ASC`, group)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Content
+	for rows.Next() {
+		c, err := scanContent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// RecentPublished lists same-platform published bodies since a cutoff
+// (RFC3339) for the W18-1 similarity corpus, newest first.
+func (s *Store) RecentPublished(platform, since string) ([]*Content, error) {
+	rows, err := s.ro.Query(`SELECT `+contentCols+` FROM contents
+		WHERE status='published' AND target_platform=? AND updated_at>=?
+		ORDER BY updated_at DESC, id DESC`, platform, since)
 	if err != nil {
 		return nil, err
 	}
@@ -1292,6 +1378,33 @@ func (s *Store) LastDoneAt(account string) (string, error) {
 	return at.String, nil
 }
 
+// CountAccountDoneSince counts done executions for an account at or after
+// sinceUTC (RFC3339). The W4 scheduler uses it for daily-cap headroom.
+func (s *Store) CountAccountDoneSince(account, sinceUTC string) (int, error) {
+	var n int
+	err := s.ro.QueryRow(`SELECT COUNT(*) FROM publish_logs
+		WHERE account=? AND status='done' AND executed_at>=?`, account, sinceUTC).Scan(&n)
+	return n, err
+}
+
+// CountAccountQueued counts an account's waiting (queued, unheld) items.
+func (s *Store) CountAccountQueued(account string) (int, error) {
+	var n int
+	err := s.ro.QueryRow(`SELECT COUNT(*) FROM contents
+		WHERE target_account=? AND status='queued' AND held=0`, account).Scan(&n)
+	return n, err
+}
+
+// CountProductPlatformQueued counts one work+platform's waiting items for
+// the W21-4 distribution cap.
+func (s *Store) CountProductPlatformQueued(productID int64, platform string) (int, error) {
+	var n int
+	err := s.ro.QueryRow(`SELECT COUNT(*) FROM contents
+		WHERE product_id=? AND target_platform=? AND status='queued' AND held=0`,
+		productID, platform).Scan(&n)
+	return n, err
+}
+
 // MarkContentPublished flips one queued item to published (executor path).
 func (s *Store) MarkContentPublished(id int64) error {
 	res, err := s.db.Exec(`UPDATE contents SET status='published',updated_at=? WHERE id=? AND status='queued'`, nowUTC(), id)
@@ -1566,6 +1679,7 @@ type ChannelAccount struct {
 	LastWakeAt    string `json:"lastWakeAt"`
 	Usage         string `json:"usage"`
 	LastJobAt     string `json:"lastJobAt"`
+	DailyCap      int    `json:"dailyCap"`
 	Kind         string `json:"kind"`
 	PlatformUser string `json:"platformUserId"`
 	// EncAPIToken/ApiModel are v11 residue. The API-key chat path was
@@ -1573,18 +1687,26 @@ type ChannelAccount struct {
 	// but nothing reads them for sending.
 	EncAPIToken string `json:"-"`
 	ApiModel    string `json:"-"`
-	CreatedAt   string `json:"createdAt"`
-	UpdatedAt   string `json:"updatedAt"`
+	// PlanTier is the user-picked plan label (W15-9); Capabilities is a JSON
+	// array of proven features (text/image/video/file). ProfileMode tracks
+	// the login browser flavor (incognito, or real for the single account
+	// allowed on the operator's own Chrome profile).
+	PlanTier     string `json:"planTier"`
+	Capabilities string `json:"capabilities"`
+	ProfileMode  string `json:"profileMode"`
+	CreatedAt    string `json:"createdAt"`
+	UpdatedAt    string `json:"updatedAt"`
 }
 
-const accountCols = `id,name,platform,owner,role,business,session_state,posting_mode,enc_id,enc_pw,last_checked_at,last_wake_at,usage,last_job_at,kind,platform_user_id,enc_api_token,api_model,created_at,updated_at`
+const accountCols = `id,name,platform,owner,role,business,session_state,posting_mode,enc_id,enc_pw,last_checked_at,last_wake_at,usage,last_job_at,daily_cap,kind,platform_user_id,enc_api_token,api_model,plan_tier,capabilities,profile_mode,created_at,updated_at`
 
 func scanAccount(row interface{ Scan(...any) error }) (*ChannelAccount, error) {
 	a := &ChannelAccount{}
 	err := row.Scan(&a.ID, &a.Name, &a.Platform, &a.Owner, &a.Role, &a.Business,
 		&a.SessionState, &a.PostingMode, &a.EncID, &a.EncPW, &a.LastCheckedAt,
-		&a.LastWakeAt, &a.Usage, &a.LastJobAt, &a.Kind, &a.PlatformUser,
-		&a.EncAPIToken, &a.ApiModel, &a.CreatedAt, &a.UpdatedAt)
+		&a.LastWakeAt, &a.Usage, &a.LastJobAt, &a.DailyCap, &a.Kind, &a.PlatformUser,
+		&a.EncAPIToken, &a.ApiModel, &a.PlanTier, &a.Capabilities, &a.ProfileMode,
+		&a.CreatedAt, &a.UpdatedAt)
 	return a, err
 }
 
@@ -1645,10 +1767,10 @@ func (s *Store) ListAccountRows() ([]*ChannelAccount, error) {
 // UpdateAccountRow rewrites one account row by id.
 func (s *Store) UpdateAccountRow(a *ChannelAccount) error {
 	res, err := s.db.Exec(`UPDATE channel_accounts SET platform=?,owner=?,role=?,business=?,
-		session_state=?,posting_mode=?,enc_id=?,enc_pw=?,last_checked_at=?,last_wake_at=?,usage=?,last_job_at=?,kind=?,platform_user_id=?,enc_api_token=?,api_model=?,updated_at=?
+		session_state=?,posting_mode=?,enc_id=?,enc_pw=?,last_checked_at=?,last_wake_at=?,usage=?,last_job_at=?,daily_cap=?,kind=?,platform_user_id=?,enc_api_token=?,api_model=?,plan_tier=?,capabilities=?,profile_mode=?,updated_at=?
 		WHERE id=?`, a.Platform, a.Owner, a.Role, a.Business, a.SessionState, a.PostingMode,
-		a.EncID, a.EncPW, a.LastCheckedAt, a.LastWakeAt, a.Usage, a.LastJobAt, a.Kind, a.PlatformUser,
-		a.EncAPIToken, a.ApiModel, nowUTC(), a.ID)
+		a.EncID, a.EncPW, a.LastCheckedAt, a.LastWakeAt, a.Usage, a.LastJobAt, a.DailyCap, a.Kind, a.PlatformUser,
+		a.EncAPIToken, a.ApiModel, a.PlanTier, a.Capabilities, a.ProfileMode, nowUTC(), a.ID)
 	if err != nil {
 		return err
 	}

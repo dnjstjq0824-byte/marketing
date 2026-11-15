@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"somun/internal/session"
 	"somun/internal/store"
 )
 
@@ -36,25 +37,116 @@ func seedChatAccount(t *testing.T, st *store.Store, name, state string) int64 {
 	return row.ID
 }
 
+// B18: the fixed NO_SESSION code flips the account to expired.
+func TestMapExit2SessionLost(t *testing.T) {
+	st := openChatStore(t)
+	svc := NewService(st)
+	sess, err := session.NewService(st, filepath.Join(t.TempDir(), ".vault.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.AttachSession(sess)
+	id := seedChatAccount(t, st, "chat-lost", "connected")
+	if err := svc.mapExit2("chat-lost", "account chat-lost: NO_SESSION save a login session first"); !errors.Is(err, ErrChatNoSession) {
+		t.Fatalf("err = %v", err)
+	}
+	row, _ := st.GetAccountRow(id)
+	if row.SessionState != session.StateExpired {
+		t.Fatalf("state = %s", row.SessionState)
+	}
+	id2 := seedChatAccount(t, st, "chat-pin", "connected")
+	if err := svc.mapExit2("chat-pin", "platform x chat selectors not pinned yet"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unpinned err = %v", err)
+	}
+	row2, _ := st.GetAccountRow(id2)
+	if row2.SessionState != session.StateConnected {
+		t.Fatalf("unpinned flipped state to %s", row2.SessionState)
+	}
+}
+
 func TestSendValidation(t *testing.T) {
 	st := openChatStore(t)
 	svc := NewService(st)
-	if _, err := svc.Send(9999, "hi"); !errors.Is(err, ErrNoAccount) {
+	if _, err := svc.Send(9999, "hi", ""); !errors.Is(err, ErrNoAccount) {
 		t.Fatalf("unknown account: %v", err)
 	}
 	pending := seedChatAccount(t, st, "chat-pending", "pending")
-	if _, err := svc.Send(pending, "hi"); !errors.Is(err, ErrNotConnected) {
+	if _, err := svc.Send(pending, "hi", ""); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("pending account: %v", err)
 	}
 	id := seedChatAccount(t, st, "chat-N", "connected")
-	svc.sendRunner = func(account, platform, message string) (string, error) {
+	svc.sendRunner = func(account, platform, message, thread string, files []string) (string, error) {
 		return "echo:" + message, nil
 	}
-	if _, err := svc.Send(id, "   "); !errors.Is(err, ErrEmptyMessage) {
+	if _, err := svc.Send(id, "   ", ""); !errors.Is(err, ErrEmptyMessage) {
 		t.Fatalf("empty message: %v", err)
 	}
-	if _, err := svc.Send(id, strings.Repeat("x", MaxMessageRunes+1)); !errors.Is(err, ErrMessageTooBig) {
+	if _, err := svc.Send(id, strings.Repeat("x", MaxMessageRunes+1), ""); !errors.Is(err, ErrMessageTooBig) {
 		t.Fatalf("oversize message: %v", err)
+	}
+	if _, err := svc.Send(id, "hi", "../x"); !errors.Is(err, ErrBadThread) {
+		t.Fatalf("bad thread: %v", err)
+	}
+}
+
+// W15-5: unlinked AI refuses console/worker chat with guidance.
+func TestSendUnlinkedRefused(t *testing.T) {
+	st := openChatStore(t)
+	svc := NewService(st)
+	if _, err := st.CreateCustomAIPlatform("ppx", "P", "https://x.test/"); err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.CreateAccountRow(&store.ChannelAccount{
+		Name: "px-1", Platform: "ppx", Role: "worker",
+		SessionState: "connected", PostingMode: "manual",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Send(row.ID, "hi", ""); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unlinked send err = %v, want ErrUnavailable", err)
+	}
+	p, _ := st.GetAIPlatform("ppx")
+	p.ChatStatus = store.AIChatOK
+	if err := st.UpdateAIPlatform(p); err != nil {
+		t.Fatal(err)
+	}
+	svc.sendRunner = func(account, platform, message, thread string, files []string) (string, error) {
+		return "echo:" + message, nil
+	}
+	res, err := svc.Send(row.ID, "hi", "")
+	if err != nil || res.Reply != "echo:hi" {
+		t.Fatalf("linked send = %+v, %v", res, err)
+	}
+}
+
+// W2-2: attachments stay inside the data dir and must exist.
+func TestSendAttachmentsValidation(t *testing.T) {
+	st := openChatStore(t)
+	svc := NewService(st)
+	id := seedChatAccount(t, st, "chat-N", "connected")
+	dir := t.TempDir()
+	svc.Configure(dir, "")
+	shot := filepath.Join(dir, "a.png")
+	if err := os.WriteFile(shot, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var gotFiles []string
+	svc.sendRunner = func(account, platform, message, thread string, files []string) (string, error) {
+		gotFiles = files
+		return "ok", nil
+	}
+	if _, err := svc.Send(id, "hi", "", shot); err != nil {
+		t.Fatalf("inside file: %v", err)
+	}
+	if len(gotFiles) != 1 {
+		t.Fatalf("files = %v", gotFiles)
+	}
+	if _, err := svc.Send(id, "hi", "", filepath.Join(dir, "..", "escape.png")); !errors.Is(err, ErrBadAttachment) {
+		t.Fatalf("traversal err = %v", err)
+	}
+	if _, err := svc.Send(id, "hi", "", filepath.Join(dir, "missing.png")); !errors.Is(err, ErrBadAttachment) {
+		t.Fatalf("missing err = %v", err)
 	}
 }
 
@@ -63,11 +155,11 @@ func TestSendRoundTrip(t *testing.T) {
 	svc := NewService(st)
 	id := seedChatAccount(t, st, "chat-N", "connected")
 	var gotName, gotPlatform, gotMsg string
-	svc.sendRunner = func(account, platform, message string) (string, error) {
+	svc.sendRunner = func(account, platform, message, thread string, files []string) (string, error) {
 		gotName, gotPlatform, gotMsg = account, platform, message
 		return "real reply", nil
 	}
-	res, err := svc.Send(id, "hello")
+	res, err := svc.Send(id, "hello", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,14 +179,66 @@ func TestSendRoundTrip(t *testing.T) {
 	}
 }
 
+// W13: named threads reach the runner and the mirror; reset clears both.
+func TestSendThreadRouting(t *testing.T) {
+	st := openChatStore(t)
+	svc := NewService(st)
+	id := seedChatAccount(t, st, "chat-T", "connected")
+	var gotThread string
+	svc.sendRunner = func(account, platform, message, thread string, files []string) (string, error) {
+		gotThread = thread
+		return "ok", nil
+	}
+	if _, err := svc.Send(id, "hi", "p7"); err != nil {
+		t.Fatal(err)
+	}
+	if gotThread != "p7" {
+		t.Fatalf("thread = %q", gotThread)
+	}
+	rows, err := st.ListChatThreads(id)
+	if err != nil || len(rows) != 1 || rows[0].ThreadKey != "p7" || rows[0].MessageCount != 1 {
+		t.Fatalf("mirror = %+v err = %v", rows, err)
+	}
+	if _, err := svc.Send(id, "again", "p7"); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = st.ListChatThreads(id)
+	if len(rows) != 1 || rows[0].MessageCount != 2 {
+		t.Fatalf("mirror count = %+v", rows)
+	}
+	svc.dataDir = t.TempDir()
+	if err := svc.ResetThread(id, "p7"); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = st.ListChatThreads(id)
+	if len(rows) != 0 {
+		t.Fatalf("mirror after reset = %+v", rows)
+	}
+}
+
+// W13: different threads on one account do not share a lock.
+func TestThreadLockIsolation(t *testing.T) {
+	st := openChatStore(t)
+	svc := NewService(st)
+	if svc.lockFor(1, "a") != svc.lockFor(1, "a") {
+		t.Fatal("same thread key gave different locks")
+	}
+	if svc.lockFor(1, "a") == svc.lockFor(1, "b") {
+		t.Fatal("different threads share a lock")
+	}
+	if svc.lockFor(1, "") == svc.lockFor(2, "") {
+		t.Fatal("different accounts share a lock")
+	}
+}
+
 func TestSendRunnerError(t *testing.T) {
 	st := openChatStore(t)
 	svc := NewService(st)
 	id := seedChatAccount(t, st, "chat-N", "connected")
-	svc.sendRunner = func(account, platform, message string) (string, error) {
+	svc.sendRunner = func(account, platform, message, thread string, files []string) (string, error) {
 		return "", ErrChatFailed
 	}
-	if _, err := svc.Send(id, "hi"); !errors.Is(err, ErrChatFailed) {
+	if _, err := svc.Send(id, "hi", ""); !errors.Is(err, ErrChatFailed) {
 		t.Fatalf("runner error: %v", err)
 	}
 	// The user turn stays recorded even when delivery fails.
@@ -112,12 +256,12 @@ func TestSendSlowRunnerPends(t *testing.T) {
 	svc := NewService(st)
 	svc.grace = 20 * time.Millisecond
 	release := make(chan struct{})
-	svc.sendRunner = func(account, platform, message string) (string, error) {
+	svc.sendRunner = func(account, platform, message, thread string, files []string) (string, error) {
 		<-release
 		return "late reply", nil
 	}
 	id := seedChatAccount(t, st, "chat-slow", "connected")
-	res, err := svc.Send(id, "hello?")
+	res, err := svc.Send(id, "hello?", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +303,7 @@ func TestPendingUnknown(t *testing.T) {
 	}
 }
 
-// Same-account sends run one at a time; other accounts are unaffected.
+// Same-thread sends run one at a time; other threads are unaffected (W13-5).
 func TestAccountSerialization(t *testing.T) {
 	st := openChatStore(t)
 	svc := NewService(st)
@@ -167,17 +311,17 @@ func TestAccountSerialization(t *testing.T) {
 	id := seedChatAccount(t, st, "chat-ser", "connected")
 	entered := make(chan string, 4)
 	release := make(chan struct{})
-	svc.sendRunner = func(account, platform, message string) (string, error) {
+	svc.sendRunner = func(account, platform, message, thread string, files []string) (string, error) {
 		entered <- message
 		<-release
 		entered <- "done:" + message
 		return "ok", nil
 	}
-	res1, err := svc.Send(id, "first")
+	res1, err := svc.Send(id, "first", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	res2, err := svc.Send(id, "second")
+	res2, err := svc.Send(id, "second", "")
 	if err != nil {
 		t.Fatal(err)
 	}
