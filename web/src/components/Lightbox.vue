@@ -16,6 +16,8 @@
         <div>
           <strong>{{ kindLabel }}</strong>
           <p class="muted small">{{ detailLine }}</p>
+          <p v-if="props.item.prompt" class="muted small">프롬프트: {{ props.item.prompt }}</p>
+          <p v-if="props.item.accountName || props.item.contentTitle" class="muted small">{{ genLine }}</p>
           <p v-if="dlMsg" :class="dlOk ? 'muted small' : 'error'">{{ dlMsg }}</p>
         </div>
         <div class="btnrow">
@@ -54,7 +56,7 @@ onMounted(() => window.addEventListener('keydown', onKey))
 onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 const fileUrl = computed(() => `/api/media/${props.item.id}/file`)
-const viewUrl = computed(() => props.src || fileUrl.value)
+const viewUrl = computed(() => props.src || '')
 const alt = computed(() => (props.item.kind === 'upload' ? '업로드 이미지' : '미디어'))
 const isVideo = computed(() => (props.item.mime || '').startsWith('video/'))
 const isImage = computed(() => {
@@ -72,11 +74,27 @@ const detailLine = computed(() => {
   return parts.join(' · ')
 })
 
+const genLine = computed(() => {
+  const parts = []
+  if (props.item.accountName) parts.push(`AI ${props.item.accountName}`)
+  if (props.item.contentTitle) parts.push(`게시물: ${props.item.contentTitle}`)
+  else if (props.item.contentId) parts.push(`게시물 #${props.item.contentId}`)
+  return parts.join(' · ')
+})
+
 function fmtBytes(n) {
   if (n < 1024) return `${n}B`
   if (n < 1048576) return `${(n / 1024).toFixed(1)}KB`
   if (n < 1073741824) return `${(n / 1048576).toFixed(1)}MB`
   return `${(n / 1073741824).toFixed(2)}GB`
+}
+
+function fileName(res) {
+  const disp = res.headers.get('Content-Disposition') || ''
+  const m = disp.match(/filename="?([^";]+)"?/)
+  if (m) return m[1]
+  if (props.item.download) return props.item.download
+  return `somun-${props.item.id}`
 }
 
 async function download() {
@@ -98,7 +116,7 @@ async function download() {
     }
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([buf]))
-    a.download = `somun-${props.item.id}`
+    a.download = fileName(res)
     a.click()
     setTimeout(() => URL.revokeObjectURL(a.href), 10000)
     dlOk.value = true

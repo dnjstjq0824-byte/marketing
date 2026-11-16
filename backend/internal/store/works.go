@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -120,7 +121,10 @@ type WorkPost struct {
 	Held           bool   `json:"held"`
 	UpdatedAt      string `json:"updatedAt"`
 	Views          int    `json:"views"`
-	URL            string `json:"url"`
+	// Likes/Comments are W7 collected public figures for the card row.
+	Likes    int    `json:"likes"`
+	Comments int    `json:"comments"`
+	URL      string `json:"url"`
 	// LastNote is the latest rejection reason (chief or W18 guard), so the
 	// work detail shows why a post went back for rewrite.
 	LastNote string `json:"lastNote"`
@@ -133,7 +137,9 @@ type WorkImage struct {
 	URL  string `json:"url"`
 }
 
-// AILogEntry is one AI turn for S3-D history.
+// AILogEntry is one AI turn for S3-D history. Transcript turns carry
+// the full prompt/reply originals (W20-1); legacy job rows carry a
+// truncated parsed summary instead.
 type AILogEntry struct {
 	Stage   string `json:"stage"`
 	Type    string `json:"type"`
@@ -141,6 +147,9 @@ type AILogEntry struct {
 	At      string `json:"at"`
 	Summary string `json:"summary"`
 	Error   string `json:"error"`
+	Prompt  string `json:"prompt"`
+	Reply   string `json:"reply"`
+	Account string `json:"account"`
 }
 
 // WorkDetailByID loads the S3-D projection. Unknown brief JSON degrades to
@@ -189,12 +198,12 @@ func (s *Store) WorkPosts(productID int64) ([]*WorkPost, error) {
 			return nil, err
 		}
 		p.Held = held != 0
-		_ = s.ro.QueryRow(`SELECT COALESCE(SUM(exposures),0) FROM metrics WHERE content_id=?`, p.ID).Scan(&p.Views)
+		_ = s.ro.QueryRow(`SELECT COALESCE(SUM(exposures),0)+COALESCE(SUM(views),0),
+			COALESCE(SUM(likes),0), COALESCE(SUM(comments),0) FROM metrics WHERE content_id=?`,
+			p.ID).Scan(&p.Views, &p.Likes, &p.Comments)
 		var note string
 		_ = s.ro.QueryRow(`SELECT note FROM publish_logs WHERE content_id=? ORDER BY id DESC LIMIT 1`, p.ID).Scan(&note)
-		if strings.HasPrefix(note, "http") {
-			p.URL = note
-		}
+		p.URL = CollectURL(note)
 		_ = s.ro.QueryRow(`SELECT decider || ': ' || reason FROM review_decisions
 			WHERE content_id=? AND decision='rejected' ORDER BY id DESC LIMIT 1`, p.ID).Scan(&p.LastNote)
 		out = append(out, &p)
@@ -210,14 +219,14 @@ func (s *Store) WorkImages(productID int64) ([]*WorkImage, error) {
 		return nil, err
 	}
 	for _, im := range legacy {
-		out = append(out, &WorkImage{ID: -im.ID, Kind: "upload", URL: "/uploads/" + strings.TrimPrefix(im.Path, "/")})
+		out = append(out, &WorkImage{ID: -im.ID, Kind: "upload", URL: "/api/product-images/" + strconv.FormatInt(im.ID, 10)})
 	}
 	lib, err := s.ListMedia(productID, 100)
 	if err != nil {
 		return nil, err
 	}
 	for _, m := range lib {
-		out = append(out, &WorkImage{ID: m.ID, Kind: m.Kind, URL: "/uploads/" + strings.TrimPrefix(m.Path, "/")})
+		out = append(out, &WorkImage{ID: m.ID, Kind: m.Kind, URL: "/api/media/" + strconv.FormatInt(m.ID, 10) + "/file"})
 	}
 	return out, nil
 }
@@ -228,8 +237,19 @@ var jobStage = map[string]string{
 	"research": "research",
 }
 
-// WorkAILog lists AI turns for one product, oldest first.
+// WorkAILog lists AI turns for one product, oldest first. Turns recorded
+// with the product thread key ("p<id>", W13/W20-1) come back as full
+// prompt/reply originals; when a work has none (legacy rows, non-AI
+// jobs), parsed job summaries fill the gap as before.
 func (s *Store) WorkAILog(productID int64, limit int) ([]*AILogEntry, error) {
+	if limit < 1 {
+		limit = 100
+	}
+	if turns, err := s.workTranscript(productID, limit); err != nil {
+		return nil, err
+	} else if len(turns) > 0 {
+		return turns, nil
+	}
 	rows, err := s.ro.Query(`SELECT type,worker_name,COALESCE(finished_at,claimed_at,created_at),result,error
 		FROM jobs WHERE ref_id=? OR ref_id IN (SELECT id FROM contents WHERE product_id=?)
 		ORDER BY id ASC LIMIT ?`, productID, productID, limit)
@@ -252,6 +272,51 @@ func (s *Store) WorkAILog(productID int64, limit int) ([]*AILogEntry, error) {
 		out = append(out, &e)
 	}
 	return out, rows.Err()
+}
+
+// workTranscript pairs one product thread's user/assistant turns into
+// log entries, oldest first. A user turn without a following assistant
+// turn (failed run) keeps an empty reply.
+func (s *Store) workTranscript(productID int64, limit int) ([]*AILogEntry, error) {
+	rows, err := s.ro.Query(`SELECT m.role, m.text, m.created_at, COALESCE(a.name, '')
+		FROM chat_messages m LEFT JOIN channel_accounts a ON a.id=m.account_id
+		WHERE m.thread_key=? ORDER BY m.id ASC LIMIT ?`, "p"+strconv.FormatInt(productID, 10), limit*2+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type turn struct {
+		role, text, at, account string
+	}
+	var turns []turn
+	for rows.Next() {
+		var t turn
+		if err := rows.Scan(&t.role, &t.text, &t.at, &t.account); err != nil {
+			return nil, err
+		}
+		turns = append(turns, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := []*AILogEntry{}
+	for i := 0; i < len(turns) && len(out) < limit; {
+		t := turns[i]
+		if t.role != "user" {
+			out = append(out, &AILogEntry{Type: "chat", Worker: t.account, Account: t.account, At: t.at, Reply: t.text})
+			i++
+			continue
+		}
+		e := &AILogEntry{Type: "chat", Worker: t.account, Account: t.account, At: t.at, Prompt: t.text}
+		if i+1 < len(turns) && turns[i+1].role == "assistant" {
+			e.Reply = turns[i+1].text
+			i += 2
+		} else {
+			i++
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // SetWorkHeld holds or releases all pipeline contents of one product.

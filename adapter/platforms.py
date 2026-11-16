@@ -47,6 +47,23 @@ class Platform:
     file_selector: str = ""
     # Tag input ("" = platform takes no tags via automation).
     tag_selector: str = ""
+    # W14 generation hooks. "unverified" until a live session proves the
+    # flow; "verified" only with the hook + download method pinned below.
+    # Nothing here is guessed: unverified platforms refuse generation.
+    image_gen: str = "unverified"
+    image_gen_hook: str = ""
+    image_gen_download: str = ""
+    video_gen: str = "unverified"
+    video_gen_hook: str = ""
+    video_gen_download: str = ""
+    # W7 collect hooks. Public-figure selectors on the open post page,
+    # "TBD" until a real published post pins them down (via a code fix or
+    # an ADAPTER_SELECTORS_DIR overlay). Unverified platforms submit an
+    # empty round (원인 미분류) instead of guessing.
+    collect_views: str = "TBD"
+    collect_likes: str = "TBD"
+    collect_comments: str = "TBD"
+    collect_verified: str = "unverified"
 
 
 # ChatGPT turns carry no per-message DOM hook: the assistant header
@@ -93,6 +110,10 @@ PLATFORMS = {
         posted_url_hint="/post/",
         file_selector="input[type='file']",
         tag_selector="input[name='tags']",
+        collect_views=".metric-views",
+        collect_likes=".metric-likes",
+        collect_comments=".metric-comments",
+        collect_verified="verified",
     ),
     # AI services first. Login is manual (SSO hops included); the operator
     # confirms in the console, so no logged-in selector is required.
@@ -412,6 +433,16 @@ def is_configured(platform):
         getattr(platform, field) == "TBD"
         for field in ("logged_in_selector", "compose_path", "title_selector",
                       "body_selector", "submit_selector")
+    )
+
+
+def is_collectable(platform):
+    """A platform yields figures only with pinned + verified selectors."""
+    if platform.collect_verified != "verified":
+        return False
+    return not any(
+        getattr(platform, field) in ("", "TBD")
+        for field in ("collect_views", "collect_likes", "collect_comments")
     )
 
 

@@ -10,18 +10,37 @@ type ChatMessage struct {
 	AccountID int64  `json:"accountId"`
 	Role      string `json:"role"`
 	Text      string `json:"text"`
+	ThreadKey string `json:"threadKey"`
 	CreatedAt string `json:"createdAt"`
 }
 
-// AppendChatMessage records one turn.
+// AppendChatMessage records one turn on the account default thread.
 func (s *Store) AppendChatMessage(accountID int64, role, text string) (*ChatMessage, error) {
-	res, err := s.db.Exec(`INSERT INTO chat_messages(account_id,role,text,created_at)
-		VALUES(?,?,?,?)`, accountID, role, text, nowUTC())
+	return s.AppendChatMessageThread(accountID, role, text, "")
+}
+
+// AppendChatMessageThread records one turn on the given thread key (W20-1:
+// workers pass per-product keys like "p12", so one work's AI originals
+// are queryable without touching the account history).
+func (s *Store) AppendChatMessageThread(accountID int64, role, text, thread string) (*ChatMessage, error) {
+	res, err := s.db.Exec(`INSERT INTO chat_messages(account_id,role,text,thread_key,created_at)
+		VALUES(?,?,?,?,?)`, accountID, role, text, thread, nowUTC())
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return &ChatMessage{ID: id, AccountID: accountID, Role: role, Text: text}, nil
+	return &ChatMessage{ID: id, AccountID: accountID, Role: role, Text: text, ThreadKey: thread}, nil
+}
+
+// DeleteChatBefore drops chat turns older than the cutoff (W20-1: AI
+// originals are kept 90 days). Returns the removed row count.
+func (s *Store) DeleteChatBefore(cutoffRFC3339 string) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM chat_messages WHERE created_at < ?`, cutoffRFC3339)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // ChatThread is one row of the chat_threads mirror (W13 observability).

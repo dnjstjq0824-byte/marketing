@@ -126,5 +126,8 @@ adapter\.venv\Scripts\python adapter\test_adapter.py   # 스텁 E2E 포함
 - 세션 파일은 자격과 동급이다. 백업에 포함하지 않고(금고 키·DB와 분리),
   타인과 공유하지 않는다.
 - `ADAPTER_PLATFORM_MAP`은 드릴 전용이다. 상용에서는 플랫폼명을 그대로 쓴다.
-- 증거 스크린샷은 `data/uploads/evidence/`에 남고, 발행 기록 note에 경로가
-  함께 기록된다. 다중 호스트 증거 동기화는 P2 과제다.
+- 증거 스크린샷은 `data/evidence/`에 남고(W9-2, HTTP 비공개),
+  발행 기록 note에 경로가 함께 기록된다. 다중 호스트 증거 동기화는 P2 과제다.
+- 발행 실패는 코드로 분류된다(W9-5): `PRE_PUBLISH`(로그인 진입·셀렉터
+  미발견 — 다음 폴에 1회 자동 재시도 후 실패), `UNCERTAIN_POST`(발행
+  버튼 이후 — 게시물 보류, confirm-published로 사람 확인).

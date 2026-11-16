@@ -45,6 +45,10 @@
           <label class="check"><input v-model="form.outputs.image" type="checkbox" /> 이미지</label>
           <label class="check"><input v-model="form.outputs.video" type="checkbox" /> 숏폼 영상</label>
         </fieldset>
+        <div class="frow wrap">
+          <span>미디어 작업 배정</span>
+          <label class="check"><input v-model="form.preferPaidMedia" type="checkbox" /> 유료 요금제 계정 우선</label>
+        </div>
         <div class="btnrow">
           <button :disabled="savingAuto" @click="saveAutomation">{{ savingAuto ? '저장 중…' : '저장' }}</button>
           <span v-if="savedAuto" class="ok" role="status">저장됨 ✔</span>
@@ -84,11 +88,19 @@
         </button>
         <template v-if="advOpen">
           <div class="frow">
+            <span>상태</span>
+            <span class="muted small" :class="{ warnline: healthLow }">{{ healthLine }}</span>
+          </div>
+          <div class="frow">
             <span>백업</span>
             <span class="muted small">마지막 {{ lastBackup }} · {{ backupKeep }}세대 보관</span>
             <button class="ghost small" :disabled="backupBusy" @click="runBackup">{{ backupBusy ? '백업 중…' : '지금 백업' }}</button>
           </div>
           <p v-if="backupMsg" :class="backupOk ? 'banner okk' : 'banner err'">{{ backupMsg }}</p>
+          <div class="frow wrap">
+            <span>백업 포함</span>
+            <label class="check"><input v-model="form.backupIncludeSessions" type="checkbox" /> 로그인 세션 포함</label>
+          </div>
           <div class="frow wrap">
             <span>미디어 보관</span>
             <label class="inline">안 쓰인 생성물 <input v-model.number="form.mediaRetentionDays" class="narrow" type="number" min="1" max="365" /> 일 뒤 정리</label>
@@ -140,14 +152,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { apiFetch } from '../stores/auth.js'
 import { toast } from '../stores/toast.js'
 import Skeleton from '../components/Skeleton.vue'
 
 const loading = ref(true)
 const loadError = ref(false)
-const form = ref({ enabled: true, publishIntervalMin: 120, dailyCap: 3, windowStart: '09:00', windowEnd: '22:00', blogMinLen: 1500, outputs: { text: true, image: true, video: true }, mediaRetentionDays: 30, backupIncludeVideo: false, maxConcurrent: 3 })
+const form = ref({ enabled: true, publishIntervalMin: 120, dailyCap: 3, windowStart: '09:00', windowEnd: '22:00', blogMinLen: 1500, outputs: { text: true, image: true, video: true }, mediaRetentionDays: 30, backupIncludeVideo: false, backupIncludeSessions: true, maxConcurrent: 3, preferPaidMedia: true })
 const errors = ref({})
 const savingAuto = ref(false)
 const savingAdv = ref(false)
@@ -170,6 +182,30 @@ const backupBusy = ref(false)
 const backupMsg = ref('')
 const backupOk = ref(true)
 const version = ref({ app: '', schema: '' })
+const health = ref(null)
+
+const healthLow = computed(() => !!health.value?.disk?.low || health.value?.db?.ok === false)
+
+const healthLine = computed(() => {
+  const h = health.value
+  if (!h) return '불러오는 중…'
+  const db = h.db?.ok ? '정상' : '오류'
+  const disk = h.disk?.totalBytes ? `여유 ${h.disk.freePct.toFixed(0)}%` : '여유 확인 불가'
+  const ex = h.executors ? `${h.executors.online}/${h.executors.total}대 연결` : ''
+  const wait = (h.teamQueue || []).reduce((n, t) => n + (t.pending || 0), 0)
+  const errs = (h.recentErrors || []).length
+  return `DB ${db} · 디스크 ${disk} · 실행기 ${ex} · 대기 ${wait}건 · 최근 오류 ${errs}건`
+})
+
+async function loadHealth() {
+  try {
+    health.value = await apiFetch('/api/system/health')
+  } catch {
+    health.value = null
+  }
+}
+
+watch(advOpen, (open) => { if (open) loadHealth() })
 
 let savedTimer = null
 function flash(which) {
@@ -236,6 +272,7 @@ async function load() {
       apiFetch('/api/system/version'),
     ])
     form.value = { ...s, outputs: { ...(s.outputs || {}) } }
+    if (form.value.backupIncludeSessions === undefined) form.value.backupIncludeSessions = true
     users.value = u.users || []
     backups.value = bl.backups || []
     backupKeep.value = bl.keep || 7
@@ -335,6 +372,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .frow { display: flex; align-items: center; gap: var(--s3); }
 .frow > span:first-child { flex: none; min-width: 120px; font-weight: 700; }
 .frow button:last-child, .frow .muted { margin-left: auto; }
+.warnline { color: var(--warn); font-weight: 700; }
 .frow.wrap { flex-wrap: wrap; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s3); }
 label { display: flex; flex-direction: column; gap: var(--s1); font-weight: 700; font-size: 13px; }

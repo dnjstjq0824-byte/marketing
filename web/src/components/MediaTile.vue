@@ -1,9 +1,10 @@
 <template>
   <RouterLink v-if="action === 'link'" class="tile" to="/media" :aria-label="alt">
-    <img :src="thumb" :alt="alt" loading="lazy" />
+    <AuthImg :src="thumb" :alt="alt" />
+    <span v-if="badge" class="badge">{{ badge }}</span>
   </RouterLink>
   <button v-else class="tile" :class="{ selected }" :aria-label="alt" :aria-pressed="selectMode ? selected : undefined" @click="onClick">
-    <img :src="thumb" :alt="alt" loading="lazy" />
+    <AuthImg :src="thumb" :alt="alt" />
     <span v-if="selectMode" class="box" :class="{ on: selected }" aria-hidden="true">{{ selected ? '✓' : '' }}</span>
     <span v-if="badge" class="badge">{{ badge }}</span>
   </button>
@@ -11,6 +12,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import AuthImg from './AuthImg.vue'
 
 const props = defineProps({
   item: { type: Object, required: true },

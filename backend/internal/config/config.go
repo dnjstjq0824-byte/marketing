@@ -31,6 +31,8 @@ const (
 	// Retention windows (D20). Finished jobs 90 days, metrics 180 days.
 	RetentionJobsDays    = 90
 	RetentionMetricsDays = 180
+	// AI originals (chat turns) 90 days (W20-1).
+	RetentionChatDays = 90
 	// Read notifications 90 days (P0-3).
 	RetentionNotificationsDays = 90
 	// Scale base (P1-0).
@@ -173,12 +175,29 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("create dir %s: %w", dir, err)
 		}
 	}
+	MigrateEvidenceDir(c.DataDir)
 	if c.MirrorDir != "" {
 		if err := os.MkdirAll(c.MirrorDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create mirror dir %s: %w", c.MirrorDir, err)
 		}
 	}
 	return c, nil
+}
+
+// MigrateEvidenceDir moves the legacy W9-2 evidence folder out of the
+// uploads tree (data/uploads/evidence -> data/evidence) once. A missing
+// source or an existing target is a no-op; when both exist the operator
+// merges them by hand and nothing is overwritten.
+func MigrateEvidenceDir(dataDir string) {
+	old := filepath.Join(dataDir, "uploads", "evidence")
+	target := filepath.Join(dataDir, "evidence")
+	if _, err := os.Stat(target); err == nil {
+		return
+	}
+	if _, err := os.Stat(old); err != nil {
+		return
+	}
+	_ = os.Rename(old, target)
 }
 
 // Summary returns a startup log line with secrets redacted.

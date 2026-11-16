@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,9 +19,10 @@ import (
 )
 
 const (
-	MaxImageBytes = 50 << 20
-	MaxVideoBytes = 2 << 30
-	MaxPDFBytes   = 100 << 20
+	// W14-1 initial caps: images 20MB, video 500MB, documents 20MB.
+	MaxImageBytes = 20 << 20
+	MaxVideoBytes = 500 << 20
+	MaxDocBytes   = 20 << 20
 	// ChunkBytes is the advisory client part size; the server accepts any
 	// part size but requires strictly sequential part numbers.
 	ChunkBytes = 5 << 20
@@ -37,15 +37,15 @@ var (
 )
 
 var extMajor = map[string]string{
-	".jpg": "image", ".jpeg": "image", ".png": "image", ".webp": "image", ".gif": "image",
+	".jpg": "image", ".jpeg": "image", ".png": "image", ".webp": "image", ".gif": "image", ".heic": "image",
 	".mp4": "video", ".webm": "video", ".mov": "video",
-	".pdf": "pdf",
+	".pdf": "doc", ".txt": "doc", ".md": "doc", ".docx": "doc",
 }
 
 var majorCap = map[string]int64{
 	"image": MaxImageBytes,
 	"video": MaxVideoBytes,
-	"pdf":   MaxPDFBytes,
+	"doc":   MaxDocBytes,
 }
 
 // Service stages chunked uploads under uploadDir/tmp and finalizes them.
@@ -54,6 +54,11 @@ type Service struct {
 	uploadDir string
 	// FileKey signs worker download URLs (W5-3). Empty refuses all.
 	FileKey []byte
+	// dataDir/python drive AI-session generation (W14-2/3, like chat).
+	dataDir string
+	python  string
+	// genRunner replaces the adapter.genmedia subprocess in tests.
+	genRunner genRunner
 }
 
 // NewService builds the media service.
@@ -66,6 +71,7 @@ type sessionMeta struct {
 	Size  int64  `json:"size"`
 	Mime  string `json:"mime"`
 	Major string `json:"major"`
+	Ext   string `json:"ext"`
 	Total int    `json:"total"`
 }
 
@@ -89,7 +95,7 @@ func (s *Service) Init(name string, size int64, mime string) (id string, total i
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", 0, err
 	}
-	meta, _ := json.Marshal(sessionMeta{Name: name, Size: size, Mime: mime, Major: major, Total: total})
+	meta, _ := json.Marshal(sessionMeta{Name: name, Size: size, Mime: mime, Major: major, Ext: ext, Total: total})
 	if err := os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o600); err != nil {
 		return "", 0, err
 	}
@@ -150,6 +156,13 @@ func (s *Service) PutPart(id string, n int, body io.Reader) (done, total int, er
 // Complete assembles the parts, verifies type and size, dedupes by hash,
 // and records the media row.
 func (s *Service) Complete(id string) (*store.Media, error) {
+	return s.CompleteFull(id, "", "", 0)
+}
+
+// CompleteFull is Complete with W14 generation tracking: workers pass the
+// made kind (card/gen_image/gen_video), the prompt behind it, and their AI
+// account. Empty kind records a plain upload.
+func (s *Service) CompleteFull(id, kind, prompt string, accountID int64) (*store.Media, error) {
 	m, err := s.loadMeta(id)
 	if err != nil {
 		return nil, err
@@ -199,10 +212,10 @@ func (s *Service) Complete(id string) (*store.Media, error) {
 		os.Remove(asmName)
 		return nil, ErrIncomplete
 	}
-	sniffed := http.DetectContentType(head)
-	if !majorOK(m.Major, sniffed) {
+	sniffed, err := sniffMime(m.Ext, head, asmName)
+	if err != nil {
 		os.Remove(asmName)
-		return nil, ErrForgery
+		return nil, err
 	}
 	sum := hex.EncodeToString(hash.Sum(nil))
 	if dup, err := s.store.MediaByHash(sum); err == nil {
@@ -221,33 +234,48 @@ func (s *Service) Complete(id string) (*store.Media, error) {
 		return nil, err
 	}
 	os.RemoveAll(s.sessionDir(id))
-	return s.store.CreateMedia("upload", filepath.ToSlash(name), total, sniffed, sum)
-}
-
-func majorOK(major, sniffed string) bool {
-	switch major {
-	case "image":
-		return strings.HasPrefix(sniffed, "image/")
-	case "video":
-		return strings.HasPrefix(sniffed, "video/")
-	case "pdf":
-		return sniffed == "application/pdf"
+	rel := filepath.ToSlash(name)
+	if kind == "" {
+		kind = store.MediaKindUpload
 	}
-	return false
+	source := store.MediaSourceOriginal
+	if kind != store.MediaKindUpload {
+		source = store.MediaSourceGenerated
+	}
+	attrs := store.MediaAttrs{
+		Kind: kind, Path: rel, Bytes: total,
+		Mime: sniffed, SHA256: sum, Prompt: prompt, Source: source,
+	}
+	if accountID > 0 {
+		if _, err := s.store.GetAccountRow(accountID); err == nil {
+			v := accountID
+			attrs.AIAccountID = &v
+		}
+	}
+	if strings.HasPrefix(sniffed, "image/") {
+		thumb, w, h, _ := makeThumb(s.uploadDir, rel, sum)
+		attrs.ThumbPath, attrs.Width, attrs.Height = thumb, w, h
+	}
+	return s.store.CreateMediaFull(attrs)
 }
 
-// MediaDetail is one library row with its business for display.
+// MediaDetail is one library row with display joins: the business, the
+// post title, the AI account name, and the W14-5 download name.
 type MediaDetail struct {
 	store.Media
-	Business string `json:"business"`
+	Business     string `json:"business"`
+	Channel      string `json:"channel,omitempty"`
+	ContentTitle string `json:"contentTitle,omitempty"`
+	AccountName  string `json:"accountName,omitempty"`
+	Download     string `json:"download"`
 }
 
 // List returns newest-first library rows.
-func (s *Service) List(kind string, productID int64, business string, page, size int) ([]*store.Media, error) {
+func (s *Service) List(kind string, productID int64, business, from, to string, page, size int) ([]*store.Media, error) {
 	if page < 1 {
 		page = 1
 	}
-	return s.store.ListMediaQuery(kind, productID, business, size, (page-1)*size)
+	return s.store.ListMediaQuery(kind, productID, business, from, to, size, (page-1)*size)
 }
 
 // Detail loads one row with its business.
@@ -260,6 +288,18 @@ func (s *Service) Detail(id int64) (*MediaDetail, error) {
 	if m.ProductID != nil {
 		if p, err := s.store.GetProduct(*m.ProductID); err == nil {
 			d.Business = p.Business
+		}
+	}
+	d.Channel = s.contentChannel(m)
+	d.Download = DownloadName(m, d.Channel)
+	if m.ContentID != nil {
+		if c, err := s.store.GetContent(*m.ContentID); err == nil {
+			d.ContentTitle = c.Title
+		}
+	}
+	if m.AIAccountID != nil {
+		if a, err := s.store.GetAccountRow(*m.AIAccountID); err == nil {
+			d.AccountName = a.Name
 		}
 	}
 	return d, nil
@@ -278,7 +318,37 @@ func (s *Service) Open(id int64) (*store.Media, *os.File, error) {
 	return m, f, nil
 }
 
-// Zip streams originals into w.
+// OpenThumb returns one row's thumbnail for serving. Rows without a stored
+// thumbnail report ErrNotFound so callers can fall back to the original.
+func (s *Service) OpenThumb(id int64) (*store.Media, *os.File, error) {
+	m, err := s.store.GetMedia(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if m.ThumbPath == "" {
+		return nil, nil, store.ErrNotFound
+	}
+	f, err := os.Open(filepath.Join(s.uploadDir, m.ThumbPath))
+	if err != nil {
+		return nil, nil, store.ErrNotFound
+	}
+	return m, f, nil
+}
+
+// OpenLegacy serves one legacy product image (pre-library uploads).
+func (s *Service) OpenLegacy(id int64) (*store.ProductImage, *os.File, error) {
+	im, err := s.store.GetProductImage(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	f, err := os.Open(filepath.Join(s.uploadDir, im.Path))
+	if err != nil {
+		return nil, nil, store.ErrNotFound
+	}
+	return im, f, nil
+}
+
+// Zip streams originals into w under W14-5 download names.
 func (s *Service) Zip(w io.Writer, ids []int64) error {
 	zw := zip.NewWriter(w)
 	defer zw.Close()
@@ -287,7 +357,7 @@ func (s *Service) Zip(w io.Writer, ids []int64) error {
 		if err != nil {
 			return err
 		}
-		entry, err := zw.Create(filepath.Base(m.Path))
+		entry, err := zw.Create(DownloadName(m, s.contentChannel(m)))
 		if err != nil {
 			f.Close()
 			return err
@@ -301,13 +371,16 @@ func (s *Service) Zip(w io.Writer, ids []int64) error {
 	return nil
 }
 
-// Delete removes one unattached file (row + bytes).
+// Delete removes one unattached file (row + bytes + thumbnail).
 func (s *Service) Delete(id int64) error {
 	m, err := s.store.DeleteMedia(id)
 	if err != nil {
 		return err
 	}
 	os.Remove(filepath.Join(s.uploadDir, m.Path))
+	if m.ThumbPath != "" {
+		os.Remove(filepath.Join(s.uploadDir, m.ThumbPath))
+	}
 	return nil
 }
 

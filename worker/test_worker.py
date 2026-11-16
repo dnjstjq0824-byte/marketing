@@ -168,6 +168,28 @@ class AIParsingTest(unittest.TestCase):
                                                "detail_core": "d"})
         self.assertNotIn("브랜드:", p)
 
+    def test_past_top_block_renders(self):
+        # W7: top-3 past performance rides the strategy prompt.
+        self.assertEqual(ai_tasks.past_top_block({}), "")
+        self.assertEqual(ai_tasks.past_top_block({"past_top": []}), "")
+        self.assertEqual(ai_tasks.past_top_block({"past_top": "x"}), "")
+        payload = {"product_name": "n", "detail_core": "d", "past_top": [
+            {"channel": "blog", "title": "winner", "views": 900,
+             "likes": 30, "comments": 4},
+            {"channel": "instagram", "title": "runner", "views": 100,
+             "likes": 5, "comments": 1}]}
+        block = ai_tasks.past_top_block(payload)
+        self.assertIn("최근 성과 상위", block)
+        self.assertIn("winner", block)
+        self.assertIn("조회 900", block)
+        self.assertIn("공감 30", block)
+        p = ai_tasks.build_prompt("strategy", payload)
+        self.assertIn("최근 성과 상위", p)
+        self.assertIn("winner", p)
+        plain = ai_tasks.build_prompt(
+            "strategy", {"product_name": "n", "detail_core": "d"})
+        self.assertNotIn("최근 성과 상위", plain)
+
     def test_prompt_templates_win(self):
         # W3: data/prompts templates render; overrides apply on the fly.
         import os
@@ -495,6 +517,109 @@ class BootModeTest(unittest.TestCase):
             capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 2, proc.stderr + proc.stdout)
         self.assertIn("refuses to boot", proc.stdout + proc.stderr)
+
+
+class MediaPlanTest(unittest.TestCase):
+    def test_spec_helpers(self):
+        self.assertEqual(ai_tasks.spec_lines("a\n- b\n\n• c", 8), ["a", "b", "c"])
+        self.assertEqual(ai_tasks.spec_count("전경 3장", 1, 4), 3)
+        self.assertEqual(ai_tasks.spec_count("9장 초과", 1, 4), 1)
+        self.assertEqual(ai_tasks.spec_count("no digits", 2, 4), 2)
+        self.assertEqual(ai_tasks.spec_ratio("9:16 세로", "1:1"), "9:16")
+        self.assertEqual(ai_tasks.spec_ratio("비율 없음", "4:5"), "4:5")
+        self.assertEqual(ai_tasks.spec_seconds("30초 영상"), 30)
+        self.assertEqual(ai_tasks.spec_seconds("길이 없음"), 15)
+        self.assertEqual(ai_tasks.spec_seconds("300초 초과"), 15)
+
+    def test_plan_channels(self):
+        img = ai_tasks.build_media_plan(
+            {"channel": "instagram", "media_spec": "전경 2장",
+             "facts": {"product_name": "LUNO"}})
+        self.assertEqual(len(img["items"]), 2)
+        self.assertEqual(img["items"][0]["kind"], "image")
+        self.assertEqual(img["items"][0]["ratio"], "4:5")
+        self.assertIn("LUNO", img["items"][0]["prompt"])
+        self.assertIn("배경·구도만 변경", img["items"][0]["prompt"])
+        vid = ai_tasks.build_media_plan(
+            {"channel": "shortform", "media_spec": "소개\n효능",
+             "facts": {"product_name": "L"}})
+        self.assertEqual(len(vid["items"]), 1)
+        self.assertEqual(vid["items"][0]["kind"], "video")
+        self.assertEqual(vid["items"][0]["ratio"], "9:16")
+        self.assertEqual(len(vid["items"][0]["lines"]), 2)
+        card = ai_tasks.build_media_plan(
+            {"channel": "cardnews", "media_spec": "표지\n장점\n구매",
+             "facts": {"product_name": "L"}})
+        self.assertEqual(len(card["items"]), 3)
+        self.assertTrue(all(i["kind"] == "card" for i in card["items"]))
+        blog = ai_tasks.build_media_plan({"channel": "blog", "media_spec": ""})
+        self.assertEqual(blog["items"][0]["ratio"], "16:9")
+
+    def test_plan_route_default(self):
+        plan = ai_tasks.build_media_plan({"channel": "blog", "route": "local"})
+        self.assertEqual(plan["route"], "local")
+        plan = ai_tasks.build_media_plan({"channel": "blog"})
+        self.assertEqual(plan["route"], "ai")
+
+    def test_review_prompt_media_block(self):
+        p = ai_tasks.build_prompt("review", {
+            "content_ids": [1],
+            "contents": [{"content_id": 1, "channel": "instagram",
+                          "title": "t", "body": "b",
+                          "media_spec": "전경 1장",
+                          "media": [{"media_id": 9, "kind": "gen_image",
+                                     "prompt": "cat"}]}]})
+        self.assertIn("예정 미디어: 전경 1장", p)
+        self.assertIn("연결 미디어: #9 gen_image(cat)", p)
+        self.assertIn("다르게 그려졌으면 반려", p)
+
+    def test_run_media_ai_path(self):
+        seen = {}
+
+        class StubClient:
+            def gen_media(self, account_id, kind, prompt, ratio="",
+                          content_id=0, product_id=0):
+                seen["gen"] = (account_id, kind, prompt, ratio,
+                               content_id, product_id)
+                return 77
+
+            def upload_file(self, *args):
+                raise AssertionError("local must not run")
+
+        handlers = worker_runtime.make_real_handlers(StubClient(), 5)
+        res = handlers["media"]({"channel": "instagram", "route": "ai",
+                                 "media_spec": "전경 1장", "content_id": 3,
+                                 "product_id": 4,
+                                 "facts": {"product_name": "L"}})
+        self.assertEqual(res["media_ids"], [{"media_id": 77, "role": "image"}])
+        self.assertEqual(res["fallback"], "")
+        self.assertEqual(seen["gen"][0], 5)
+        self.assertEqual(seen["gen"][1], "gen_image")
+
+    def test_run_media_falls_back_to_local(self):
+        class StubClient:
+            def gen_media(self, *args, **kwargs):
+                raise worker_runtime.WorkerError("HTTP 409: unverified")
+
+        handlers = worker_runtime.make_real_handlers(StubClient(), 5)
+        seen = {}
+        orig = worker_runtime.local_media
+
+        def fake_local(client, account_id, item, payload, cid, pid):
+            seen["item"] = item
+            return 78
+
+        worker_runtime.local_media = fake_local
+        try:
+            res = handlers["media"]({"channel": "shortform", "route": "ai",
+                                     "media_spec": "소개", "content_id": 3,
+                                     "product_id": 4})
+        finally:
+            worker_runtime.local_media = orig
+        self.assertEqual(res["media_ids"], [{"media_id": 78, "role": "video"}])
+        self.assertEqual(res["fallback"], "local")
+        self.assertIn("ai miss", res["note"])
+        self.assertEqual(seen["item"]["kind"], "video")
 
 
 def run_once():

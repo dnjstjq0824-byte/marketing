@@ -13,6 +13,36 @@ class PostFailed(Exception):
     """The post flow did not reach a posted URL."""
 
 
+# W9-5 failure codes the server classifies (queue.Fail): PRE_PUBLISH
+# failures never posted (safe to auto-retry once); UNCERTAIN_POST failures
+# may have posted (the server holds the content so no duplicate goes out).
+# B18-style fixed codes, matched by substring.
+PRE_PUBLISH = "PRE_PUBLISH"
+UNCERTAIN_POST = "UNCERTAIN_POST"
+
+
+class PrePublishFailed(PostFailed):
+    """The flow failed before anything could post (safe to retry)."""
+
+
+class UncertainPostFailed(PostFailed):
+    """The flow failed where the post may have landed (must hold)."""
+
+
+def wrap_flow_error(exc, submitted):
+    """Classify a mid-flow exception by phase (W9-5).
+
+    submitted is True once the submit click returned: from then on the
+    post may have landed even when the error looks early (e.g. a
+    navigation timeout whose message names a selector).
+    """
+    if isinstance(exc, (PrePublishFailed, UncertainPostFailed, NeedsLogin)):
+        return exc
+    if submitted:
+        return UncertainPostFailed("%s: %s" % (type(exc).__name__, exc))
+    return PrePublishFailed("%s: %s" % (type(exc).__name__, exc))
+
+
 def evidence_path(account, prefix=""):
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     safe = browser.safe_name(account)
@@ -45,7 +75,8 @@ def fill_any(page, selector, text):
             return frame
         except Exception as exc:
             last = exc
-    raise PostFailed("selector not fillable: %s (%s)" % (selector, last))
+    raise PrePublishFailed(
+        "%s selector not fillable: %s (%s)" % (PRE_PUBLISH, selector, last))
 
 
 def click_any(page, selector):
@@ -59,7 +90,8 @@ def click_any(page, selector):
             return frame
         except Exception as exc:
             last = exc
-    raise PostFailed("selector not clickable: %s (%s)" % (selector, last))
+    raise PrePublishFailed(
+        "%s selector not clickable: %s (%s)" % (PRE_PUBLISH, selector, last))
 
 
 def _relpath(path):
@@ -83,20 +115,26 @@ def post(account, platform_name, title, body, base_url="", headless=None,
     try:
         platform = platforms.get_platform(platform_name)
     except KeyError:
-        raise PostFailed("unknown platform: %s" % platform_name)
+        raise PrePublishFailed(
+            "%s unknown platform: %s" % (PRE_PUBLISH, platform_name))
     try:
         platform = platforms.with_overlay(platform)
     except ValueError as exc:
-        raise PostFailed(str(exc))
+        raise PrePublishFailed("%s %s" % (PRE_PUBLISH, exc))
     if not platforms.is_configured(platform):
-        raise PostFailed("platform %s selectors not pinned yet (P0-1)" % platform_name)
+        raise PrePublishFailed(
+            "%s platform %s selectors not pinned yet (P0-1)"
+            % (PRE_PUBLISH, platform_name))
     files = [p for p in (attachments or []) if p]
     if files and not platform.file_selector:
-        raise PostFailed("platform %s takes no attachments" % platform_name)
+        raise PrePublishFailed(
+            "%s platform %s takes no attachments" % (PRE_PUBLISH, platform_name))
     labels = [t for t in (tags or []) if t]
     if labels and not platform.tag_selector:
-        raise PostFailed("platform %s takes no tags" % platform_name)
+        raise PrePublishFailed(
+            "%s platform %s takes no tags" % (PRE_PUBLISH, platform_name))
     base = (base_url or config.STUB_BASE_URL).rstrip("/")
+    submitted = False
     with browser.BrowserSession(account, headless=headless) as sess:
         page = sess.page
         try:
@@ -114,9 +152,13 @@ def post(account, platform_name, title, body, base_url="", headless=None,
                 page.set_input_files(platform.file_selector, path)
             with page.expect_navigation(timeout=config.NAV_TIMEOUT_SEC * 1000):
                 click_any(page, platform.submit_selector)
+                # The click landed: from here the post may exist even
+                # when the wait below times out (W9-5 uncertain).
+                submitted = True
             url = page.url
             if platform.posted_url_hint not in url:
-                raise PostFailed("landing %s lacks %s" % (url, platform.posted_url_hint))
+                raise UncertainPostFailed(
+                    "%s landing %s lacks %s" % (UNCERTAIN_POST, url, platform.posted_url_hint))
         except NeedsLogin:
             raise
         except PostFailed as exc:
@@ -125,17 +167,18 @@ def post(account, platform_name, title, body, base_url="", headless=None,
                 page.screenshot(path=shot)
             except Exception:
                 raise
-            raise PostFailed("%s (evidence: %s)" % (exc, _relpath(shot)))
+            raise type(exc)("%s (evidence: %s)" % (exc, _relpath(shot)))
         except Exception as exc:
+            classified = wrap_flow_error(exc, submitted)
+            code = (UNCERTAIN_POST if isinstance(classified, UncertainPostFailed)
+                    else PRE_PUBLISH)
             shot = evidence_path(account, "fail_")
             try:
                 page.screenshot(path=shot)
-                raise PostFailed("%s: %s (evidence: %s)"
-                                 % (type(exc).__name__, exc, _relpath(shot)))
-            except PostFailed:
-                raise
             except Exception:
-                raise PostFailed("%s: %s" % (type(exc).__name__, exc))
+                raise type(classified)("%s %s" % (code, classified))
+            raise type(classified)("%s %s (evidence: %s)"
+                                   % (code, classified, _relpath(shot)))
         shot = evidence_path(account)
         page.screenshot(path=shot)
         sess.save_session()

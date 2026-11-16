@@ -22,12 +22,14 @@ const (
 	KindOverdueHold   = "overdue_hold"
 	KindReviewHuman   = "review_human"
 	KindTeamHandoff   = "team_handoff"
+	KindDiskLow       = "disk_low"
 )
 
 var severityByKind = map[string]string{
 	KindJobFailed:   "error",
 	KindPublishFail: "error",
 	KindBackupFail:  "error",
+	KindDiskLow:     "error",
 }
 
 func severityFor(kind string) string {
@@ -78,6 +80,12 @@ func (s *Service) SessionState(accountID int64, name, prev, next string) (bool, 
 // BackupFailed files a backup-failure notice (system scope, ref 0).
 func (s *Service) BackupFailed(backupErr error) (bool, error) {
 	return s.Notify(KindBackupFail, "system", 0, fmt.Sprintf("백업 실패: %v", backupErr))
+}
+
+// DiskLow files a low-free-space notice (W20-4). Unread-term dedup keeps
+// it to a single live alert until the operator reads it.
+func (s *Service) DiskLow(freePct float64) (bool, error) {
+	return s.Notify(KindDiskLow, "system", 0, fmt.Sprintf("디스크 여유 %.1f%% — 미디어 정리가 필요합니다", freePct))
 }
 
 // ReviewHuman files a needs-a-person review notice.

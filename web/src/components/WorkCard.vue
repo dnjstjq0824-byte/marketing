@@ -1,6 +1,6 @@
 <template>
   <RouterLink class="card" :to="`/works/${work.id}`">
-    <span v-if="work.thumb" class="thumb"><img :src="work.thumb" alt="" loading="lazy" /></span>
+    <span v-if="work.thumb" class="thumb"><AuthImg :src="work.thumb" alt="" /></span>
     <span v-else class="thumb empty" aria-hidden="true">▣</span>
     <span class="body">
       <strong class="t">{{ work.title }}</strong>
@@ -12,6 +12,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import AuthImg from './AuthImg.vue'
 import StageBar from './StageBar.vue'
 
 const props = defineProps({ work: { type: Object, required: true } })

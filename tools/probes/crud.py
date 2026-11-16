@@ -50,6 +50,20 @@ def main():
                       {"name": "n", "sourceUrl": "https://e.com/c1", "exitType": "A",
                        "priority": 3, "business": "b1"})
     check("product-patch", code == 200 and body["name"] == "n", str(body))
+    code, body = c.op("PATCH", "/api/products/%d" % pid,
+                      {"name": "n", "sourceUrl": "https://e.com/c1", "exitType": "A",
+                       "priority": 3, "business": "b1", "industry": "cosmetics"})
+    check("product-industry", code == 200 and body.get("industry") == "cosmetics",
+          str(body))
+    code, _ = c.op("PATCH", "/api/products/%d" % pid,
+                   {"name": "n", "sourceUrl": "https://e.com/c1", "exitType": "A",
+                    "priority": 3, "business": "b1", "industry": "bogus"})
+    check("product-industry-400", code == 400, str(code))
+    code, body = c.op("PATCH", "/api/products/%d" % pid,
+                      {"name": "n", "sourceUrl": "https://e.com/c1", "exitType": "A",
+                       "priority": 3, "business": "b1", "industry": "general"})
+    check("product-industry-clear", code == 200 and body.get("industry") == "",
+          str(body))
     code, body = c.op("DELETE", "/api/products/%d/images/999999" % pid)
     check("image-404", code == 404, str(code))
     # W8 removed the manual endpoints (PATCH reading/strategy, affiliate

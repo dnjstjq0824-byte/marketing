@@ -746,6 +746,39 @@ func (s *Service) UnregisterAccount(id int64) error {
 	return nil
 }
 
+// Audit records one operator action in the W20-2 audit log. The session
+// handler owns no store handle, so the service exposes this narrow call.
+func (s *Service) Audit(actor, action, refType string, refID, workID int64, detail string) {
+	_, _ = s.store.AppendAudit(actor, action, refType, refID, workID, detail)
+}
+
+// ReconcileProfiles marks connected accounts expired when their session
+// files are gone (W20-3: after a restore without sessions, or a deleted
+// profiles dir). Expired accounts show "login required" and appear in
+// the relogin queue automatically. It returns the moved count.
+func (s *Service) ReconcileProfiles() int {
+	if s.loginDataDir == "" {
+		return 0
+	}
+	rows, err := s.store.ListAccountRows()
+	if err != nil {
+		return 0
+	}
+	moved := 0
+	for _, row := range rows {
+		if row.SessionState != StateConnected {
+			continue
+		}
+		if _, err := os.Stat(SessionStatePath(s.loginDataDir, row.Name)); err == nil {
+			continue
+		}
+		if _, err := s.SetSessionState(row.ID, StateExpired, row.Usage); err == nil {
+			moved++
+		}
+	}
+	return moved
+}
+
 // CheckNow runs the light periodic inspection: timestamps only, no wake-ups.
 func (s *Service) CheckNow() int {
 	rows, err := s.store.ListAccountRows()

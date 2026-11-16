@@ -21,7 +21,10 @@ AGENT_TOKEN = env("AGENT_TOKEN", "")
 WORKER_NAME = env("WORKER_NAME", "adapter-1")
 ADAPTER_MAX_ACTIVE = int(env("ADAPTER_MAX_ACTIVE", "2"))
 PROFILES_DIR = _resolve(env("PROFILES_DIR", "data/profiles"))
-EVIDENCE_DIR = _resolve(env("EVIDENCE_DIR", "data/uploads/evidence"))
+# W9-2 (B17): publish evidence lives outside the uploads tree and is
+# never served over HTTP. The server moves a legacy uploads/evidence
+# folder to data/evidence on boot (config.MigrateEvidenceDir).
+EVIDENCE_DIR = _resolve(env("EVIDENCE_DIR", "data/evidence"))
 PROMPTS_DIR = _resolve(env("PROMPTS_DIR", "data/prompts"))
 HEADLESS = env("HEADLESS", "true").lower() not in ("0", "false", "no")
 NAV_TIMEOUT_SEC = int(env("ADAPTER_NAV_TIMEOUT_SEC", "30"))

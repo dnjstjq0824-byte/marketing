@@ -11,6 +11,15 @@
         <div>
           <h1 class="page-title">{{ data.product.name || data.product.sourceUrl }}</h1>
           <p class="muted small">{{ data.product.business || '공용 사업' }} · {{ data.product.sourceUrl }} · 맡은 팀: {{ teamName }}</p>
+          <p class="muted small indrow">업종: {{ industryLabel }}
+            <select v-model="industryDraft" class="indsel" aria-label="업종">
+              <option value="general">일반(공통 금칙어만)</option>
+              <option value="cosmetics">화장품</option>
+              <option value="health">건강기능</option>
+              <option value="food">식품</option>
+            </select>
+            <button v-if="industryDirty" class="ghost small" @click="saveIndustry">저장</button>
+          </p>
         </div>
         <div class="btnrow">
           <button v-if="!allHeld" class="ghost" @click="setHeld(true)">멈추기</button>
@@ -28,7 +37,7 @@
             <StatusChip :kind="stateKind(p)">{{ POST_STATE[p.status] || p.status }}</StatusChip>
             <StatusChip v-if="p.held" kind="hold">멈춤</StatusChip>
           </div>
-          <p class="muted small">{{ p.channel }} · {{ p.targetPlatform || '플랫폼 미정' }} · {{ p.targetAccount || '계정 미정' }} · 조회 {{ p.views }}</p>
+          <p class="muted small">{{ p.channel }} · {{ p.targetPlatform || '플랫폼 미정' }} · {{ p.targetAccount || '계정 미정' }} · 조회 {{ p.views }}<span v-if="p.likes"> · 공감 {{ p.likes }}</span><span v-if="p.comments"> · 댓글 {{ p.comments }}</span></p>
           <p v-if="p.lastNote" class="muted small note">↩ {{ p.lastNote }}</p>
           <div class="prow btns">
             <button v-if="!p.held" class="ghost small" @click="holdPost(p.id, true)">멈추기</button>
@@ -46,13 +55,28 @@
         </div>
       </section>
       <section class="card" aria-label="AI 대화 기록">
-        <h2 class="section-title">AI 대화 기록</h2>
+        <h2 class="section-title">AI와 주고받은 원문 보기</h2>
         <div v-if="!log.length" class="muted">기록이 없습니다.</div>
         <ol v-else class="log">
           <li v-for="(e, i) in log" :key="i">
-            <StatusChip kind="info">{{ WORK_STAGE[e.stage] || e.type }}</StatusChip>
-            <span class="muted small">{{ e.worker }} · {{ shortTime(e.at) }}</span>
-            <p class="small">{{ e.summary || e.error }}</p>
+            <StatusChip kind="info">{{ WORK_STAGE[e.stage] || AI_LOG_TYPE[e.type] || e.type }}</StatusChip>
+            <span class="muted small">{{ e.account || e.worker }} · {{ shortTime(e.at) }}</span>
+            <details v-if="e.prompt || e.reply" class="orig">
+              <summary class="small">원문 펼치기</summary>
+              <div v-if="e.prompt" class="small"><strong>보낸 내용</strong><pre class="pre">{{ e.prompt }}</pre></div>
+              <div v-if="e.reply" class="small"><strong>받은 답장</strong><pre class="pre">{{ e.reply }}</pre></div>
+            </details>
+            <p v-else class="small">{{ e.summary || e.error }}</p>
+          </li>
+        </ol>
+      </section>
+      <section class="card" aria-label="사람 조작 기록">
+        <h2 class="section-title">사람 조작 기록</h2>
+        <div v-if="!audit.length" class="muted">조작 기록이 없습니다.</div>
+        <ol v-else class="log">
+          <li v-for="a in audit" :key="a.id">
+            <span class="small"><strong>{{ AUDIT_ACTION[a.action] || a.action }}</strong> · {{ a.actor }} · {{ shortTime(a.createdAt) }}</span>
+            <p v-if="a.detail" class="muted small">{{ a.detail }}</p>
           </li>
         </ol>
       </section>
@@ -83,13 +107,14 @@ import ConfirmModal from '../components/ConfirmModal.vue'
 import Skeleton from '../components/Skeleton.vue'
 import StageBar from '../components/StageBar.vue'
 import StatusChip from '../components/StatusChip.vue'
-import { POST_STATE, WORK_STAGE } from '../stores/labels.js'
+import { AI_LOG_TYPE, AUDIT_ACTION, INDUSTRY, POST_STATE, WORK_STAGE } from '../stores/labels.js'
 
 const route = useRoute()
 const router = useRouter()
 const id = route.params.id
 const data = ref(null)
 const log = ref([])
+const audit = ref([])
 const teams = ref([])
 const loading = ref(true)
 const loadError = ref(false)
@@ -98,6 +123,13 @@ const publishTarget = ref(null)
 const publishUrl = ref('')
 const publishMsg = ref('')
 const publishOk = ref(false)
+const industryDraft = ref('general')
+
+const industryLabel = computed(() => INDUSTRY[data.value?.product?.industry || ''] || '일반')
+const industryDirty = computed(() => {
+  const draft = industryDraft.value === 'general' ? '' : industryDraft.value
+  return draft !== (data.value?.product?.industry || '')
+})
 
 const allHeld = computed(() => (data.value?.contents || []).length > 0 && (data.value.contents.every((p) => p.held)))
 
@@ -122,18 +154,40 @@ function stateKind(p) {
 async function load() {
   loadError.value = false
   try {
-    const [d, l, t] = await Promise.all([
+    const [d, l, t, a] = await Promise.all([
       apiFetch(`/api/works/${id}`),
       apiFetch(`/api/works/${id}/ai-log`),
       apiFetch('/api/teams').catch(() => ({ items: [] })),
+      apiFetch(`/api/works/${id}/audit`).catch(() => ({ items: [] })),
     ])
     data.value = d
     log.value = l.items || []
     teams.value = t.items || []
+    audit.value = a.items || []
+    industryDraft.value = d?.product?.industry || 'general'
   } catch {
     loadError.value = true
   } finally {
     loading.value = false
+  }
+}
+
+async function saveIndustry() {
+  const p = data.value?.product
+  if (!p) return
+  try {
+    await apiFetch(`/api/products/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: p.name || '', sourceUrl: p.sourceUrl || '',
+        exitType: p.exitType || '', priority: p.priority || 0,
+        business: p.business || '', industry: industryDraft.value,
+      }),
+    })
+    toast('업종을 저장했습니다')
+    await load()
+  } catch (e) {
+    toast(e.message || '실패', 'error')
   }
 }
 
@@ -224,6 +278,8 @@ onMounted(load)
 <style scoped>
 .detail { display: flex; flex-direction: column; gap: var(--s4); }
 .back { font-size: 13px; }
+.indrow { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.indsel { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s1) var(--s2); background: var(--panel); }
 .head { display: flex; align-items: flex-start; gap: var(--s4); }
 .head > div:first-child { flex: 1; min-width: 0; }
 .card {
@@ -259,6 +315,8 @@ onMounted(load)
 .log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
 .log li { display: flex; flex-direction: column; gap: var(--s1); border-top: 1px solid var(--line-soft); padding-top: var(--s2); }
 .log p { margin: 0; overflow: hidden; text-overflow: ellipsis; }
+.orig summary { cursor: pointer; color: var(--accent-dark); }
+.pre { white-space: pre-wrap; word-break: break-word; background: var(--soft); border: 1px solid var(--line-soft); border-radius: var(--r-md); padding: var(--s2); margin: var(--s1) 0 0; max-height: 320px; overflow: auto; font-size: 12px; line-height: 1.6; }
 .modal-back { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); z-index: 150; display: flex; align-items: center; justify-content: center; padding: var(--s4); }
 .modal { background: var(--panel); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); padding: var(--s5); max-width: 440px; width: 100%; display: flex; flex-direction: column; gap: var(--s3); }
 .modal input { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); background: var(--panel); width: 100%; }

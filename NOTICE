@@ -40,8 +40,22 @@ Python (adapter/ 예외, D36)
 - Chromium 브라우저 바이너리는 `playwright install` 시 별도 내려받는다
   (BSD-3-Clause 계열, Google). 상용 라이선스 검토 시 버전을 고정해 기록한다.
 
+외부 바이너리 (W11, W14-3)
+--------------------------
+- ffmpeg (Playwright 번들, playwright-build-1013, ffmpeg-win64.exe) —
+  LGPL-2.1. Copyright (c) FFmpeg team. 숏폼 로컬 합성(adapter/video_compose)이
+  서브프로세스로 호출한다(정적 링크 없음, 바이너리 동봉 형태). 소스·라이선스
+  전문은 번들의 COPYING.LGPLv2.1 및 https://ffmpeg.org 를 따른다.
+- 시스템 ffmpeg이 있으면 그쪽을 우선 사용한다(MP4/H.264 출력). 그 경우 해당
+  바이너리의 빌드 고지를 확인해 이 파일에 버전을 고정해 기록한다.
+
 확인 메모
 ---------
 - 카피레프트(GPL/AGPL) 의존성은 0건이다. 전부 MIT·BSD 계열이다.
+  (ffmpeg 번들은 LGPL-2.1이며, 서브프로세스 호출 형태로만 사용한다.)
 - Go 모듈 캐시의 LICENSE 파일을 직접 읽어 분류했다(2026-11-13).
   호스트의 /legal 결정적 스캔 도구는 이 세션에 없어 수동 인벤토리로 대체한다.
+- 2026-11-16 W11 점검(레인6): 신규 의존성 0건. worker·probes 표준라이브러리만,
+  adapter는 Playwright 1.65.1+greenlet 3.5.6(설치 실측 일치)+ffmpeg 서브프로세스
+  호출만 사용함을 확인. Go·npm 직접 의존성 전부 위 고지와 일치.
+  유료 API·종량 과금 요소 0건(비용 0원 유지).

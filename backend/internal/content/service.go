@@ -345,6 +345,10 @@ type MetricInput struct {
 	Inflows   *int64
 	Orders    *int64
 	Inquiries *int64
+	Views     *int64
+	Likes     *int64
+	Comments  *int64
+	Origin    string
 	Note      string
 }
 
@@ -352,12 +356,13 @@ type MetricInput struct {
 // no interpretation attached.
 func (s *Service) RecordMetric(in MetricInput) (*store.Metric, error) {
 	cause := ""
-	if allZeroOrMissing(in.Exposures, in.Inflows, in.Orders, in.Inquiries) {
+	if allZeroOrMissing(in.Exposures, in.Inflows, in.Orders, in.Inquiries, in.Views, in.Likes, in.Comments) {
 		cause = policy.UnclassifiedCause
 	}
 	return s.store.CreateMetric(&store.Metric{
 		ContentID: in.ContentID, Channel: in.Channel,
 		Exposures: in.Exposures, Inflows: in.Inflows, Orders: in.Orders, Inquiries: in.Inquiries,
+		Views: in.Views, Likes: in.Likes, Comments: in.Comments, Origin: in.Origin,
 		CauseClass: cause, Note: in.Note,
 	})
 }

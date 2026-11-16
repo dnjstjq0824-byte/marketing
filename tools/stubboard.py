@@ -85,8 +85,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             post = POSTS.get(self.path, ("?", "?", [], ""))
             title, body, files, tags = post if len(post) == 4 else (post[0], post[1], [], "")
             items = "".join("<li>%s</li>" % f for f in files)
-            self._send(200, "<h1>%s</h1><p>%s</p><p class='tags'>%s</p><ul>%s</ul>"
-                            % (title, body, tags, items))
+            try:
+                seq = int(self.path.rsplit("/", 1)[1])
+            except ValueError:
+                seq = 0
+            # W7: deterministic public figures for collect drills.
+            metrics = ("<p class='metrics'>"
+                       "<span class='metric-views'>%d</span>"
+                       "<span class='metric-likes'>%d</span>"
+                       "<span class='metric-comments'>%d</span></p>"
+                       % (100 + seq, 20 + seq, 5 + seq))
+            self._send(200, "<h1>%s</h1><p>%s</p><p class='tags'>%s</p><ul>%s</ul>%s"
+                            % (title, body, tags, items, metrics))
         else:
             self._send(404, "nope")
 

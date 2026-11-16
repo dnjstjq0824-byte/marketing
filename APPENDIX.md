@@ -289,7 +289,12 @@ scheduled·held만 허용하고 done·failed는 거부한다.
 404 (작업 없음), 409 (미claim 작업 `job must be claimed before result registration`).
 
 **POST /api/worker/jobs/{id}/fail** — 요청 `{"error":"실패 사유"}`(필수).
-실패 작업은 자동 재등록되지 않는다. 400 (사유 누락·완료건), 404 (작업 없음).
+실패 작업은 자동 재등록되지 않는다. 예외(W9-5): 발행 작업의 `PRE_PUBLISH`
+사유(로그인 진입·셀렉터 미발견)는 1회에 한해 pending으로 돌아가 다음 폴에
+자동 재시도되고(`attempts=1`, 사유는 error에 보관), 2회째는 실패로 닫힌다.
+`UNCERTAIN_POST`와 코드 없는 발행 실패는 실패로 닫히고 게시물을 보류한다
+(중복 게시 방지, confirm-published로 사람 확인). 보류 사유는
+`hold_reason`에 기록된다. 400 (사유 누락·완료건), 404 (작업 없음).
 응답 200: `{"job":JobView}`.
 
 체인 요약: 상품 등록 → analyze → 판독 저장 → strategy → generate → draft →
@@ -325,8 +330,9 @@ review → queued·예약. 사람은 검수·승인·예외·감사 담당이다
   `{"product":Product,"images":[],"reading":Reading|null,"strategy":Strategy|null,`
   `"jobs":[Job,...],"affiliateLinks":[]}`. 404.
 - PATCH /api/products/{id} →
-  `{"name":"","sourceUrl":"","exitType":"","priority":0,"business":""}` → 200 Product.
-  400(출구·URL·우선순위), 404.
+  `{"name":"","sourceUrl":"","exitType":"","priority":0,"business":"","industry":""}` → 200 Product.
+  industry는 `cosmetics|health|food`(금칙어 사전 선택), `general`(일반으로 해제), `""`(유지).
+  sourceUrl은 비울 수 있다(주제·이미지 입력 건). 400(출구·URL·우선순위·업종), 404.
 - PATCH /api/products/{id}/reading → 판독 8필드(camelCase) → 200 Reading. 404.
 - PATCH /api/products/{id}/strategy →
   `{"angle":"","channels":"","keyMessages":"","scheduleNote":""}` → 200 Strategy. 404.

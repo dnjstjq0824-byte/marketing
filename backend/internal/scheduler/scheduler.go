@@ -426,8 +426,9 @@ func (s *Service) ensurePublishJob(contentID int64, account, platform string) er
 	return nil
 }
 
-// imagePayload lists attached images as signed download entries (W5-3).
-// Without a FileKey the list stays empty and text still publishes.
+// imagePayload lists attached media as signed download entries (W5-3):
+// images for blog bodies plus W14 videos for reels/shorts. Without a
+// FileKey the list stays empty and text still publishes.
 func (s *Service) imagePayload(productID int64) []map[string]any {
 	if len(s.FileKey) == 0 {
 		return nil
@@ -439,11 +440,13 @@ func (s *Service) imagePayload(productID int64) []map[string]any {
 	exp := time.Now().Add(24 * time.Hour).Unix()
 	var out []map[string]any
 	for _, m := range items {
-		if !strings.HasPrefix(m.Mime, "image/") {
+		if !strings.HasPrefix(m.Mime, "image/") && !strings.HasPrefix(m.Mime, "video/") {
 			continue
 		}
 		out = append(out, map[string]any{
 			"media_id": m.ID,
+			"kind":     m.Kind,
+			"mime":     m.Mime,
 			"url":      media.SignFileURL(s.FileKey, m.ID, exp),
 			"sha256":   m.SHA256,
 		})

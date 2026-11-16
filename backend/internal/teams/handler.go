@@ -3,10 +3,12 @@ package teams
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 
+	"somun/internal/auth"
 	"somun/internal/store"
 )
 
@@ -127,6 +129,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	_, _ = h.store.AppendAudit(auth.OperatorName(r.Context()), store.AuditTeamUpdate, "team", id, 0, "팀 설정 변경")
 	writeJSON(w, http.StatusOK, t)
 }
 
@@ -162,6 +165,8 @@ func (h *Handler) AddMember(w http.ResponseWriter, r *http.Request) {
 		h.memberErr(w, err)
 		return
 	}
+	_, _ = h.store.AppendAudit(auth.OperatorName(r.Context()), store.AuditTeamMembers, "team", id, 0,
+		fmt.Sprintf("팀원 추가 (계정 %d)", accountID))
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true})
 }
 
@@ -175,6 +180,8 @@ func (h *Handler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		h.memberErr(w, err)
 		return
 	}
+	_, _ = h.store.AppendAudit(auth.OperatorName(r.Context()), store.AuditTeamMembers, "team", id, 0,
+		fmt.Sprintf("팀원 제외 (계정 %d)", accountID))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -283,6 +290,8 @@ func (h *Handler) PutMembers(w http.ResponseWriter, r *http.Request) {
 		h.memberErr(w, err)
 		return
 	}
+	_, _ = h.store.AppendAudit(auth.OperatorName(r.Context()), store.AuditTeamMembers, "team", id, 0,
+		fmt.Sprintf("팀원 일괄 배치 (%d명)", len(list)))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

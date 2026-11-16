@@ -15,6 +15,12 @@
     <div class="seg" role="tablist" aria-label="종류">
       <button v-for="t in tabs" :key="t.key" role="tab" :aria-selected="kind === t.key" :class="{ on: kind === t.key }" @click="setKind(t.key)">{{ t.label }}</button>
     </div>
+    <div class="filters">
+      <label>작업 <input v-model="product" class="narrow" inputmode="numeric" placeholder="번호" @change="load(false)" /></label>
+      <label>부터 <input v-model="from" type="date" @change="load(false)" /></label>
+      <label>까지 <input v-model="to" type="date" @change="load(false)" /></label>
+      <button v-if="product || from || to" class="ghost" @click="product = ''; from = ''; to = ''; load(false)">지우기</button>
+    </div>
     <Skeleton v-if="loading && !items.length" :rows="3" />
     <div v-else-if="loadError" class="card center">
       <p>불러오지 못했습니다.</p>
@@ -22,7 +28,7 @@
     </div>
     <EmptyState v-else-if="!items.length" title="아직 없습니다" :hint="kind === '' ? '올리기로 첫 파일을 올리세요' : '이 종류는 아직 비어 있습니다'" />
     <div v-else class="tiles">
-      <MediaTile v-for="m in items" :key="m.id" :item="tileOf(m)" action="open" :selectMode="selectMode" :selected="selected.has(m.id)" @open="openBox(m.id)" @toggle="toggle" />
+      <MediaTile v-for="m in items" :key="m.id" :item="tileOf(m)" :badge="badgeOf(m)" action="open" :selectMode="selectMode" :selected="selected.has(m.id)" @open="openBox(m.id)" @toggle="toggle" />
     </div>
     <div v-if="hasMore" class="center"><button class="ghost" @click="more" :disabled="loading">더 보기</button></div>
     <Lightbox v-if="boxId !== null && current" :item="current" :src="blobs[boxId] || ''" :hasPrev="boxIdx > 0" :hasNext="boxIdx < items.length - 1"
@@ -49,6 +55,9 @@ const tabs = [
   { key: 'card', label: '카드뉴스' },
 ]
 const kind = ref('')
+const product = ref('')
+const from = ref('')
+const to = ref('')
 const items = ref([])
 const page = ref(1)
 const hasMore = ref(false)
@@ -63,7 +72,15 @@ const boxIdx = computed(() => items.value.findIndex((m) => m.id === boxId.value)
 const current = computed(() => items.value[boxIdx.value] || null)
 
 function tileOf(m) {
-  return { id: m.id, kind: m.kind, thumb: blobs.value[m.id] || '', url: blobs.value[m.id] || '' }
+  return { id: m.id, kind: m.kind, thumb: `/api/media/${m.id}/thumb`, url: blobs.value[m.id] || '' }
+}
+
+function badgeOf(m) {
+  if ((m.mime || '').startsWith('video/')) return '▶ 영상'
+  if (m.kind === 'gen_image') return 'AI'
+  if (m.kind === 'gen_video') return 'AI 영상'
+  if (m.kind === 'card') return '카드'
+  return ''
 }
 
 async function fetchBlob(id) {
@@ -77,9 +94,7 @@ async function fetchBlob(id) {
   return url
 }
 
-async function primeBlobs(list) {
-  await Promise.all(list.map((m) => fetchBlob(m.id).catch(() => '')))
-}
+
 
 function revokeBlobs() {
   for (const url of Object.values(blobs.value)) URL.revokeObjectURL(url)
@@ -89,6 +104,9 @@ function revokeBlobs() {
 async function fetchPage(p) {
   const params = new URLSearchParams({ page: String(p), size: '48' })
   if (kind.value) params.set('kind', kind.value)
+  if (product.value) params.set('product', product.value)
+  if (from.value) params.set('from', from.value)
+  if (to.value) params.set('to', to.value)
   return apiFetch(`/api/media?${params.toString()}`)
 }
 
@@ -106,7 +124,6 @@ async function load(append) {
       page.value = 1
     }
     hasMore.value = got.length >= 48
-    await primeBlobs(got)
   } catch {
     loadError.value = true
   } finally {
@@ -227,6 +244,9 @@ onUnmounted(revokeBlobs)
   padding: var(--s2) var(--s4);
 }
 .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+.filters { display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; color: var(--muted); }
+.filters input { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s1) var(--s2); background: var(--panel); color: var(--ink); }
+.filters input.narrow { width: 90px; }
 .tiles { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--s2); }
 @media (max-width: 900px) {
   .tiles { grid-template-columns: repeat(3, 1fr); }

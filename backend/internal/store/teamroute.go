@@ -304,7 +304,7 @@ func (s *Store) ClaimedAILoad() (int, error) {
 func (s *Store) TeamLoad(teamID int64) (int, error) {
 	var n int
 	err := s.ro.QueryRow(`SELECT COUNT(*) FROM jobs WHERE status='claimed' AND team_id=?
-		AND type IN ('analyze','strategy','generate','review','research')`, teamID).Scan(&n)
+		AND type IN ('analyze','strategy','generate','review','research','media')`, teamID).Scan(&n)
 	return n, err
 }
 

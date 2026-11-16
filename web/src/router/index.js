@@ -23,6 +23,20 @@ const routes = [
   { path: '/teams', name: 'teams', component: TeamsView },
   { path: '/teams/:id', name: 'team-detail', component: TeamDetailView },
   { path: '/settings', name: 'settings', component: SettingsView },
+  // W19: pre-rebuild bookmarks land on their replacement screen.
+  { path: '/review', redirect: { name: 'works' } },
+  { path: '/queue', redirect: { name: 'works', query: { tab: 'queued' } } },
+  { path: '/readings', redirect: { name: 'works' } },
+  { path: '/products', redirect: { name: 'new-work' } },
+  { path: '/chat', redirect: { name: 'connect' } },
+  { path: '/agents', redirect: { name: 'connect' } },
+  { path: '/channels', redirect: { name: 'connect' } },
+  { path: '/owned', redirect: { name: 'connect' } },
+  { path: '/resident', redirect: { name: 'teams' } },
+  { path: '/criteria', redirect: { name: 'settings' } },
+  { path: '/system', redirect: { name: 'settings' } },
+  { path: '/metrics', redirect: { name: 'home' } },
+  { path: '/mobile', redirect: { name: 'home' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 

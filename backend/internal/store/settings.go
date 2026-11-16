@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // KeyAutomationSettings is the app_meta key holding AutomationSettings JSON.
@@ -32,22 +33,30 @@ type AutomationSettings struct {
 	Outputs            AutomationOutputs `json:"outputs"`
 	MediaRetentionDays int               `json:"mediaRetentionDays"`
 	BackupIncludeVideo bool              `json:"backupIncludeVideo"`
-	MaxConcurrent      int               `json:"maxConcurrent"`
+	// BackupIncludeSessions bundles the encrypted login sessions
+	// (data/profiles) into every backup (W20-3). On by default.
+	BackupIncludeSessions bool `json:"backupIncludeSessions"`
+	MaxConcurrent         int  `json:"maxConcurrent"`
+	// PreferPaidMedia gives paid-plan accounts first shot at media jobs
+	// (W14/W16). False lets every capable account claim immediately.
+	PreferPaidMedia bool `json:"preferPaidMedia"`
 }
 
 // DefaultAutomationSettings returns the S6 wireframe defaults.
 // Enabled defaults to true (W0: 실행기 기본 가동).
 func DefaultAutomationSettings() AutomationSettings {
 	return AutomationSettings{
-		Enabled:            true,
-		PublishIntervalMin: 120,
-		DailyCap:           3,
-		WindowStart:        "09:00",
-		WindowEnd:          "22:00",
-		BlogMinLen:         1500,
-		Outputs:            AutomationOutputs{Text: true, Image: true, Video: true},
-		MediaRetentionDays: 30,
-		MaxConcurrent:      3,
+		Enabled:               true,
+		PublishIntervalMin:    120,
+		DailyCap:              3,
+		WindowStart:           "09:00",
+		WindowEnd:             "22:00",
+		BlogMinLen:            1500,
+		Outputs:               AutomationOutputs{Text: true, Image: true, Video: true},
+		MediaRetentionDays:    30,
+		BackupIncludeSessions: true,
+		MaxConcurrent:         3,
+		PreferPaidMedia:       true,
 	}
 }
 
@@ -98,6 +107,19 @@ func GetAutomationSettings(db *sql.DB) (AutomationSettings, error) {
 	// Pre-W16 rows lack the field: zero means "never set", not "uncapped".
 	if s.MaxConcurrent <= 0 {
 		s.MaxConcurrent = def.MaxConcurrent
+	}
+	// Pre-W14 rows lack these keys: absent means "never set" (defaults on),
+	// not an operator choice to disable generation or paid-first routing.
+	if !strings.Contains(raw, "preferPaidMedia") {
+		s.PreferPaidMedia = true
+	}
+	// Pre-W20 rows lack the key: absent means "never set" (default on),
+	// not an operator choice to drop sessions from backups.
+	if !strings.Contains(raw, "backupIncludeSessions") {
+		s.BackupIncludeSessions = true
+	}
+	if !strings.Contains(raw, `"outputs"`) {
+		s.Outputs = def.Outputs
 	}
 	if err := s.Validate(); err != nil {
 		return def, nil

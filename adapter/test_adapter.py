@@ -28,6 +28,14 @@ except ImportError:
     HAS_PW = False
 
 
+class _NoFramePage:
+    """A page where no selector resolves (W9-5 fill probe)."""
+    frames = []
+
+    def query_selector(self, sel):
+        return None
+
+
 class PureUnitTest(unittest.TestCase):
     def test_safe_name(self):
         self.assertEqual(browser.safe_name("insta-1"), "insta-1")
@@ -381,6 +389,64 @@ class PureUnitTest(unittest.TestCase):
         self.assertTrue(path.endswith(".png"))
         self.assertIn("insta-1", path)
 
+    def test_evidence_default_dir(self):
+        # W9-2: fresh interpreters default outside the uploads tree.
+        import subprocess
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = dict(os.environ)
+        env.pop("EVIDENCE_DIR", None)
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "from adapter import config; print(config.EVIDENCE_DIR)"],
+            cwd=root, env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        shown = out.stdout.strip().replace(os.sep, "/")
+        self.assertTrue(shown.endswith("data/evidence"), shown)
+
+    def test_pre_publish_codes(self):
+        # W9-5: failures before the submit click carry PRE_PUBLISH and
+        # stay PostFailed subclasses (older handlers keep catching them).
+        self.assertTrue(issubclass(session_post.PrePublishFailed,
+                                   session_post.PostFailed))
+        self.assertTrue(issubclass(session_post.UncertainPostFailed,
+                                   session_post.PostFailed))
+        with self.assertRaises(session_post.PrePublishFailed) as ctx:
+            session_post.post("a", "naver_blog", "t", "b")
+        self.assertIn(session_post.PRE_PUBLISH, str(ctx.exception))
+        with self.assertRaises(session_post.PrePublishFailed) as ctx:
+            session_post.post("a", "no-such-platform", "t", "b")
+        self.assertIn(session_post.PRE_PUBLISH, str(ctx.exception))
+        with self.assertRaises(session_post.PrePublishFailed) as ctx:
+            session_post.fill_any(_NoFramePage(), "input", "x")
+        self.assertIn("selector not fillable", str(ctx.exception))
+
+    def test_wrap_flow_error(self):
+        # W9-5: phase decides the code once the submit click returned.
+        early = session_post.wrap_flow_error(ValueError("goto broke"), False)
+        self.assertIsInstance(early, session_post.PrePublishFailed)
+        late = session_post.wrap_flow_error(ValueError("nav timed out"), True)
+        self.assertIsInstance(late, session_post.UncertainPostFailed)
+        coded = session_post.PrePublishFailed("x")
+        self.assertIs(session_post.wrap_flow_error(coded, True), coded)
+
+    def test_needs_login_is_pre_publish(self):
+        # W9-5: a missing session never posted — the P-lane wrapper
+        # stamps it retryable without launching a browser.
+        from adapter import worker_adapter
+        real = session_post.post
+
+        def _raise(*args, **kwargs):
+            raise session_post.NeedsLogin("account a: save a login session first")
+
+        session_post.post = _raise
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                worker_adapter.publish_handler({"account": "a",
+                                                "platform": "stubboard"})
+        finally:
+            session_post.post = real
+        self.assertIn(session_post.PRE_PUBLISH, str(ctx.exception))
+
     def test_unconfigured_platform_refuses(self):
         with self.assertRaises(session_post.PostFailed):
             session_post.post("a", "naver_blog", "t", "b")
@@ -602,8 +668,18 @@ class StubBoardHandler(http.server.BaseHTTPRequestHandler):
             else:
                 title, body, files, tags = post[0], post[1], [], ""
             items = "".join("<li>%s</li>" % f for f in files)
-            self._send(200, "<h1>%s</h1><p>%s</p><p class='tags'>%s</p><ul>%s</ul>"
-                            % (title, body, tags, items))
+            try:
+                seq = int(self.path.rsplit("/", 1)[1])
+            except ValueError:
+                seq = 0
+            # W7: deterministic public figures for collect drills.
+            metrics = ("<p class='metrics'>"
+                       "<span class='metric-views'>%d</span>"
+                       "<span class='metric-likes'>%d</span>"
+                       "<span class='metric-comments'>%d</span></p>"
+                       % (100 + seq, 20 + seq, 5 + seq))
+            self._send(200, "<h1>%s</h1><p>%s</p><p class='tags'>%s</p><ul>%s</ul>%s"
+                            % (title, body, tags, items, metrics))
         else:
             self._send(404, "nope")
 
@@ -771,6 +847,297 @@ class FetchE2ETest(unittest.TestCase):
         self.assertTrue(os.path.isfile(result["screenshot"]))
         self.assertEqual(len(result["images"]), 1)
         self.assertTrue(os.path.isfile(result["images"][0]))
+
+
+class MediaUnitTest(unittest.TestCase):
+    def test_gen_defaults_unverified(self):
+        from adapter import genmedia
+        for name in ("meta_ai", "chatgpt", "gemini", "claude_app", "muse"):
+            p = platforms.get_platform(name)
+            self.assertEqual(p.image_gen, "unverified", name)
+            self.assertEqual(p.video_gen, "unverified", name)
+            self.assertFalse(genmedia.is_generatable(p, "gen_image"), name)
+            self.assertFalse(genmedia.is_generatable(p, "gen_video"), name)
+
+    def test_gen_parse(self):
+        from adapter import genmedia
+        args = genmedia.parse_gen_args(
+            ["genmedia", "a", "meta_ai", "--kind", "gen_image",
+             "--out", "d", "a cat"])
+        self.assertEqual(args["kind"], "gen_image")
+        self.assertEqual(args["ratio"], "1:1")
+        self.assertFalse(args["probe"])
+        args = genmedia.parse_gen_args(
+            ["genmedia", "a", "meta_ai", "--kind", "gen_video",
+             "--out", "d", "--probe", "x"])
+        self.assertEqual(args["ratio"], "9:16")
+        self.assertTrue(args["probe"])
+        with self.assertRaises(ValueError):
+            genmedia.parse_gen_args(["genmedia", "a"])
+        with self.assertRaises(ValueError):
+            genmedia.parse_gen_args(
+                ["genmedia", "a", "p", "--kind", "nope", "--out", "d", "x"])
+        with self.assertRaises(ValueError):
+            genmedia.parse_gen_args(
+                ["genmedia", "a", "p", "--kind", "gen_image", "--out", "d"])
+
+    def test_gen_refuses_unverified(self):
+        from adapter import genmedia
+        with self.assertRaises(genmedia.GenUnavailable):
+            genmedia.generate("a", "meta_ai", "gen_image", "cat", "1:1", "d")
+        with self.assertRaises(genmedia.GenUnavailable):
+            genmedia.generate("a", "nope", "gen_image", "cat", "1:1", "d")
+
+    def test_card_html_escapes(self):
+        from adapter import card_render
+        page = card_render.card_html("<b>T</b>", ["a&b", "<i>x</i>"],
+                                     "1080x1080", 2, 3, "", "sub>&")
+        self.assertIn("&lt;b&gt;T&lt;/b&gt;", page)
+        self.assertIn("a&amp;b", page)
+        self.assertNotIn("<i>x</i>", page)
+        self.assertIn("2 / 3", page)
+        self.assertIn("sub&gt;&amp;", page)
+
+    def test_card_parse(self):
+        from adapter import card_render
+        args = card_render.parse_render_args(
+            ["card_render", "--out", "d", "--size", "1080x1350",
+             "--format", "jpeg", "--title", "T", "--line", "a"])
+        self.assertEqual(args["size"], "1080x1350")
+        self.assertEqual(args["fmt"], "jpeg")
+        self.assertEqual(args["lines"], ["a"])
+        with self.assertRaises(ValueError):
+            card_render.parse_render_args(["card_render"])
+        with self.assertRaises(ValueError):
+            card_render.parse_render_args(
+                ["card_render", "--out", "d", "--size", "1x1"])
+
+    def test_scene_parse(self):
+        import tempfile
+        from adapter import video_compose
+        tmp = tempfile.mkdtemp()
+        img = os.path.join(tmp, "s.jpg")
+        with open(img, "wb") as handle:
+            handle.write(b"\xff\xd8\xff\xe0" + b"\x00" * 64)
+        scene = video_compose.parse_scene("%s:5:hello" % img)
+        self.assertEqual(scene["seconds"], 5)
+        self.assertEqual(scene["subtitle"], "hello")
+        with self.assertRaises(ValueError):
+            video_compose.parse_scene("bad")
+        with self.assertRaises(ValueError):
+            video_compose.parse_scene("%s:0" % img)
+        with self.assertRaises(ValueError):
+            video_compose.parse_scene("%s:200" % img)
+        with self.assertRaises(ValueError):
+            video_compose.parse_scene(os.path.join(tmp, "no.jpg") + ":5")
+        args = video_compose.parse_compose_args(
+            ["video_compose", "--out", "o.mp4", "--fps", "1",
+             "%s:2:a" % img])
+        self.assertEqual(args["size"], (1080, 1920))
+        self.assertEqual(args["fps"], 1)
+        with self.assertRaises(ValueError):
+            video_compose.parse_compose_args(["video_compose", "--out", "o"])
+
+    def test_cmd_builders(self):
+        from adapter import video_compose
+        full = video_compose.build_full_cmd(
+            "ffmpeg", ["a.jpg", "b.jpg"],
+            [{"seconds": 2}, {"seconds": 3}], (1080, 1920), 2, "o.mp4")
+        self.assertIn("libx264", full)
+        self.assertIn("concat=n=2:v=1:a=0", " ".join(full))
+        mini = video_compose.build_minimal_cmd("ffmpeg", (1080, 1920), 2, "o.webm")
+        self.assertIn("image2pipe", mini)
+        self.assertIn("mjpeg", mini)
+        self.assertIn("libvpx-vp9", mini)
+        self.assertIn("pipe:0", mini)
+
+    def test_minimal_input_repeats(self):
+        import tempfile
+        from adapter import video_compose
+        tmp = tempfile.mkdtemp()
+        img = os.path.join(tmp, "s.jpg")
+        with open(img, "wb") as handle:
+            handle.write(b"FRAME")
+        blob, counts = video_compose.build_minimal_input(
+            [img], [{"seconds": 3}], 2)
+        self.assertEqual(counts, [6])
+        self.assertEqual(blob, b"FRAME" * 6)
+
+    def test_find_ffmpeg_reports_caps(self):
+        from adapter import video_compose
+        path, caps = video_compose.find_ffmpeg()
+        if not path:
+            self.skipTest("no ffmpeg on PATH and no Playwright bundle")
+        for key in ("minimal", "libx264", "mp4", "libvpx_vp9", "webm",
+                    "drawtext", "zoompan", "concat_filter"):
+            self.assertIn(key, caps)
+
+
+@unittest.skipUnless(os.environ.get("MEDIA_E2E") == "1" and HAS_PW,
+                     "needs MEDIA_E2E=1 + playwright")
+class MediaE2ETest(unittest.TestCase):
+    def test_render_and_compose(self):
+        import tempfile
+        from adapter import card_render, video_compose
+        tmp = tempfile.mkdtemp()
+        paths = card_render.render_cards(
+            [{"title": "W14", "lines": ["first", "second"]}], tmp)
+        self.assertEqual(len(paths), 1)
+        with open(paths[0], "rb") as handle:
+            self.assertEqual(handle.read(8), b"\x89PNG\r\n\x1a\n")
+        dest, total, backend = video_compose.compose(
+            [{"image": paths[0], "seconds": 2, "subtitle": "scene one"},
+             {"image": paths[0], "seconds": 2, "subtitle": "scene two"}],
+            os.path.join(tmp, "short.mp4"), (1080, 1920), 1, tmp)
+        self.assertEqual(total, 4)
+        self.assertIn(backend, ("mp4", "webm"))
+        with open(dest, "rb") as handle:
+            magic = handle.read(8)
+        webm = magic[:4] == b"\x1a\x45\xdf\xa3"
+        mp4 = magic[4:8] == b"ftyp"
+        self.assertTrue(webm or mp4, magic.hex())
+        self.assertGreater(os.path.getsize(dest), 1000)
+
+
+class CollectUnitTest(unittest.TestCase):
+    def test_parse_number(self):
+        from adapter import collect as collect_mod
+        cases = {
+            "123": 123, "1,234": 1234, "조회 56": 56,
+            "1.2만": 12000, "3천": 3000, "2억": 200000000,
+            "3.4k": 3400, "1.5M": 1500000, "공감 7회": 7,
+            "": None, "no digits": None, None: None,
+        }
+        for text, want in cases.items():
+            self.assertEqual(collect_mod.parse_number(text), want, text)
+
+    def test_platform_gates(self):
+        from adapter import collect as collect_mod
+        stub = platforms.with_overlay(platforms.get_platform("stubboard"))
+        self.assertTrue(platforms.is_collectable(stub))
+        naver = platforms.with_overlay(platforms.get_platform("naver_blog"))
+        self.assertFalse(platforms.is_collectable(naver))
+        with self.assertRaises(collect_mod.CollectRefused):
+            collect_mod.resolve_collect_platform("naver_blog")
+        with self.assertRaises(collect_mod.CollectRefused):
+            collect_mod.resolve_collect_platform("nope")
+        # An overlay can pin a real platform without a code deploy.
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        prev = os.environ.get("ADAPTER_SELECTORS_DIR")
+        os.environ["ADAPTER_SELECTORS_DIR"] = tmp
+        try:
+            with open(os.path.join(tmp, "naver_blog.json"), "w",
+                      encoding="utf-8") as handle:
+                json.dump({"collect_views": ".v", "collect_likes": ".l",
+                           "collect_comments": ".c",
+                           "collect_verified": "verified"}, handle)
+            pinned = platforms.with_overlay(
+                platforms.get_platform("naver_blog"))
+            self.assertTrue(platforms.is_collectable(pinned))
+            self.assertEqual(
+                collect_mod.resolve_collect_platform("naver_blog").name,
+                "naver_blog")
+        finally:
+            if prev is None:
+                del os.environ["ADAPTER_SELECTORS_DIR"]
+            else:
+                os.environ["ADAPTER_SELECTORS_DIR"] = prev
+
+    def test_arg_parse(self):
+        from adapter import collect as collect_mod
+        account, platform, url, probe = collect_mod.parse_collect_args(
+            ["collect", "a1", "stubboard", "--url", "http://x/post/1"])
+        self.assertEqual((account, platform, url, probe),
+                         ("a1", "stubboard", "http://x/post/1", False))
+        _, _, _, probe = collect_mod.parse_collect_args(
+            ["a1", "stubboard", "--url", "http://x/post/1", "--probe"])
+        self.assertTrue(probe)
+        for bad in (["a1"], ["a1", "stubboard"],
+                    ["a1", "stubboard", "--url"],
+                    ["a1", "stubboard", "--url", "u", "--bogus"]):
+            with self.assertRaises(ValueError):
+                collect_mod.parse_collect_args(bad)
+
+    def test_collect_handler_shapes(self):
+        from adapter import collect as collect_mod
+        from adapter import worker_adapter
+        with self.assertRaises(ValueError):
+            worker_adapter.collect_handler({"account": "a"})
+        calls = {}
+
+        def fake_collect(account, platform, url):
+            calls["args"] = (account, platform, url)
+            return {"views": 5, "likes": None, "comments": 2, "note": ""}
+        prev = collect_mod.collect
+        collect_mod.collect = fake_collect
+        try:
+            got = worker_adapter.collect_handler(
+                {"account": "a", "platform": "stubboard",
+                 "url": "http://x/post/2"})
+        finally:
+            collect_mod.collect = prev
+        self.assertEqual(calls["args"], ("a", "stubboard", "http://x/post/2"))
+        self.assertEqual(got, {"note": "", "views": 5, "comments": 2})
+
+        def fake_refuse(account, platform, url):
+            raise collect_mod.CollectRefused("not pinned")
+        collect_mod.collect = fake_refuse
+        try:
+            got = worker_adapter.collect_handler(
+                {"account": "a", "platform": "naver_blog",
+                 "url": "https://blog.naver.com/x/1"})
+        finally:
+            collect_mod.collect = prev
+        self.assertEqual(list(got), ["note"])
+        self.assertIn("not pinned", got["note"])
+
+
+@unittest.skipUnless(PLAYWRIGHT_E2E and HAS_PW, "needs PLAYWRIGHT_E2E=1 + playwright")
+class CollectE2ETest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = socketserver.TCPServer(("127.0.0.1", 0), StubBoardHandler)
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        import shutil
+        import uuid
+
+        cls._tmp = os.path.join(os.environ.get("TEMP", "/tmp"),
+                                "adapter-collect-" + uuid.uuid4().hex[:8])
+        shutil.rmtree(cls._tmp, ignore_errors=True)
+        os.makedirs(cls._tmp, exist_ok=True)
+        config.PROFILES_DIR = os.path.join(cls._tmp, "profiles")
+        config.EVIDENCE_DIR = os.path.join(cls._tmp, "evidence")
+        config.HEADLESS = True
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+
+    def base(self):
+        return "http://127.0.0.1:%d" % self.port
+
+    def test_collect_stubboard(self):
+        from adapter import login as login_mod
+        from adapter import collect as collect_mod
+
+        account = "stub-collect"
+        config.STUB_BASE_URL = self.base()
+        code = login_mod.main(["login", account, "stubboard", "--auto", "u", "p"])
+        self.assertEqual(code, 0)
+        posted = session_post.post(account, "stubboard", "t", "b", base_url=self.base())
+        got = collect_mod.collect(account, "stubboard", posted["url"])
+        seq = int(posted["url"].rsplit("/", 1)[1])
+        self.assertEqual(got["views"], 100 + seq)
+        self.assertEqual(got["likes"], 20 + seq)
+        self.assertEqual(got["comments"], 5 + seq)
+        nodes = collect_mod.probe(account, "stubboard", posted["url"])
+        self.assertTrue(any("metric-views" in n or str(100 + seq) in n for n in nodes),
+                        nodes[:10])
+        with self.assertRaises(collect_mod.CollectFailed):
+            collect_mod.collect(account, "stubboard", "https://x.test/elsewhere")
 
 
 if __name__ == "__main__":

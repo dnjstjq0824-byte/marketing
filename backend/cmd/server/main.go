@@ -42,6 +42,17 @@ func main() {
 	}
 }
 
+// readVaultKey loads the 32-byte vault key for the pre-migration backup
+// (the session service does not exist yet at that point). Anything
+// else yields nil, which skips the W20-3 session bundle.
+func readVaultKey(path string) []byte {
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) != 32 {
+		return nil
+	}
+	return raw
+}
+
 // adapterPython locates the adapter venv python relative to the server
 // binary (backend/somun.exe -> <root>/adapter/.venv/...), so console-driven
 // login works regardless of the launch working directory.
@@ -100,7 +111,9 @@ func run() error {
 	if cur, err := store.CurrentSchemaVersion(st.DB()); err != nil {
 		return fmt.Errorf("schema version: %w", err)
 	} else if cur != "" && cur != store.SchemaVersion {
-		dest, err := store.BackupNow(st.DB(), cfg.DBPath, cfg.UploadDir, cfg.BackupDir, cfg.VaultKeyPath, cfg.BackupKeep, cfg.MirrorDir)
+		dest, err := store.BackupNowWithSessions(st.DB(), cfg.DBPath, cfg.UploadDir, cfg.BackupDir,
+			cfg.VaultKeyPath, cfg.BackupKeep, cfg.MirrorDir,
+			filepath.Join(cfg.DataDir, "profiles"), readVaultKey(cfg.VaultKeyPath), store.SessionsIncluded(st.DB()))
 		if err != nil {
 			return fmt.Errorf("pre-migration backup: %w", err)
 		}
@@ -169,11 +182,23 @@ func run() error {
 		}
 	}
 
+	// W20-3: a restored generation carries profiles.enc instead of the
+	// live sessions; decrypt it back, then expire accounts whose
+	// session files are still missing (relogin queue picks them up).
+	if restored, err := store.RestoreProfilesIfMissing(cfg.DataDir, sessionSvc.FileKey()); err != nil {
+		return fmt.Errorf("restore sessions: %w", err)
+	} else if restored {
+		log.Printf("sessions restored from %s", store.ProfilesFileName)
+	}
+	if n := sessionSvc.ReconcileProfiles(); n > 0 {
+		log.Printf("sessions reconciled: %d account(s) marked expired (login required)", n)
+	}
+
 	if !cfg.WorkerTokenSet {
 		log.Printf("WARN: WORKER_TOKEN not set; using default dev token (local use only)")
 	}
 
-	stopBackup := startBackupScheduler(st, cfg, notifySvc)
+	stopBackup := startBackupScheduler(st, cfg, notifySvc, sessionSvc.FileKey())
 	defer stopBackup()
 	stopCheck := startCheckScheduler(sessionSvc, cfg, notifySvc)
 	defer stopCheck()
@@ -191,6 +216,8 @@ func run() error {
 	}
 	stopExec := startExecutorTicker(execSvc)
 	defer stopExec()
+	stopCollect := startCollectTicker(schedulerSvc)
+	defer stopCollect()
 
 	// Long-polls must finish before the write deadline (D26).
 	writeTimeout := 60 * time.Second
@@ -199,7 +226,7 @@ func run() error {
 	}
 	srv := &http.Server{
 		Addr:         cfg.BindAddr + ":" + cfg.Port,
-		Handler:      router.New(&router.Deps{Config: cfg, Store: st, Auth: authSvc, Queue: queueSvc, Content: contentSvc, Product: productSvc, Session: sessionSvc, Notify: notifySvc, Agents: agentSvc, Executor: execSvc, Chat: chatSvc, FileKey: sessionSvc.FileKey()}),
+		Handler:      router.New(&router.Deps{Config: cfg, Store: st, Auth: authSvc, Queue: queueSvc, Content: contentSvc, Product: productSvc, Session: sessionSvc, Notify: notifySvc, Agents: agentSvc, Executor: execSvc, Chat: chatSvc, FileKey: sessionSvc.FileKey(), AdapterPython: adapterPython()}),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: writeTimeout,
 	}
@@ -292,9 +319,36 @@ func startExecutorTicker(execSvc *executor.Service) (stop func()) {
 	return func() { close(done) }
 }
 
-// startBackupScheduler runs periodic consistent backups (D32).
+// startCollectTicker enqueues due W7 collect jobs every minute. The sweep
+// is ledger-idempotent, so a tick costs one cheap scan when idle.
+func startCollectTicker(schedulerSvc *scheduler.Service) (stop func()) {
+	ticker := time.NewTicker(time.Minute)
+	done := make(chan struct{})
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				n, err := schedulerSvc.CollectDue(time.Now())
+				if err != nil {
+					log.Printf("collect sweep failed: %v", err)
+					continue
+				}
+				if n > 0 {
+					log.Printf("collect sweep ok: %d jobs", n)
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// startBackupScheduler runs periodic consistent backups (D32), including
+// the encrypted login sessions (W20-3).
 // A non-positive interval disables the timer; POST /api/system/backup stays.
-func startBackupScheduler(st *store.Store, cfg *config.Config, notifySvc *notify.Service) (stop func()) {
+func startBackupScheduler(st *store.Store, cfg *config.Config, notifySvc *notify.Service, vaultKey []byte) (stop func()) {
 	if cfg.BackupEveryMin <= 0 {
 		return func() {}
 	}
@@ -305,7 +359,9 @@ func startBackupScheduler(st *store.Store, cfg *config.Config, notifySvc *notify
 		for {
 			select {
 			case <-ticker.C:
-				dest, err := store.BackupNow(st.DB(), cfg.DBPath, cfg.UploadDir, cfg.BackupDir, cfg.VaultKeyPath, cfg.BackupKeep, cfg.MirrorDir)
+				dest, err := store.BackupNowWithSessions(st.DB(), cfg.DBPath, cfg.UploadDir, cfg.BackupDir,
+					cfg.VaultKeyPath, cfg.BackupKeep, cfg.MirrorDir,
+					filepath.Join(cfg.DataDir, "profiles"), vaultKey, store.SessionsIncluded(st.DB()))
 				if err != nil {
 					log.Printf("backup failed: %v", err)
 					_, _ = notifySvc.BackupFailed(err)
@@ -366,7 +422,12 @@ func startRetentionScheduler(st *store.Store, cfg *config.Config) (stop func()) 
 					log.Printf("retention sweep failed: %v", err)
 					continue
 				}
-				log.Printf("retention sweep ok: jobs=%d metrics=%d notifications=%d", jobs, metrics, notifs)
+				chat, err := store.PurgeChat(st, config.RetentionChatDays)
+				if err != nil {
+					log.Printf("retention sweep failed: %v", err)
+					continue
+				}
+				log.Printf("retention sweep ok: jobs=%d metrics=%d notifications=%d chat=%d", jobs, metrics, notifs, chat)
 			case <-done:
 				return
 			}

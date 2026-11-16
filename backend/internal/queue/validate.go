@@ -9,7 +9,7 @@ import (
 var (
 	ErrEmptyContents  = errors.New("contents must not be empty")
 	ErrNoValidItems   = errors.New("no contents with an allowed channel")
-	ErrBadJobType     = errors.New("type must be analyze, strategy, generate, review, or publish")
+	ErrBadJobType     = errors.New("type must be analyze, strategy, generate, review, publish, research, media, or collect")
 	ErrEmptyAngle     = errors.New("angle must not be empty")
 	ErrEmptyDecisions = errors.New("decisions must not be empty")
 	ErrBadDecision    = errors.New("invalid review decision")
@@ -17,10 +17,11 @@ var (
 
 // ValidateJobType accepts only the specified job types.
 func ValidateJobType(t string) error {
-	if t != JobAnalyze && t != JobStrategy && t != JobGenerate && t != JobReview && t != JobPublish && t != JobResearch {
-		return ErrBadJobType
+	switch t {
+	case JobAnalyze, JobStrategy, JobGenerate, JobReview, JobPublish, JobResearch, JobMedia, JobCollect:
+		return nil
 	}
-	return nil
+	return ErrBadJobType
 }
 
 // ValidateReviewResult checks decision shapes. W4: target fields are worker

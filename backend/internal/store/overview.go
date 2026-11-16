@@ -6,7 +6,7 @@ package store
 
 import (
 	"net/url"
-	"strings"
+	"strconv"
 )
 
 // OverviewToday is the S1 stat row.
@@ -37,6 +37,8 @@ type OverviewPost struct {
 	Thumb       string `json:"thumb"`
 	PublishedAt string `json:"publishedAt"`
 	Views       int    `json:"views"`
+	Likes       int    `json:"likes"`
+	Comments    int    `json:"comments"`
 	URL         string `json:"url"`
 }
 
@@ -70,7 +72,7 @@ func (s *Store) OverviewToday(dayStartUTC, weekAgoUTC string) (*OverviewToday, e
 		{&t.Running, `SELECT COUNT(*) FROM products p WHERE ` + runningProductCond, nil},
 		{&t.PublishedToday, `SELECT COUNT(*) FROM contents WHERE status='published' AND updated_at>=?`, []any{dayStartUTC}},
 		{&t.Queued, `SELECT COUNT(*) FROM contents WHERE status IN ('queued','approved')`, nil},
-		{&t.WeekViews, `SELECT COALESCE(SUM(exposures),0) FROM metrics WHERE created_at>=?`, []any{weekAgoUTC}},
+		{&t.WeekViews, `SELECT COALESCE(SUM(exposures),0)+COALESCE(SUM(views),0) FROM metrics WHERE created_at>=?`, []any{weekAgoUTC}},
 		{&t.Failed, `SELECT COUNT(*) FROM jobs WHERE status='failed' AND finished_at>=?`, []any{weekAgoUTC}},
 	}
 	for _, c := range queries {
@@ -131,10 +133,9 @@ func (s *Store) OverviewWorkSummary(productID int64) (*OverviewWork, error) {
 	if w.Title == "" {
 		w.Title = hostOrURL(p.SourceURL)
 	}
-	var thumb string
-	_ = s.ro.QueryRow(`SELECT path FROM product_images WHERE product_id=? ORDER BY sort ASC, id ASC LIMIT 1`, productID).Scan(&thumb)
-	if thumb != "" {
-		w.Thumb = "/uploads/" + strings.TrimPrefix(thumb, "/")
+	var thumbID int64
+	if err := s.ro.QueryRow(`SELECT id FROM product_images WHERE product_id=? ORDER BY sort ASC, id ASC LIMIT 1`, productID).Scan(&thumbID); err == nil {
+		w.Thumb = "/api/product-images/" + strconv.FormatInt(thumbID, 10)
 	}
 	counts := map[string]int{}
 	crows, err := s.ro.Query(`SELECT status, COUNT(*) FROM contents WHERE product_id=? GROUP BY status`, productID)
@@ -221,24 +222,25 @@ func (s *Store) OverviewRecentPosts(limit int) ([]*OverviewPost, error) {
 		if err := rows.Scan(&p.ID, &productID, &p.Channel, &p.Title, &p.PublishedAt); err != nil {
 			return nil, err
 		}
-		_ = s.ro.QueryRow(`SELECT path FROM product_images WHERE product_id=? ORDER BY sort ASC, id ASC LIMIT 1`, productID).Scan(&p.Thumb)
-		if p.Thumb != "" && !strings.HasPrefix(p.Thumb, "/") {
-			p.Thumb = "/uploads/" + p.Thumb
+		var thumbID int64
+		if err := s.ro.QueryRow(`SELECT id FROM product_images WHERE product_id=? ORDER BY sort ASC, id ASC LIMIT 1`, productID).Scan(&thumbID); err == nil {
+			p.Thumb = "/api/product-images/" + strconv.FormatInt(thumbID, 10)
 		}
-		_ = s.ro.QueryRow(`SELECT COALESCE(SUM(exposures),0) FROM metrics WHERE content_id=?`, p.ID).Scan(&p.Views)
+		_ = s.ro.QueryRow(`SELECT COALESCE(SUM(exposures),0)+COALESCE(SUM(views),0),
+			COALESCE(SUM(likes),0), COALESCE(SUM(comments),0) FROM metrics WHERE content_id=?`,
+			p.ID).Scan(&p.Views, &p.Likes, &p.Comments)
 		var note string
 		_ = s.ro.QueryRow(`SELECT note FROM publish_logs WHERE content_id=? ORDER BY id DESC LIMIT 1`, p.ID).Scan(&note)
-		if strings.HasPrefix(note, "http") {
-			p.URL = note
-		}
+		p.URL = CollectURL(note)
 		out = append(out, &p)
 	}
 	return out, rows.Err()
 }
 
-// OverviewRecentMedia returns newest uploads (W14 adds generated media).
+// OverviewRecentMedia returns newest library rows: uploads and W14
+// generated files alike. Tiles load bytes through the authed media API.
 func (s *Store) OverviewRecentMedia(limit int) ([]*OverviewMedia, error) {
-	rows, err := s.ro.Query(`SELECT id,path FROM product_images ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := s.ro.Query(`SELECT id,kind FROM media ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -246,13 +248,11 @@ func (s *Store) OverviewRecentMedia(limit int) ([]*OverviewMedia, error) {
 	out := []*OverviewMedia{}
 	for rows.Next() {
 		var m OverviewMedia
-		var path string
-		if err := rows.Scan(&m.ID, &path); err != nil {
+		if err := rows.Scan(&m.ID, &m.Kind); err != nil {
 			return nil, err
 		}
-		m.Kind = "upload"
-		m.Thumb = "/uploads/" + strings.TrimPrefix(path, "/")
-		m.URL = m.Thumb
+		m.Thumb = "/api/media/" + strconv.FormatInt(m.ID, 10) + "/thumb"
+		m.URL = "/api/media/" + strconv.FormatInt(m.ID, 10) + "/file"
 		out = append(out, &m)
 	}
 	return out, rows.Err()

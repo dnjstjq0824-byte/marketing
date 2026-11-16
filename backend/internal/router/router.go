@@ -48,6 +48,9 @@ type Deps struct {
 	Chat     *chat.Service
 	// FileKey signs worker media URLs (W5-3). Empty refuses all.
 	FileKey []byte
+	// AdapterPython is the adapter venv python for AI media generation
+	// (W14-2/3). Empty disables /api/worker/media/gen with 503.
+	AdapterPython string
 }
 
 // New builds the full HTTP handler tree.
@@ -64,6 +67,7 @@ func New(d *Deps) http.Handler {
 	chatH := chat.NewHandler(d.Chat)
 	mediaSvc := media.NewService(d.Store, d.Config.UploadDir)
 	mediaSvc.FileKey = d.FileKey
+	mediaSvc.Configure(d.Config.DataDir, d.AdapterPython)
 	mediaH := media.NewHandler(mediaSvc)
 	worksH := works.NewHandler(works.NewService(d.Store), d.Store, d.Config.UploadDir)
 	teamsH := teams.NewHandler(teams.NewService(d.Store), d.Store)
@@ -128,6 +132,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/system/backups", op(http.HandlerFunc(d.backupList)))
 	mux.Handle("POST /api/system/purge", op(http.HandlerFunc(d.purge)))
 	mux.Handle("GET /api/system/version", op(http.HandlerFunc(d.version)))
+	mux.Handle("GET /api/system/health", op(http.HandlerFunc(d.health)))
 	mux.Handle("GET /api/channel-platforms", op(http.HandlerFunc(d.listPlatforms)))
 	mux.Handle("PATCH /api/channel-platforms/{key}", op(http.HandlerFunc(d.patchPlatform)))
 	mux.Handle("GET /api/ai-platforms", op(http.HandlerFunc(d.listAIPlatforms)))
@@ -150,6 +155,11 @@ func New(d *Deps) http.Handler {
 	mux.Handle("POST /api/worker/chat/send", wk(http.HandlerFunc(chatH.Send)))
 	mux.Handle("GET /api/worker/chat/pending", wk(http.HandlerFunc(chatH.Pending)))
 	mux.Handle("GET /api/worker/boot-check", wk(http.HandlerFunc(queueH.BootCheck)))
+	// W14: workers upload local renders and request AI generations.
+	mux.Handle("POST /api/worker/media/uploads", wk(http.HandlerFunc(mediaH.Init)))
+	mux.Handle("PUT /api/worker/media/uploads/{id}/parts/{n}", wk(http.HandlerFunc(mediaH.PutPart)))
+	mux.Handle("POST /api/worker/media/uploads/{id}/complete", wk(http.HandlerFunc(mediaH.Complete)))
+	mux.Handle("POST /api/worker/media/gen", wk(http.HandlerFunc(mediaH.GenAI)))
 
 	mux.Handle("POST /api/chat/send", op(http.HandlerFunc(chatH.Send)))
 	mux.Handle("GET /api/chat/pending", op(http.HandlerFunc(chatH.Pending)))
@@ -163,6 +173,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("POST /api/works/{id}/resume", op(http.HandlerFunc(worksH.Resume)))
 	mux.Handle("DELETE /api/works/{id}", op(http.HandlerFunc(worksH.DeleteWork)))
 	mux.Handle("GET /api/works/{id}/ai-log", op(http.HandlerFunc(worksH.AILog)))
+	mux.Handle("GET /api/works/{id}/audit", op(http.HandlerFunc(worksH.Audit)))
 	mux.Handle("POST /api/works/{id}/posts/{postId}/hold", op(http.HandlerFunc(worksH.HoldPost)))
 	mux.Handle("POST /api/works/{id}/posts:generate", op(http.HandlerFunc(worksH.RegeneratePost)))
 	mux.Handle("POST /api/works/{id}/posts/{postId}/confirm-published", op(http.HandlerFunc(contentH.ConfirmPublished)))
@@ -173,9 +184,12 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/media", op(http.HandlerFunc(mediaH.List)))
 	mux.Handle("GET /api/media/{id}", op(http.HandlerFunc(mediaH.Detail)))
 	mux.Handle("GET /api/media/{id}/file", op(http.HandlerFunc(mediaH.File)))
+	mux.Handle("GET /api/media/{id}/download", op(http.HandlerFunc(mediaH.File)))
+	mux.Handle("GET /api/media/{id}/thumb", op(http.HandlerFunc(mediaH.Thumb)))
 	mux.Handle("GET /api/media/{id}/signed", http.HandlerFunc(mediaH.SignedFile))
 	mux.Handle("POST /api/media/zip", op(http.HandlerFunc(mediaH.Zip)))
 	mux.Handle("DELETE /api/media/{id}", op(http.HandlerFunc(mediaH.Delete)))
+	mux.Handle("GET /api/product-images/{id}", op(http.HandlerFunc(mediaH.LegacyImage)))
 
 	mux.Handle("GET /api/teams", op(http.HandlerFunc(teamsH.List)))
 	mux.Handle("POST /api/teams", op(http.HandlerFunc(teamsH.Create)))
@@ -192,8 +206,16 @@ func New(d *Deps) http.Handler {
 	mux.Handle("DELETE /api/teams/{id}/channels/{accountId}", op(http.HandlerFunc(teamsH.RemoveChannel)))
 	mux.Handle("PUT /api/teams/{id}/brand", op(http.HandlerFunc(teamsH.PutBrand)))
 
-	// Uploaded images (read-only).
-	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(d.Config.UploadDir))))
+	// W14-5 + W9-2 (B17): the public /uploads/ path is retired — nothing
+	// under it is served, with or without a token. Media serves only
+	// through the authed /api/media/* endpoints above, and publish
+	// evidence lives under data/evidence/, outside any served tree.
+	mux.Handle("GET /uploads/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "retired; use /api/media")
+	}))
+	mux.Handle("GET /uploads", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "retired; use /api/media")
+	}))
 
 	// Web console: serve the built SPA when present, else a JSON hint.
 	mux.HandleFunc("/", d.spaFallback())
@@ -325,7 +347,9 @@ func (d *Deps) sameReviewerAccount() (bool, error) {
 }
 
 func (d *Deps) backup(w http.ResponseWriter, r *http.Request) {
-	dest, err := store.BackupNow(d.Store.DB(), d.Config.DBPath, d.Config.UploadDir, d.Config.BackupDir, d.Config.VaultKeyPath, d.Config.BackupKeep, d.Config.MirrorDir)
+	dest, err := store.BackupNowWithSessions(d.Store.DB(), d.Config.DBPath, d.Config.UploadDir, d.Config.BackupDir,
+		d.Config.VaultKeyPath, d.Config.BackupKeep, d.Config.MirrorDir,
+		filepath.Join(d.Config.DataDir, "profiles"), d.FileKey, store.SessionsIncluded(d.Store.DB()))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "backup failed: "+err.Error())
 		return
@@ -342,6 +366,44 @@ func (d *Deps) backupList(w http.ResponseWriter, r *http.Request) {
 
 func (d *Deps) version(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"app": config.AppVersion, "schema": store.SchemaVersion})
+}
+
+// health serves GET /api/system/health (W20-4): DB, disk free, executor
+// connectivity, per-PC load, per-team backlog, and the 10 newest errors.
+// Free space under the alert line files one disk_low notification.
+func (d *Deps) health(w http.ResponseWriter, r *http.Request) {
+	db := d.Store.ProbeDB()
+	disk := store.DiskUsage(d.Config.DataDir)
+	agents, err := d.Store.AgentHealth(time.Now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load health")
+		return
+	}
+	queues, err := d.Store.TeamPendingCounts()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load health")
+		return
+	}
+	errs, err := d.Store.RecentErrors(10)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load health")
+		return
+	}
+	online := 0
+	for _, a := range agents {
+		if a.Online {
+			online++
+		}
+	}
+	if disk.TotalBytes > 0 && disk.Low && d.Notify != nil {
+		_, _ = d.Notify.DiskLow(disk.FreePct)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"db": db, "disk": disk,
+		"executors": map[string]any{"online": online, "total": len(agents), "agents": agents},
+		"pcLoad":    store.PCLoad(agents), "teamQueue": queues, "recentErrors": errs,
+		"time": time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func (d *Deps) listPlatforms(w http.ResponseWriter, r *http.Request) {
@@ -501,6 +563,7 @@ func (d *Deps) putAutomationSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	_, _ = d.Store.AppendAudit(auth.OperatorName(r.Context()), store.AuditSettingsChange, "system", 0, 0, "자동화 설정 저장")
 	writeJSON(w, http.StatusOK, s)
 }
 
@@ -526,6 +589,11 @@ func (d *Deps) putAutomation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "cannot save automation state")
 		return
 	}
+	verb := "자동화 켜기"
+	if !*req.Enabled {
+		verb = "자동화 끄기(비상 정지)"
+	}
+	_, _ = d.Store.AppendAudit(auth.OperatorName(r.Context()), store.AuditSettingsChange, "system", 0, 0, verb)
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": s.Enabled})
 }
 
@@ -535,7 +603,20 @@ func (d *Deps) purge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "purge failed: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "jobs": jobs, "metrics": metrics, "notifications": notifs})
+	chat, err := store.PurgeChat(d.Store, config.RetentionChatDays)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "purge failed: "+err.Error())
+		return
+	}
+	// W14-7: unused generated files age out with the rest; linked files
+	// always survive.
+	swept := 0
+	if settings, serr := store.GetAutomationSettings(d.Store.DB()); serr == nil {
+		if n, merr := media.NewService(d.Store, d.Config.UploadDir).SweepStale(settings.MediaRetentionDays, time.Now()); merr == nil {
+			swept = n
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "jobs": jobs, "metrics": metrics, "notifications": notifs, "chat": chat, "media": swept})
 }
 
 func (d *Deps) spaFallback() http.HandlerFunc {

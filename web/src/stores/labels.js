@@ -69,3 +69,15 @@ export const MEDIA_KIND = { upload: '업로드', gen_image: 'AI 이미지', gen_
 export const TEAM_ROLE = { analyze: '분석', strategy: '전략', generate: '제작', review: '검수' }
 export const TEAM_ROLE_MODE = { auto: '자동', manual: '직접 지정' }
 export const INPUT_KIND = { url: '링크', image: '사진·파일', topic: '주제' }
+// W18-2 industry tag: picks the banned-expression wordlist. "" = common only.
+export const INDUSTRY = { '': '일반', cosmetics: '화장품', health: '건강기능', food: '식품' }
+// W20-1 AI log entry kinds: API values stay English; display text only.
+export const AI_LOG_TYPE = { chat: '대화' }
+// W20-2 audit actions: API values stay English; display text only.
+export const AUDIT_ACTION = {
+  work_pause: '멈추기', work_resume: '다시 진행', work_delete: '삭제',
+  post_hold: '게시물 멈추기', post_resume: '게시물 다시 진행',
+  team_members: '팀원 변경', team_update: '팀 설정 변경',
+  account_unregister: '계정 해제', settings_change: '설정 변경',
+  confirm_published: '올라가 있음 확인', confirm_missing: '안 올라감 확인',
+}

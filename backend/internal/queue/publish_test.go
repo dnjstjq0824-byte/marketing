@@ -28,7 +28,7 @@ func TestSubmitPublishClosesLogAndContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewService(st)
-	done, err := svc.SubmitPublish(j.ID, PublishResult{URL: "https://e.com/post/9", Evidence: "uploads/evidence/x.png"})
+	done, err := svc.SubmitPublish(j.ID, PublishResult{URL: "https://e.com/post/9", Evidence: "data/evidence/x.png"})
 	if err != nil {
 		t.Fatal(err)
 	}

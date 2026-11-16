@@ -1,6 +1,6 @@
 <template>
   <component :is="post.url ? 'a' : 'div'" class="card" v-bind="linkAttrs">
-    <span v-if="post.thumb" class="thumb"><img :src="post.thumb" alt="" loading="lazy" /></span>
+    <span v-if="post.thumb" class="thumb"><AuthImg :src="post.thumb" alt="" /></span>
     <span class="body">
       <strong class="t">{{ post.title || '(제목 없음)' }}</strong>
       <span class="meta"><StatusChip kind="info">{{ channelLabel(post.channel) }}</StatusChip><span class="muted small">{{ statText }}</span></span>
@@ -10,6 +10,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import AuthImg from './AuthImg.vue'
 import StatusChip from './StatusChip.vue'
 import { label, PLATFORM } from '../stores/labels.js'
 
@@ -25,6 +26,8 @@ const statText = computed(() => {
   const parts = []
   if (props.post.publishedAt) parts.push(props.post.publishedAt.slice(0, 10))
   if (props.post.views !== undefined && props.post.views !== null) parts.push(`조회 ${props.post.views}`)
+  if (props.post.likes) parts.push(`공감 ${props.post.likes}`)
+  if (props.post.comments) parts.push(`댓글 ${props.post.comments}`)
   return parts.join(' · ')
 })
 </script>

@@ -38,8 +38,8 @@ var LaneTypes = map[string][]string{
 	"A": {"analyze", "strategy", "research"},
 	"B": {"generate"},
 	"C": {"review"},
-	"P": {"publish"},
-	"T": {"analyze", "strategy", "generate", "review", "research"},
+	"P": {"publish", "collect"},
+	"T": {"analyze", "strategy", "generate", "review", "research", "media"},
 }
 
 // ValidLane reports whether lane is A/B/C/P/T.

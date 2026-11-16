@@ -308,21 +308,20 @@ func (s *Store) SetProductInput(id int64, kind, topic, targets string) error {
 	return err
 }
 
-// UpdateProduct rewrites the editable product fields.
+// UpdateProduct rewrites the editable product fields, keeping the industry tag.
 func (s *Store) UpdateProduct(id int64, name, sourceURL, exitType string, priority int, business string) error {
-	return s.UpdateProductFull(id, name, sourceURL, exitType, priority, business, "")
+	p, err := s.GetProduct(id)
+	if err != nil {
+		return err
+	}
+	return s.UpdateProductFull(id, name, sourceURL, exitType, priority, business, p.Industry)
 }
 
-// UpdateProductFull rewrites a product including the industry tag. Empty
-// industry keeps the stored value.
+// UpdateProductFull rewrites a product including the industry tag. The
+// caller resolves keep-vs-clear; "" writes common-only.
 func (s *Store) UpdateProductFull(id int64, name, sourceURL, exitType string, priority int, business, industry string) error {
-	if industry != "" {
-		if _, err := s.db.Exec(`UPDATE products SET industry=? WHERE id=?`, industry, id); err != nil {
-			return err
-		}
-	}
-	res, err := s.db.Exec(`UPDATE products SET name=?, source_url=?, exit_type=?, priority=?, business=?, updated_at=?
-		WHERE id=?`, name, sourceURL, exitType, priority, business, nowUTC(), id)
+	res, err := s.db.Exec(`UPDATE products SET name=?, source_url=?, exit_type=?, priority=?, business=?, industry=?, updated_at=?
+		WHERE id=?`, name, sourceURL, exitType, priority, business, industry, nowUTC(), id)
 	if err != nil {
 		return err
 	}
@@ -914,6 +913,17 @@ func (s *Store) GetContent(id int64) (*Content, error) {
 	return c, err
 }
 
+// FirstContentChannel returns the oldest post channel of a work ("" when
+// the work has no posts yet). Media download names use it.
+func (s *Store) FirstContentChannel(productID int64) (string, error) {
+	var ch string
+	err := s.ro.QueryRow(`SELECT channel FROM contents WHERE product_id=? ORDER BY id ASC LIMIT 1`, productID).Scan(&ch)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return ch, err
+}
+
 // ListContents filters by status and business ("" = all), newest-first.
 func (s *Store) ListContents(status, business string, limit int) ([]*Content, error) {
 	q := `SELECT c.` + strings.ReplaceAll(contentCols, ",", ",c.") + ` FROM contents c JOIN products p ON p.id=c.product_id`
@@ -1458,6 +1468,9 @@ func containsFold(haystack, needle string) bool {
 // ---------------------------------------------------------------------------
 
 // Metric is one collected performance record. Nil values mean "not collected".
+// Views/Likes/Comments hold W7 platform public figures; the Exposures funnel
+// stays for operator-screen values. Origin tags the writer: blank for legacy
+// rows, collect:<window> for W7 auto-collect rows.
 type Metric struct {
 	ID           int64  `json:"id"`
 	ContentID    *int64 `json:"contentId"`
@@ -1466,6 +1479,10 @@ type Metric struct {
 	Inflows      *int64 `json:"inflows"`
 	Orders       *int64 `json:"orders"`
 	Inquiries    *int64 `json:"inquiries"`
+	Views        *int64 `json:"views"`
+	Likes        *int64 `json:"likes"`
+	Comments     *int64 `json:"comments"`
+	Origin       string `json:"origin"`
 	CauseClass   string `json:"causeClass"`
 	CheckURL     bool   `json:"checkUrl"`
 	CheckSession bool   `json:"checkSession"`
@@ -1477,9 +1494,10 @@ type Metric struct {
 
 func scanMetric(row interface{ Scan(...any) error }) (*Metric, error) {
 	m := &Metric{}
-	var contentID, exp, inf, ord, inq sql.NullInt64
+	var contentID, exp, inf, ord, inq, views, likes, comments sql.NullInt64
 	var url, session, display int
 	err := row.Scan(&m.ID, &contentID, &m.Channel, &exp, &inf, &ord, &inq,
+		&views, &likes, &comments, &m.Origin,
 		&m.CauseClass, &url, &session, &display, &m.Note, &m.CreatedAt, &m.UpdatedAt)
 	if contentID.Valid {
 		v := contentID.Int64
@@ -1501,11 +1519,23 @@ func scanMetric(row interface{ Scan(...any) error }) (*Metric, error) {
 		v := inq.Int64
 		m.Inquiries = &v
 	}
+	if views.Valid {
+		v := views.Int64
+		m.Views = &v
+	}
+	if likes.Valid {
+		v := likes.Int64
+		m.Likes = &v
+	}
+	if comments.Valid {
+		v := comments.Int64
+		m.Comments = &v
+	}
 	m.CheckURL, m.CheckSession, m.CheckDisplay = url == 1, session == 1, display == 1
 	return m, err
 }
 
-const metricCols = `id,content_id,channel,exposures,inflows,orders,inquiries,cause_class,
+const metricCols = `id,content_id,channel,exposures,inflows,orders,inquiries,views,likes,comments,origin,cause_class,
 	check_url,check_session,check_display,note,created_at,updated_at`
 
 func nullInt64(v *int64) sql.NullInt64 {
@@ -1519,9 +1549,11 @@ func nullInt64(v *int64) sql.NullInt64 {
 func (s *Store) CreateMetric(m *Metric) (*Metric, error) {
 	now := nowUTC()
 	res, err := s.db.Exec(`INSERT INTO metrics(content_id,channel,exposures,inflows,orders,inquiries,
+		views,likes,comments,origin,
 		cause_class,check_url,check_session,check_display,note,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, nullInt64(m.ContentID), m.Channel, nullInt64(m.Exposures),
-		nullInt64(m.Inflows), nullInt64(m.Orders), nullInt64(m.Inquiries), m.CauseClass,
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, nullInt64(m.ContentID), m.Channel, nullInt64(m.Exposures),
+		nullInt64(m.Inflows), nullInt64(m.Orders), nullInt64(m.Inquiries),
+		nullInt64(m.Views), nullInt64(m.Likes), nullInt64(m.Comments), m.Origin, m.CauseClass,
 		boolInt(m.CheckURL), boolInt(m.CheckSession), boolInt(m.CheckDisplay), m.Note, now, now)
 	if err != nil {
 		return nil, err
@@ -1958,6 +1990,11 @@ func PurgeExpired(s *Store, jobsDays, metricsDays, notifDays int) (jobs, metrics
 		return jobs, metrics, 0, err
 	}
 	return jobs, metrics, notifs, nil
+}
+
+// PurgeChat drops AI original turns older than days (W20-1: 90 days).
+func PurgeChat(s *Store, days int) (int64, error) {
+	return s.DeleteChatBefore(time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339))
 }
 
 // Notification is one local-outbox row (D30).

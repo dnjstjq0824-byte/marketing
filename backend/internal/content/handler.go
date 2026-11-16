@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"somun/internal/auth"
 	"somun/internal/store"
 )
 
@@ -139,6 +140,13 @@ func (h *Handler) ConfirmPublished(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	action := store.AuditConfirmMissing
+	verb := "안 올라감 확인"
+	if *req.Published {
+		action = store.AuditConfirmPublished
+		verb = "올라가 있음 확인"
+	}
+	_, _ = h.store.AppendAudit(auth.OperatorName(r.Context()), action, "post", postID, workID, verb)
 	writeJSON(w, http.StatusOK, res)
 }
 

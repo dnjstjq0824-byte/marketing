@@ -19,6 +19,12 @@ const (
 	// JobResearch reads a topic-only input (W1): outline + key points
 	// instead of page parsing. It feeds the strategy job like analyze.
 	JobResearch = "research"
+	// JobMedia generates images/video for one post (W14). It is a leaf:
+	// failure never blocks the text chain.
+	JobMedia = "media"
+	// JobCollect scrapes one published URL's public figures (W7). A leaf
+	// on the P lane: failure never touches the text pipeline.
+	JobCollect = "collect"
 )
 
 // Job statuses: pending -> claimed -> done/failed.
@@ -101,10 +107,40 @@ type ReviewResult struct {
 	Decisions []ReviewDecisionItem `json:"decisions"`
 }
 
+// MediaResultItem is one finished file from a media job.
+type MediaResultItem struct {
+	MediaID int64  `json:"media_id"`
+	Role    string `json:"role"`
+}
+
+// MediaResult is the media worker's payload: finished file ids plus how
+// they were made. Empty MediaIDs with a Note records a graceful miss
+// (the post falls back to original images); hard failures use /fail.
+type MediaResult struct {
+	MediaIDs []MediaResultItem `json:"media_ids"`
+	Note     string            `json:"note"`
+	Fallback string            `json:"fallback"`
+}
+
 // PublishResult is the adapter's session-post report.
 type PublishResult struct {
 	URL      string `json:"url"`
 	Evidence string `json:"evidence"`
+}
+
+// CollectResult is the P worker's performance report for one window.
+// Public figures (Views/Likes/Comments) come from the open post page;
+// the funnel (Exposures..Inquiries) from the operator stats screen.
+// Nil means "not collected": the row keeps cause '원인 미분류'.
+type CollectResult struct {
+	Views     *int64 `json:"views"`
+	Likes     *int64 `json:"likes"`
+	Comments  *int64 `json:"comments"`
+	Exposures *int64 `json:"exposures"`
+	Inflows   *int64 `json:"inflows"`
+	Orders    *int64 `json:"orders"`
+	Inquiries *int64 `json:"inquiries"`
+	Note      string `json:"note"`
 }
 
 // AllowedChannels are the only 4 generate channels. Anything else is dropped.

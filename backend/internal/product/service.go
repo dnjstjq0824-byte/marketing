@@ -100,8 +100,9 @@ type UpdateInput struct {
 	Industry  string
 }
 
-// validIndustries bounds the W18-2 industry tag ("" keeps stored).
-var validIndustries = map[string]bool{"": true, "cosmetics": true, "health": true, "food": true}
+// validIndustries bounds the W18-2 industry tag ("" keeps stored,
+// "general" clears back to common-only).
+var validIndustries = map[string]bool{"": true, "general": true, "cosmetics": true, "health": true, "food": true}
 
 // Update validates and rewrites a product.
 func (s *Service) Update(id int64, in UpdateInput) (*store.Product, error) {
@@ -109,8 +110,11 @@ func (s *Service) Update(id int64, in UpdateInput) (*store.Product, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidateURL(in.SourceURL); err != nil {
-		return nil, err
+	// W1: topic/image-only works have no URL; only validate when given.
+	if strings.TrimSpace(in.SourceURL) != "" {
+		if err := ValidateURL(in.SourceURL); err != nil {
+			return nil, err
+		}
 	}
 	if in.Priority < 0 {
 		return nil, ErrBadPriority
@@ -123,8 +127,11 @@ func (s *Service) Update(id int64, in UpdateInput) (*store.Product, error) {
 	if err != nil {
 		return nil, err
 	}
-	if industry == "" {
+	switch industry {
+	case "":
 		industry = p.Industry
+	case "general":
+		industry = ""
 	}
 	if err := s.store.UpdateProductFull(id, in.Name, in.SourceURL, exit, in.Priority, strings.TrimSpace(in.Business), industry); err != nil {
 		return nil, err

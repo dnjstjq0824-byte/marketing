@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,7 +14,7 @@ import (
 )
 
 // SchemaVersion is the current DDL version recorded in app_meta.
-const SchemaVersion = "24"
+const SchemaVersion = "28"
 
 // schema is the whole Tranche-1 data model: 9 entities (§6).
 // No order/payment/delivery/personal-data tables: this system never takes orders.
@@ -249,6 +250,18 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateToV24(db); err != nil {
+		return err
+	}
+	if err := migrateToV25(db); err != nil {
+		return err
+	}
+	if err := migrateToV26(db); err != nil {
+		return err
+	}
+	if err := migrateToV27(db); err != nil {
+		return err
+	}
+	if err := migrateToV28(db); err != nil {
 		return err
 	}
 	if _, err := db.Exec(
@@ -755,6 +768,296 @@ func migrateToV24(db *sql.DB) error {
 		if _, err := db.Exec(`ALTER TABLE products ADD COLUMN industry TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("migrate v24: %w", err)
 		}
+	}
+	return nil
+}
+
+// migrateToV25 backfills legacy rows for the W19 cutover. Every statement
+// is conditional, so re-runs are no-ops and fresh DBs pass through
+// untouched:
+//   - products with a source URL but no input_kind become url works;
+//   - superseded rejected review originals (rejected decision + a newer
+//     live revision, the W6 disposal rule) move to archived;
+//   - AI agent accounts without any team join the default team;
+//   - stale internal-ops notices (lease/job machinery, session states the
+//     account already recovered from) are marked read;
+//   - retired A/B/C lane agents are disabled; the operator registers the
+//     lane-T team executor via scripts/install-workers.ps1, which also
+//     removes the retired registrations, runners, and startup links;
+//   - brief-less works with approved/queued posts gain the minimal brief
+//     the W4 assigner needs, but only for channels that name a registry
+//     platform (today: instagram); anything unmappable keeps waiting
+//     visibly instead of guessing a platform.
+func migrateToV25(db *sql.DB) error {
+	now := nowUTC()
+	if _, err := db.Exec(`UPDATE products SET input_kind='url', updated_at=?
+		WHERE input_kind='' AND source_url<>''`, now); err != nil {
+		return fmt.Errorf("migrate v25 input_kind: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE contents SET status='archived', updated_at=?
+		WHERE status='review'
+		AND EXISTS (SELECT 1 FROM review_decisions d
+			WHERE d.content_id=contents.id AND d.decision='rejected')
+		AND EXISTS (SELECT 1 FROM contents k
+			WHERE k.id<>contents.id
+			AND (k.revision_of=contents.id
+				OR (contents.revision_root_id<>0 AND k.revision_root_id=contents.revision_root_id))
+			AND k.status IN ('approved','queued','published'))`, now); err != nil {
+		return fmt.Errorf("migrate v25 archive: %w", err)
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO team_members(team_id,account_id,fixed_role)
+		SELECT (SELECT id FROM teams WHERE is_default=1), a.id, ''
+		FROM channel_accounts a
+		WHERE a.kind='agent_service'
+		AND NOT EXISTS (SELECT 1 FROM team_members m WHERE m.account_id=a.id)`); err != nil {
+		return fmt.Errorf("migrate v25 team: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE notifications SET read_at=?
+		WHERE read_at='' AND kind IN ('lease_expired','job_stuck')`, now); err != nil {
+		return fmt.Errorf("migrate v25 notices: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE notifications SET read_at=? WHERE read_at=''
+		AND kind IN ('session_expired','session_limited') AND ref_type='account'
+		AND EXISTS (SELECT 1 FROM channel_accounts a
+			WHERE a.id=notifications.ref_id AND a.session_state='connected')`, now); err != nil {
+		return fmt.Errorf("migrate v25 sessions: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE agents SET enabled=0, updated_at=?
+		WHERE lane IN ('A','B','C') AND enabled<>0`, now); err != nil {
+		return fmt.Errorf("migrate v25 agents: %w", err)
+	}
+	return migrateV25Briefs(db)
+}
+
+// migrateV25Briefs gives brief-less legacy works the minimal brief the W4
+// assigner resolves: one channel entry per distinct approved/queued post
+// channel, but only when the channel names a channel_platforms registry
+// key. Posts on other channels stay visibly unassigned ("platform undecided")
+// instead of inheriting a guessed platform. Idempotent: works that already
+// carry a brief are never touched.
+func migrateV25Briefs(db *sql.DB) error {
+	keys := map[string]bool{}
+	rows, err := db.Query(`SELECT key FROM channel_platforms`)
+	if err != nil {
+		return fmt.Errorf("migrate v25 registry: %w", err)
+	}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			rows.Close()
+			return fmt.Errorf("migrate v25 registry: %w", err)
+		}
+		keys[k] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("migrate v25 registry: %w", err)
+	}
+	works, err := db.Query(`SELECT id FROM products WHERE TRIM(COALESCE(brief_json,''))=''`)
+	if err != nil {
+		return fmt.Errorf("migrate v25 works: %w", err)
+	}
+	var ids []int64
+	for works.Next() {
+		var id int64
+		if err := works.Scan(&id); err != nil {
+			works.Close()
+			return fmt.Errorf("migrate v25 works: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	works.Close()
+	if err := works.Err(); err != nil {
+		return fmt.Errorf("migrate v25 works: %w", err)
+	}
+	for _, id := range ids {
+		channels, err := db.Query(`SELECT DISTINCT channel FROM contents
+			WHERE product_id=? AND status IN ('approved','queued') AND channel<>''`, id)
+		if err != nil {
+			return fmt.Errorf("migrate v25 channels: %w", err)
+		}
+		var entries []map[string]any
+		for channels.Next() {
+			var ch string
+			if err := channels.Scan(&ch); err != nil {
+				channels.Close()
+				return fmt.Errorf("migrate v25 channels: %w", err)
+			}
+			if keys[ch] {
+				entries = append(entries, map[string]any{"channel": ch, "platform": ch, "versions": 1})
+			}
+		}
+		channels.Close()
+		if err := channels.Err(); err != nil {
+			return fmt.Errorf("migrate v25 channels: %w", err)
+		}
+		if len(entries) == 0 {
+			continue
+		}
+		brief, err := json.Marshal(map[string]any{"channels": entries})
+		if err != nil {
+			return fmt.Errorf("migrate v25 brief: %w", err)
+		}
+		if _, err := db.Exec(`UPDATE products SET brief_json=?, updated_at=? WHERE id=?`,
+			string(brief), nowUTC(), id); err != nil {
+			return fmt.Errorf("migrate v25 brief: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToV26 grows the media library for W14 generation tracking: the
+// post link, thumbnail + dimensions, the prompt and AI account behind a
+// generated file, and the rights source (W18). Legacy rows keep NULL/empty
+// values (untracked upload, never excluded). Idempotent.
+func migrateToV26(db *sql.DB) error {
+	for _, stmt := range []struct{ table, col, ddl string }{
+		{"media", "content_id", `ALTER TABLE media ADD COLUMN content_id INTEGER NULL REFERENCES contents(id) ON DELETE SET NULL`},
+		{"media", "thumb_path", `ALTER TABLE media ADD COLUMN thumb_path TEXT NOT NULL DEFAULT ''`},
+		{"media", "width", `ALTER TABLE media ADD COLUMN width INTEGER NOT NULL DEFAULT 0`},
+		{"media", "height", `ALTER TABLE media ADD COLUMN height INTEGER NOT NULL DEFAULT 0`},
+		{"media", "duration_sec", `ALTER TABLE media ADD COLUMN duration_sec REAL NOT NULL DEFAULT 0`},
+		{"media", "prompt", `ALTER TABLE media ADD COLUMN prompt TEXT NOT NULL DEFAULT ''`},
+		{"media", "ai_account_id", `ALTER TABLE media ADD COLUMN ai_account_id INTEGER NULL REFERENCES channel_accounts(id) ON DELETE SET NULL`},
+		{"media", "source", `ALTER TABLE media ADD COLUMN source TEXT NOT NULL DEFAULT ''`},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, stmt.table, stmt.col).Scan(&n); err != nil {
+			return fmt.Errorf("migrate v26 check: %w", err)
+		}
+		if n == 0 {
+			if _, err := db.Exec(stmt.ddl); err != nil {
+				return fmt.Errorf("migrate v26: %w", err)
+			}
+		}
+	}
+	for _, ddl := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_media_content ON media(content_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_media_sha ON media(sha256)`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("migrate v26 idx: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToV27 adds W7 performance collection: public metric columns on
+// metrics (views/likes/comments, NULL = not collected) plus an origin tag
+// (blank for legacy rows, collect:<window> for W7 rows), and the
+// collect_windows ledger that keeps the 24h/72h/7d sweep idempotent.
+func migrateToV27(db *sql.DB) error {
+	for _, stmt := range []struct{ table, col, ddl string }{
+		{"metrics", "views", `ALTER TABLE metrics ADD COLUMN views INTEGER NULL`},
+		{"metrics", "likes", `ALTER TABLE metrics ADD COLUMN likes INTEGER NULL`},
+		{"metrics", "comments", `ALTER TABLE metrics ADD COLUMN comments INTEGER NULL`},
+		{"metrics", "origin", `ALTER TABLE metrics ADD COLUMN origin TEXT NOT NULL DEFAULT ''`},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, stmt.table, stmt.col).Scan(&n); err != nil {
+			return fmt.Errorf("migrate v27 check: %w", err)
+		}
+		if n == 0 {
+			if _, err := db.Exec(stmt.ddl); err != nil {
+				return fmt.Errorf("migrate v27: %w", err)
+			}
+		}
+	}
+	for _, ddl := range []string{
+		`CREATE TABLE IF NOT EXISTS collect_windows (
+			content_id INTEGER NOT NULL REFERENCES contents(id) ON DELETE CASCADE,
+			window TEXT NOT NULL,
+			account TEXT NOT NULL DEFAULT '',
+			job_id INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			UNIQUE (content_id, window, account)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_collect_windows_content ON collect_windows(content_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_metrics_content ON metrics(content_id)`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("migrate v27 ddl: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToV28 adds the W20 operations layer: the chat_messages thread
+// key (per-work AI transcripts), the operator audit log, and the
+// disk_low notification kind (same rebuild pattern as v21).
+func migrateToV28(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('chat_messages') WHERE name='thread_key'`).Scan(&n); err != nil {
+		return fmt.Errorf("migrate v28 check: %w", err)
+	}
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE chat_messages ADD COLUMN thread_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate v28 thread_key: %w", err)
+		}
+	}
+	for _, ddl := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_chat_thread ON chat_messages(thread_key, id)`,
+		`CREATE TABLE IF NOT EXISTS audit_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			actor TEXT NOT NULL DEFAULT '',
+			action TEXT NOT NULL DEFAULT '',
+			ref_type TEXT NOT NULL DEFAULT '',
+			ref_id INTEGER NOT NULL DEFAULT 0,
+			work_id INTEGER NOT NULL DEFAULT 0,
+			detail TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_work ON audit_log(work_id, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_ref ON audit_log(ref_type, ref_id)`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("migrate v28 ddl: %w", err)
+		}
+	}
+	return migrateV28DiskLow(db)
+}
+
+// migrateV28DiskLow widens the notifications kind CHECK with 'disk_low'.
+// No FK points at notifications: plain rebuild inside one transaction.
+func migrateV28DiskLow(db *sql.DB) error {
+	var ddl string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='notifications'`).Scan(&ddl); err != nil {
+		return fmt.Errorf("migrate v28 inspect: %w", err)
+	}
+	if strings.Contains(ddl, "'disk_low'") {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("migrate v28 begin: %w", err)
+	}
+	defer tx.Rollback()
+	cols := `id,kind,severity,ref_type,ref_id,dedup_key,message,created_at,read_at`
+	stmts := []string{
+		`CREATE TABLE notifications_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			kind TEXT NOT NULL CHECK (kind IN ('job_failed','job_stuck','lease_expired','session_expired','session_limited','publish_failed','backup_failed','overdue_hold','review_human','team_handoff','disk_low')),
+			severity TEXT NOT NULL DEFAULT 'warn' CHECK (severity IN ('info','warn','error')),
+			ref_type TEXT NOT NULL DEFAULT '',
+			ref_id INTEGER NOT NULL DEFAULT 0,
+			dedup_key TEXT NOT NULL,
+			message TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			read_at TEXT NOT NULL DEFAULT ''
+		)`,
+		`INSERT INTO notifications_new (` + cols + `) SELECT ` + cols + ` FROM notifications`,
+		`DROP TABLE notifications`,
+		`ALTER TABLE notifications_new RENAME TO notifications`,
+		`CREATE UNIQUE INDEX idx_notifications_dedup_unread ON notifications(dedup_key) WHERE read_at=''`,
+		`CREATE INDEX idx_notifications_read ON notifications(read_at, id)`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("migrate v28 rebuild: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v28 commit: %w", err)
 	}
 	return nil
 }

@@ -1,8 +1,8 @@
 // SOMUN service worker: shell cached, data never cached (D33).
-// /api/ and /uploads/ are network-only: no operating data stays in the
-// browser cache, and offline shows an error instead of stale data.
+// /api/ is network-only: no operating data stays in the browser cache,
+// and offline shows an error instead of stale data.
 // Bump CACHE on each release that changes cached assets.
-const CACHE = 'somun-v3';
+const CACHE = 'somun-v4';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -22,7 +22,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const path = new URL(event.request.url).pathname;
-  if (path.startsWith('/api/') || path.startsWith('/uploads/')) return;
+  if (path.startsWith('/api/')) return;
   event.respondWith(
     fetch(event.request).then((response) => {
       const copy = response.clone();

@@ -484,7 +484,7 @@ func (s *Store) TeamStatsFor(businesses, owned []string) (*TeamStats, error) {
 		return nil, err
 	}
 	st.TodayDone = st.TodayPublished + st.TodayFailed
-	vq := `SELECT COALESCE(SUM(m.exposures),0) FROM metrics m JOIN contents c ON c.id=m.content_id
+	vq := `SELECT COALESCE(SUM(m.exposures),0)+COALESCE(SUM(m.views),0) FROM metrics m JOIN contents c ON c.id=m.content_id
 		JOIN products p ON p.id=c.product_id WHERE m.updated_at>=? AND ` + cond
 	if err := s.ro.QueryRow(vq, append([]any{weekAgo}, args...)...).Scan(&st.WeekViews); err != nil {
 		return nil, err

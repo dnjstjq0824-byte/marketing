@@ -163,7 +163,7 @@ func (s *Service) Send(accountID int64, message, thread string, attachments ...s
 	if err != nil {
 		return SendResult{}, err
 	}
-	userMsg, err := s.store.AppendChatMessage(accountID, "user", text)
+	userMsg, err := s.store.AppendChatMessageThread(accountID, "user", text, thread)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -194,7 +194,7 @@ func (s *Service) deliver(accountID, userMsgID int64, name, platform, text, thre
 	defer mu.Unlock()
 	reply, err := s.runAdapter(name, platform, text, thread, files)
 	if err == nil {
-		_, err = s.store.AppendChatMessage(accountID, "assistant", reply)
+		_, err = s.store.AppendChatMessageThread(accountID, "assistant", reply, thread)
 	}
 	if err == nil {
 		// Mirror write is best-effort: observability must not fail a chat.

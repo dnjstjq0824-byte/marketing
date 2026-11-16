@@ -21,6 +21,9 @@ func seedOverview(t *testing.T, st *Store) {
 	if _, err := st.AddImage(pa.ID, "a1.jpg", 0); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.CreateMedia("upload", "lib/a1.jpg", 10, "image/jpeg", "sha-ov"); err != nil {
+		t.Fatal(err)
+	}
 	pb, err := st.CreateProduct("https://shop.test/b", "A", 0, "LUNO")
 	if err != nil {
 		t.Fatal(err)
@@ -137,8 +140,11 @@ func TestOverview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(media) != 1 || media[0].Kind != "upload" || media[0].URL != "/uploads/a1.jpg" {
+	if len(media) != 1 || media[0].Kind != "upload" || media[0].URL != "/api/media/1/file" {
 		t.Fatalf("media = %+v", media)
+	}
+	if media[0].Thumb != "/api/media/1/thumb" {
+		t.Fatalf("thumb = %+v", media)
 	}
 
 	failed, err := st.OverviewFailedPublishes(5)

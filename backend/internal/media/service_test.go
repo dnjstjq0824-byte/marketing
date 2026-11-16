@@ -142,14 +142,14 @@ func TestLibraryCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err := svc.List("", 0, "", 1, 48)
+	items, err := svc.List("", 0, "", "", "", 1, 48)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(items) != 1 || items[0].ID != m.ID {
 		t.Fatalf("list = %+v", items)
 	}
-	items, err = svc.List("gen_image", 0, "", 1, 48)
+	items, err = svc.List("gen_image", 0, "", "", "", 1, 48)
 	if err != nil {
 		t.Fatal(err)
 	}

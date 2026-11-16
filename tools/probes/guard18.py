@@ -1,4 +1,5 @@
-"""W18 safety-net probe: similar/duplicate, smuggled links (1, 5 + 7).
+"""W18 safety-net probe: similar/duplicate, smuggled links, banned
+expressions, remote image embeds (1, 2, 4, 5 + 7).
 
 Usage (fresh DATA_DIR, default dev secrets):
     SOMUN_URL=http://127.0.0.1:18087 python tools/probes/guard18.py
@@ -13,6 +14,10 @@ Plan:
   3. run 2, near-identical body: approve -> review (similar), regen job
      with feedback, decision reason + work-detail lastNote carry it
   4. run 3, smuggled http://evil.example link: approve -> review
+  5. run 4, industry banned expression: topic auto-detects cosmetics,
+     draft with the industry word -> review, reason names the word
+  6. run 5, allowlisted-host remote image embed: approve -> review,
+     reason names the image URL (W18-4)
 """
 import json
 import os
@@ -95,18 +100,20 @@ def upload_image(op, tag):
     return data["id"]
 
 
-def run_work(op, wk, body, tag):
+def run_work(op, wk, body, tag, topic=None, team="", utag=None):
     code, before = op("GET", "/api/jobs")
     seen = {j["id"] for j in before.get("jobs", [])}
-    mid = upload_image(op, tag)
+    mid = upload_image(op, utag or tag)
     code, data = op("POST", "/api/works", {
-        "inputs": [{"kind": "topic", "text": "spring nails %s" % tag},
+        "inputs": [{"kind": "topic",
+                    "text": topic if topic is not None
+                    else "spring nails %s" % tag},
                    {"kind": "image", "mediaIds": [mid]}],
         "channels": [{"channel": "instagram", "platform": "instagram",
                       "versions": 1}],
         "business": "G18", "affiliate": {"isSponsored": False,
                                          "disclosure": ""},
-        "team": ""})
+        "team": team})
     check(tag + "-create", code in (200, 201), str((code, data)))
     pid = data.get("id") or (data.get("work") or {}).get("id")
     drive(wk, "analyze", {"product_name": "g", "price_summary": "",
@@ -139,6 +146,33 @@ def run_work(op, wk, body, tag):
 # Guard reason markers (server messages are Korean; match ASCII-safe parts).
 SIMILAR_MARK = "\uc720\uc0ac\ubb38\uc11c"  # similar-document
 LINK_MARK = "evil.example"
+BANNED_MARK = "기미가 사라진다"  # cosmetics wordlist hit
+IMAGE_MARK = "외부 이미지"  # remote-image
+BRAND_LINK = "https://shop.example/brand"
+BRAND_IMG = BRAND_LINK + "/i.png"
+
+
+def drain_regen(op, wk, body, tag):
+    """Consume one pending generate-regen + its review with a clean body.
+
+    Keeps later runs' claims from being stolen by leftover queue entries.
+    """
+    code, got = wk("GET", "/api/worker/jobs/next?type=generate")
+    check(tag + "-drain-claim", bool(got.get("job")), str(got)[:160])
+    code, _ = wk("POST", "/api/worker/jobs/%d/result" % got["job"]["id"],
+                 {"contents": [{"channel": "instagram", "title": "rewrite",
+                                 "body": body,
+                                 "virtual_persona": False}]})
+    check(tag + "-drain-generate", code == 200, str(code))
+    code, got = wk("GET", "/api/worker/jobs/next?type=review")
+    check(tag + "-drain-review-claim", bool(got.get("job")), str(got)[:160])
+    rids = (got["job"].get("payload") or {}).get("content_ids") or []
+    code, _ = wk("POST", "/api/worker/jobs/%d/result" % got["job"]["id"],
+                 {"decisions": [{"content_id": i, "approve": True,
+                                 "reason": "rewrite ok", "account": "",
+                                 "platform": "", "scheduledAt": ""}
+                                for i in rids]})
+    check(tag + "-drain-review", code == 200, str(code))
 
 
 def main():
@@ -208,23 +242,8 @@ def main():
 
     # Drain run 2's regen job with a dissimilar rewrite so run 3's claims
     # are not stolen by leftover queue entries.
-    code, got = wk("GET", "/api/worker/jobs/next?type=generate")
-    check("drain-claim", bool(got.get("job")), str(got)[:160])
-    code, _ = wk("POST", "/api/worker/jobs/%d/result" % got["job"]["id"],
-                 {"contents": [{"channel": "instagram", "title": "rewrite",
-                                 "body": "Night skincare order: cleanse, "
-                                         "tone, serum, cream.",
-                                 "virtual_persona": False}]})
-    check("drain-generate", code == 200, str(code))
-    code, got = wk("GET", "/api/worker/jobs/next?type=review")
-    check("drain-review-claim", bool(got.get("job")), str(got)[:160])
-    rids = (got["job"].get("payload") or {}).get("content_ids") or []
-    code, _ = wk("POST", "/api/worker/jobs/%d/result" % got["job"]["id"],
-                 {"decisions": [{"content_id": i, "approve": True,
-                                 "reason": "rewrite ok", "account": "",
-                                 "platform": "", "scheduledAt": ""}
-                                for i in rids]})
-    check("drain-review", code == 200, str(code))
+    drain_regen(op, wk, "Night skincare order: cleanse, tone, serum, cream.",
+                "similar")
 
     # Run 3: smuggled outside link must bounce the same way.
     _, cid3, _ = run_work(op, wk,
@@ -236,6 +255,54 @@ def main():
     code, data = op("GET", "/api/contents/%d/reviews" % cid3)
     reasons = [r.get("reason", "") for r in data.get("reviews", [])]
     check("link-reason", any(LINK_MARK in r for r in reasons),
+          str(reasons)[:200])
+
+    # Run 3's regen must drain before run 4's claims.
+    drain_regen(op, wk, "Morning run route: park loop, river path.", "link")
+
+    # Run 4 (W18-2): the topic auto-detects the cosmetics industry, and a
+    # draft with the industry word bounces with the word in the reason.
+    pid4, cid4, _ = run_work(op, wk, BODY + " 기미가 사라진다.",
+                             "banned", topic="spring nails 화장품크림",
+                             utag="banned")
+    code, data = op("GET", "/api/works/%d" % pid4)
+    check("banned-industry",
+          code == 200
+          and (data.get("product") or {}).get("industry") == "cosmetics",
+          str(data)[:200])
+    code, data = op("GET", "/api/contents/%d" % cid4)
+    check("banned-review", code == 200 and data.get("status") == "review",
+          str(data)[:160])
+    code, data = op("GET", "/api/contents/%d/reviews" % cid4)
+    reasons = [r.get("reason", "") for r in data.get("reviews", [])]
+    check("banned-reason", any(BANNED_MARK in r for r in reasons),
+          str(reasons)[:200])
+    drain_regen(op, wk, "Weekend camping list: tent, stove, lamp.", "banned")
+
+    # Run 5 (W18-4): even an allowlisted-host image embed blocks. The brand
+    # buy link lets the URL past the outside-link gate, so the remote-image
+    # gate is the one that must fire.
+    code, data = op("GET", "/api/teams")
+    teams = data.get("items") or []
+    team_id = 0
+    for t in teams:
+        if (t.get("team") or {}).get("isDefault"):
+            team_id = (t.get("team") or {}).get("id")
+    if not team_id and teams:
+        team_id = (teams[0].get("team") or {}).get("id")
+    check("brand-team", bool(team_id), str(data)[:160])
+    code, _ = op("PUT", "/api/teams/%d/brand" % team_id,
+                 {"buyLink": BRAND_LINK})
+    check("brand-link", code == 200, str(code))
+    _, cid5, _ = run_work(op, wk, BODY + " ![a](%s)" % BRAND_IMG,
+                          "remoteimg")
+    code, data = op("GET", "/api/contents/%d" % cid5)
+    check("image-review", code == 200 and data.get("status") == "review",
+          str(data)[:160])
+    code, data = op("GET", "/api/contents/%d/reviews" % cid5)
+    reasons = [r.get("reason", "") for r in data.get("reviews", [])]
+    check("image-reason",
+          any(IMAGE_MARK in r and BRAND_IMG in r for r in reasons),
           str(reasons)[:200])
     print("GUARD18 PASS", flush=True)
 

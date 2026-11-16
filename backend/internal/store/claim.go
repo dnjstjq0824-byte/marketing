@@ -88,6 +88,12 @@ func (s *Store) ClaimRoutedJob(agent *Agent, types []string, leaseSec int) (*Job
 	// before routing (outside the claim tx: restamp + notice are their
 	// own idempotent writes).
 	s.sweepHandoffs(time.Now())
+	// W14/W16 paid-first flag, read before the tx: the claim connection
+	// is the pool's only writer, so nothing inside may touch s.db.
+	preferPaid := true
+	if settings, serr := GetAutomationSettings(s.db); serr == nil {
+		preferPaid = settings.PreferPaidMedia
+	}
 	s.claimMu.Lock()
 	defer s.claimMu.Unlock()
 	ctx := context.Background()
@@ -143,12 +149,23 @@ func (s *Store) ClaimRoutedJob(agent *Agent, types []string, leaseSec int) (*Job
 		if j.Type == "publish" && !s.publishFitsAgent(conn, j, agent) {
 			continue
 		}
+		// W7: collect rounds ride the posting account's session (the
+		// operator stats screen needs it), so the same account gate
+		// as publish applies.
+		if j.Type == "collect" && !s.publishFitsAgent(conn, j, agent) {
+			continue
+		}
 		// W6: a writer never reviews its own drafts.
 		if j.Type == "review" && !s.reviewFitsAgent(conn, j, agent) {
 			continue
 		}
 		// W15-5: AI lanes run only on chat-linked accounts.
 		if aiWorkTypes[j.Type] && !s.aiFitsAgent(agent) {
+			continue
+		}
+		// W14/W16: media jobs need the matching generation capability;
+		// paid plans get first shot while the grace window holds.
+		if j.Type == "media" && !s.mediaFitsAgent(j, agent, preferPaid) {
 			continue
 		}
 		// W16: jobs stay inside their team (publish claims bypass:
@@ -252,7 +269,52 @@ func intsToAny(in []int64) []any {
 }
 
 // aiWorkTypes are the AI lanes gated by chat-link state (W15-5).
-var aiWorkTypes = map[string]bool{"analyze": true, "strategy": true, "generate": true, "review": true, "research": true}
+var aiWorkTypes = map[string]bool{"analyze": true, "strategy": true, "generate": true, "review": true, "research": true, "media": true}
+
+// MediaPaidGraceMin is the head start a paid capable account gets on AI
+// media jobs before free-tier accounts may claim them (W16). Local-route
+// jobs and teams without a paid capable account skip the wait.
+const MediaPaidGraceMin = 15
+
+// mediaFitsAgent gates one media claim (W14/W16). AI-route jobs need the
+// payload's required capability on the agent's linked account; local-route
+// jobs run anywhere. Unparseable legacy payloads stay open; unlinked
+// agents may only take local work. It runs inside the claim tx, so it
+// must not touch s.db (reads go to the preloaded preferPaid flag).
+func (s *Store) mediaFitsAgent(j *Job, agent *Agent, preferPaid bool) bool {
+	var payload struct {
+		Route     string `json:"route"`
+		Required  string `json:"required_cap"`
+		PaidFirst bool   `json:"paid_first"`
+	}
+	if err := json.Unmarshal([]byte(j.Payload), &payload); err != nil {
+		return true // legacy payload: allow, the worker picks the route
+	}
+	if payload.Route == "" {
+		payload.Route = "ai"
+	}
+	if payload.Route == "local" {
+		return true
+	}
+	if agent.AccountID == nil {
+		return false // AI generation needs a linked session account
+	}
+	row, err := s.GetAccountRow(*agent.AccountID)
+	if err != nil {
+		return false
+	}
+	if payload.Required != "" && !AccountHasCap(row.Capabilities, payload.Required) {
+		return false
+	}
+	if payload.PaidFirst && !AccountPaidTier(row.PlanTier) && preferPaid {
+		if born, err := time.Parse(time.RFC3339, j.CreatedAt); err == nil {
+			if time.Since(born) < MediaPaidGraceMin*time.Minute {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 // aiFitsAgent reports whether an agent's linked AI account is chat-linked.
 // Unlinked agents, channel accounts, and unknown platforms pass; only an
@@ -401,6 +463,29 @@ func (s *Store) HasActivePublishJob(contentID int64, account string) (bool, erro
 		}
 	}
 	return false, rows.Err()
+}
+
+// MarkJobPendingRetry returns a pending/claimed job to pending for one W9-5
+// automatic retry: attempts increments, claim fields clear, and the reason
+// stays on the row as the retry record. Other states get ErrNotClaimed.
+func (s *Store) MarkJobPendingRetry(id int64, reason string) (*Job, error) {
+	res, err := s.db.Exec(`UPDATE jobs SET status='pending',worker_name='',agent_id=0,claimed_at='',finished_at='',lease_until='',attempts=attempts+1,error=?
+		WHERE id=? AND status IN ('pending','claimed')`, reason, id)
+	if err != nil {
+		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		cur, gerr := s.GetJob(id)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if cur.Status == "done" || cur.Status == "failed" {
+			return nil, ErrAlreadyDone
+		}
+		return nil, ErrNotClaimed
+	}
+	return s.GetJob(id)
 }
 
 // RequeueJob returns a failed job to pending with attempts reset (the error

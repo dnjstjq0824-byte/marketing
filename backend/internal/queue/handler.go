@@ -286,6 +286,30 @@ func (h *Handler) Result(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"job": toView(done)})
+	case JobMedia:
+		var res MediaResult
+		if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		done, err := h.svc.SubmitMedia(id, res)
+		if err != nil {
+			h.writeSubmitError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"job": toView(done)})
+	case JobCollect:
+		var res CollectResult
+		if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		done, err := h.svc.SubmitCollect(id, res)
+		if err != nil {
+			h.writeSubmitError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"job": toView(done)})
 	default:
 		writeError(w, http.StatusBadRequest, "unknown job type")
 	}
@@ -299,10 +323,12 @@ func (h *Handler) writeSubmitError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "job must be claimed before result registration")
 	case errors.Is(err, ErrEmptyContents), errors.Is(err, ErrNoValidItems), errors.Is(err, ErrEmptyAngle),
 		errors.Is(err, ErrEmptyDecisions), errors.Is(err, ErrBadDecision),
-		errors.Is(err, ErrNoURL), errors.Is(err, ErrNotQueued):
+		errors.Is(err, ErrNoURL), errors.Is(err, ErrNotQueued), errors.Is(err, ErrBadMediaItem),
+		errors.Is(err, ErrBadCollect):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrJobNotAnalyze), errors.Is(err, ErrJobNotStrategy), errors.Is(err, ErrJobNotGenerate),
-		errors.Is(err, ErrJobNotReview), errors.Is(err, ErrJobNotPublish):
+		errors.Is(err, ErrJobNotReview), errors.Is(err, ErrJobNotPublish), errors.Is(err, ErrJobNotMedia),
+		errors.Is(err, ErrJobNotCollect):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "job not found")

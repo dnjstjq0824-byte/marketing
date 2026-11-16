@@ -3,11 +3,13 @@ package works
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 
+	"somun/internal/auth"
 	"somun/internal/store"
 )
 
@@ -95,6 +97,15 @@ func (h *Handler) setHeld(w http.ResponseWriter, r *http.Request, held bool) {
 		writeError(w, http.StatusInternalServerError, "cannot update work")
 		return
 	}
+	action := store.AuditWorkResume
+	verb := "다시 진행"
+	if held {
+		action = store.AuditWorkPause
+		verb = "멈추기"
+	}
+	// Audit is best-effort: the hold itself already landed.
+	_, _ = h.store.AppendAudit(auth.OperatorName(r.Context()), action, "work", id, id,
+		fmt.Sprintf("%s (게시물 %d건)", verb, n))
 	writeJSON(w, http.StatusOK, map[string]any{"held": held, "count": n})
 }
 
@@ -104,6 +115,13 @@ func (h *Handler) DeleteWork(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid work id")
 		return
+	}
+	name := ""
+	if p, err := h.store.GetProduct(id); err == nil {
+		name = p.Name
+		if name == "" {
+			name = p.SourceURL
+		}
 	}
 	paths, err := h.svc.Delete(id)
 	if err != nil {
@@ -117,6 +135,11 @@ func (h *Handler) DeleteWork(w http.ResponseWriter, r *http.Request) {
 	for _, p := range paths {
 		os.Remove(filepath.Join(h.uploadDir, p))
 	}
+	detail := "작업 삭제"
+	if name != "" {
+		detail = "작업 삭제: " + name
+	}
+	_, _ = h.store.AppendAudit(auth.OperatorName(r.Context()), store.AuditWorkDelete, "work", id, id, detail)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
 }
 
@@ -147,6 +170,13 @@ func (h *Handler) HoldPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "cannot update post")
 		return
 	}
+	action := store.AuditPostResume
+	verb := "게시물 다시 진행"
+	if req.Held {
+		action = store.AuditPostHold
+		verb = "게시물 멈추기"
+	}
+	_, _ = h.store.AppendAudit(auth.OperatorName(r.Context()), action, "post", postID, id, verb)
 	writeJSON(w, http.StatusOK, map[string]any{"held": req.Held})
 }
 
@@ -190,6 +220,25 @@ func (h *Handler) AILog(w http.ResponseWriter, r *http.Request) {
 	items, err := h.store.WorkAILog(id, 100)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot load log")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// Audit handles GET /api/works/{id}/audit: one work's human history.
+func (h *Handler) Audit(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid work id")
+		return
+	}
+	if _, err := h.store.GetProduct(id); err != nil {
+		writeError(w, http.StatusNotFound, "work not found")
+		return
+	}
+	items, err := h.store.ListAuditByWork(id, 100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load audit")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})

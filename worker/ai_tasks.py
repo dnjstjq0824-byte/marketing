@@ -107,6 +107,30 @@ def brand_block(payload):
     return "\n브랜드:\n" + "\n".join(lines)
 
 
+def past_top_block(payload):
+    """Render the same-business top-3 performance lines (W7 feedback).
+
+    "" when nothing was collected yet; the strategy template always
+    carries the slot so a missing block reads as silence, not an error.
+    """
+    items = payload.get("past_top") or []
+    if not isinstance(items, list):
+        return ""
+    lines = []
+    for item in items[:3]:
+        if not isinstance(item, dict):
+            continue
+        lines.append("- [%s] %s: 조회 %s, 공감 %s, 댓글 %s" % (
+            item.get("channel") or "?",
+            (item.get("title") or "(제목 없음)")[:60],
+            item.get("views", "?"), item.get("likes", "?"),
+            item.get("comments", "?")))
+    if not lines:
+        return ""
+    return ("\n최근 성과 상위(같은 사업장, 전략에 반영):\n" + "\n".join(lines) +
+            "\n잘 먹힌 채널·소재를 새 전략에 살리고, 실패 요인은 피한다.")
+
+
 # PROMPT_MAX_RUNES caps prompts at the server's chat limit (W2-3).
 PROMPT_MAX_RUNES = 4000
 
@@ -177,16 +201,17 @@ def build_prompt(job_type, payload):
             "JSON_RULE": _JSON_RULE, "FIELDS": ",".join(STRATEGY_FIELDS),
             "product_name": payload.get("product_name", ""),
             "detail_core": payload.get("detail_core", ""),
-            "brand": brand_block(payload)})
+            "brand": brand_block(payload),
+            "past_top": past_top_block(payload)})
         if rendered:
             return rendered
         return ("판독 기반 전략 수립. 아래 판독을 읽고 JSON으로 답한다. %s\n"
                 "키: %s. 모든 값은 문자열. channels는 쉼표 문자열"
-                "(예: instagram,blog).\nproduct_name: %s\ndetail_core: %s%s"
+                "(예: instagram,blog).\nproduct_name: %s\ndetail_core: %s%s%s"
                 % (_JSON_RULE, ",".join(STRATEGY_FIELDS),
                    payload.get("product_name", ""),
                    payload.get("detail_core", ""),
-                   brand_block(payload)))
+                   brand_block(payload), past_top_block(payload)))
     if job_type == "generate":
         revision = ""
         if payload.get("revision_of"):
@@ -256,9 +281,23 @@ def build_prompt(job_type, payload):
         for item in payload.get("contents", []) or []:
             if not isinstance(item, dict):
                 continue
-            drafts.append("[%s/%s] %s\n%s" % (
+            draft = "[%s/%s] %s\n%s" % (
                 item.get("content_id", "?"), item.get("channel", "?"),
-                item.get("title", ""), item.get("body", "")))
+                item.get("title", ""), item.get("body", ""))
+            planned = (item.get("media_spec", "") or "").strip()
+            if planned:
+                draft += "\n예정 미디어: %s" % planned[:500]
+            linked = item.get("media") or []
+            if linked:
+                parts = []
+                for m in linked:
+                    if isinstance(m, dict):
+                        parts.append("#%s %s(%s)" % (
+                            m.get("media_id", "?"), m.get("kind", "?"),
+                            (m.get("prompt", "") or "")[:120]))
+                if parts:
+                    draft += "\n연결 미디어: " + "; ".join(parts)
+            drafts.append(draft)
         facts = payload.get("facts", {}) or {}
         fact_lines = []
         for key in ("product_name", "price_summary", "detail_core",
@@ -269,6 +308,8 @@ def build_prompt(job_type, payload):
         criteria = load_review_criteria()
         if brand:
             criteria += "\n브랜드 말투·금칙어 준수 여부도 판정한다."
+        criteria += ("\n연결 미디어가 있으면 함께 판정한다: 생성 이미지가 상품 실물과 "
+                     "다르게 그려졌으면 반려한다.")
         return ("초안 검수. 아래 초안을 읽고 판정하고 JSON으로 답한다. %s\n"
                 "형식: {\"decisions\": [{\"content_id\": ID, \"approve\": "
                 "true/false, \"reason\": 판정 사유 한 줄(필수, 빈 문자열 금지)}]}.\n"
@@ -302,6 +343,107 @@ def _string_fields(data, fields):
             raise ValueError("field %s must be a string" % key)
         out[key] = value
     return out
+
+
+MEDIA_MAX_ITEMS = 4
+MEDIA_MAX_CARDS = 6
+MEDIA_RATIOS = ("1:1", "4:5", "3:4", "9:16", "16:9")
+MEDIA_KEEP_PRODUCT = "상품 본연의 모습 유지, 배경·구도만 변경"
+
+
+def spec_lines(spec, limit=8):
+    """Split a media shopping list into clean lines (max `limit`)."""
+    out = []
+    for raw in (spec or "").replace("\r", "\n").split("\n"):
+        line = re.sub(r"\s+", " ", raw).strip(" -•·\t")
+        if line:
+            out.append(line)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def spec_count(spec, default, maximum):
+    """Read a count (N장/N개/N컷/N페이지/digits) from free text."""
+    found = re.findall(r"(\d+)\s*(?:장|개|컷|페이지|page|images?)?", spec or "")
+    for token in found:
+        try:
+            n = int(token)
+        except ValueError:
+            continue
+        if 1 <= n <= maximum:
+            return n
+    return default
+
+
+def spec_ratio(spec, default):
+    """Read an aspect hint (9:16 etc.) from free text."""
+    for ratio in MEDIA_RATIOS:
+        if ratio in (spec or ""):
+            return ratio
+    return default
+
+
+def spec_seconds(spec, default=15):
+    """Read a length (N초/Ns) from free text, clamped 5..60."""
+    found = re.findall(r"(\d+)\s*(?:초|s|sec)", spec or "")
+    for token in found:
+        try:
+            n = int(token)
+        except ValueError:
+            continue
+        if 5 <= n <= 60:
+            return n
+    return default
+
+
+def build_media_plan(payload):
+    """Deterministic local plan for one media job (no AI call).
+
+    Returns {"items": [...], "route": ..., "script": [...]}. Items carry
+    kind (image/video/card), prompt, ratio, seconds, and card lines.
+    Prompts always pin the product's real look (no redrawn products).
+    """
+    payload = payload or {}
+    spec = payload.get("media_spec", "") or ""
+    channel = payload.get("channel", "") or ""
+    facts = payload.get("facts") or {}
+    name = facts.get("product_name", "") if isinstance(facts, dict) else ""
+    if not name:
+        brand = payload.get("brand") or {}
+        name = brand.get("intro", "") if isinstance(brand, dict) else ""
+        name = (name or "").split("\n")[0][:40]
+    base = ("%s — %s" % (name, spec_lines(spec, 1)[0] if spec_lines(spec, 1) else "")
+            ).strip(" —")
+    if not base:
+        base = "상품 소개 이미지"
+    prompt = "%s (%s)" % (base[:500], MEDIA_KEEP_PRODUCT)
+    items = []
+    if channel == "cardnews":
+        lines = spec_lines(spec, MEDIA_MAX_CARDS) or [base]
+        n = min(len(lines), spec_count(spec, len(lines), MEDIA_MAX_CARDS))
+        for line in lines[:n]:
+            items.append({"kind": "card", "prompt": "%s (%s)" % (line[:200], MEDIA_KEEP_PRODUCT),
+                          "ratio": "1:1", "seconds": 0, "lines": [line[:120]]})
+    elif channel == "shortform" or payload.get("required_cap") == "video":
+        seconds = spec_seconds(spec)
+        script = spec_lines(spec, 10) or [base]
+        script = [s[:60] for s in script]
+        items.append({"kind": "video", "prompt": prompt, "ratio": "9:16",
+                      "seconds": seconds, "lines": script})
+    else:
+        default_ratio = "4:5" if channel == "instagram" else "16:9"
+        ratio = spec_ratio(spec, default_ratio)
+        n = spec_count(spec, 1, MEDIA_MAX_ITEMS)
+        for _ in range(n):
+            items.append({"kind": "image", "prompt": prompt, "ratio": ratio,
+                          "seconds": 0, "lines": []})
+    script = []
+    for item in items:
+        script.extend(item.get("lines") or [])
+    return {"items": items[:MEDIA_MAX_ITEMS] if channel != "cardnews" else items,
+            "route": payload.get("route") or "ai",
+            "script": script[:10]}
 
 
 def parse_reply(job_type, text):

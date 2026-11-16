@@ -19,6 +19,7 @@ No real-agent connection code lives here.
 """
 
 import json
+import os
 import sys
 import threading
 import time
@@ -97,6 +98,68 @@ class WorkerClient:
         """Extend one own claim's lease; returns the new leaseUntil."""
         _, payload = self._request("POST", "/api/worker/jobs/%s/heartbeat" % job_id, {})
         return payload.get("leaseUntil")
+
+    def upload_file(self, path, name, kind="", prompt="", account_id=0):
+        """Upload one local file through the worker media API (W14).
+
+        kind/prompt/account_id mark worker-made generations; empty kind
+        records a plain upload. Returns the media id.
+        """
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        if not raw:
+            raise WorkerError("upload %s: empty file" % name)
+        _, init = self._request("POST", "/api/worker/media/uploads",
+                                {"name": name, "size": len(raw)})
+        uid = init.get("id")
+        if not uid:
+            raise WorkerError("upload init refused: %s" % (init,))
+        chunk = 5 << 20
+        parts = [raw[i:i + chunk] for i in range(0, len(raw), chunk)] or [b""]
+        for n, blob in enumerate(parts, 1):
+            req = urllib.request.Request(
+                "%s/api/worker/media/uploads/%s/parts/%d"
+                % (self.server_url, uid, n), data=blob,
+                headers={"Authorization": "Bearer %s" % self.token,
+                         "X-Worker-Name": self.name,
+                         "Content-Type": "application/octet-stream"},
+                method="PUT")
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as res:
+                    res.read()
+            except urllib.error.HTTPError as exc:
+                raise WorkerError("upload part %d: http %s" % (n, exc.code))
+        meta = {}
+        if kind:
+            meta["kind"] = kind
+        if prompt:
+            meta["prompt"] = prompt
+        if account_id:
+            meta["accountId"] = account_id
+        _, done = self._request("POST", "/api/worker/media/uploads/%s/complete" % uid,
+                                meta or None)
+        if not done.get("id"):
+            raise WorkerError("upload complete refused: %s" % (done,))
+        return done["id"]
+
+    def gen_media(self, account_id, kind, prompt, ratio="", content_id=0,
+                  product_id=0):
+        """Generate one file through an AI session (W14-2/3).
+
+        Returns the media id. A 409 means the platform is unverified or
+        the account lacks the capability: the caller falls back to local.
+        """
+        body = {"accountId": account_id, "kind": kind, "prompt": prompt}
+        if ratio:
+            body["ratio"] = ratio
+        if content_id:
+            body["contentId"] = content_id
+        if product_id:
+            body["productId"] = product_id
+        _, payload = self._request("POST", "/api/worker/media/gen", body)
+        if not payload.get("id"):
+            raise WorkerError("media gen refused: %s" % (payload,))
+        return payload["id"]
 
     def chat(self, account_id, message, thread="", attachments=None):
         """Send one message through a connected AI account; return the reply.
@@ -201,7 +264,8 @@ def run_loop(client, handlers, poll_interval=None, once=False):
     if client.agent_mode:
         _agent_loop(client, handlers, once)
     else:
-        for job_type in ("analyze", "strategy", "generate", "review"):
+        for job_type in ("analyze", "strategy", "research", "generate",
+                         "review", "media"):
             handler = handlers.get(job_type)
             if handler is None:
                 continue
@@ -335,13 +399,81 @@ def make_real_handlers(client, account_id):
         reply = client.chat(account_id, prompt, thread, attachments=attachments)
         return ai_tasks.parse_reply(job_type, reply)
 
+    def run_media(payload):
+        facts = dict(payload or {})
+        plan = ai_tasks.build_media_plan(facts)
+        try:
+            content_id = int(facts.get("content_id") or 0)
+        except (TypeError, ValueError):
+            content_id = 0
+        try:
+            product_id = int(facts.get("product_id") or 0)
+        except (TypeError, ValueError):
+            product_id = 0
+        out, notes = [], []
+        for item in plan["items"]:
+            mid = None
+            if plan["route"] == "ai":
+                try:
+                    kind = "gen_video" if item["kind"] == "video" else "gen_image"
+                    mid = client.gen_media(account_id, kind, item["prompt"],
+                                           item.get("ratio") or "",
+                                           content_id, product_id)
+                except WorkerError as exc:
+                    notes.append("ai miss (%s): %s" % (item["kind"], exc))
+            if mid is None:
+                mid = local_media(client, account_id, item, facts,
+                                  content_id, product_id)
+                notes.append("local %s" % item["kind"])
+            out.append({"media_id": mid, "role": item["kind"]})
+        note = "; ".join(notes)[:500] if notes else "ai route"
+        fallback = "" if plan["route"] == "ai" and not notes else "local"
+        return {"media_ids": out, "note": note, "fallback": fallback}
+
     return {
         "analyze": lambda payload: run("analyze", payload),
         "strategy": lambda payload: run("strategy", payload),
         "generate": lambda payload: run("generate", payload),
         "review": lambda payload: run("review", payload),
         "research": lambda payload: run("research", payload),
+        "media": run_media,
     }
+
+
+def local_media(client, account_id, item, payload, content_id, product_id):
+    """Tier-2 local render for one media item (cost 0). Returns a media id."""
+    import tempfile
+    try:
+        from adapter import card_render, video_compose
+    except ImportError:
+        raise WorkerError("local render needs adapter/ with Playwright")
+    _ = payload
+    tmp = tempfile.mkdtemp(prefix="somun-media-")
+    kind = item.get("kind") or "image"
+    prompt = item.get("prompt") or ""
+    if kind == "video":
+        lines = item.get("lines") or [prompt]
+        seconds = item.get("seconds") or 15
+        upto = min(len(lines), 6)
+        per = max(3.0, seconds / upto)
+        base = card_render.render_cards(
+            [{"title": (prompt.split("(")[0] or prompt)[:60], "lines": []}],
+            tmp, "1080x1920", "jpeg")
+        scenes = [{"image": base[0], "seconds": per,
+                   "subtitle": line} for line in lines[:upto]]
+        dest, _total, _backend = video_compose.compose(
+            scenes, os.path.join(tmp, "short.mp4"), (1080, 1920), 2, tmp)
+        name = os.path.basename(dest)
+        return client.upload_file(dest, name, "gen_video", prompt, account_id)
+    size = {"1:1": "1080x1080", "4:5": "1080x1350", "3:4": "1080x1350",
+            "9:16": "1080x1920", "16:9": "1280x720"}.get(
+                item.get("ratio") or "", "1080x1080")
+    title = (prompt.split("(")[0] or prompt)[:60] or "카드뉴스"
+    paths = card_render.render_cards(
+        [{"title": title, "lines": item.get("lines") or [prompt[:120]]}],
+        tmp, size, "png")
+    return client.upload_file(paths[0], os.path.basename(paths[0]),
+                              "card", prompt, account_id)
 
 
 def resolve_mode(argv, real_ai, account_id):

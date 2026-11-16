@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"somun/internal/auth"
+	"somun/internal/store"
 )
 
 // Handler serves slot/session endpoints.
@@ -300,6 +303,10 @@ func (h *Handler) Unregister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid account id")
 		return
 	}
+	name := ""
+	if acc, err := h.svc.GetAccount(id); err == nil {
+		name = acc.Name
+	}
 	if err := h.svc.UnregisterAccount(id); err != nil {
 		switch {
 		case errors.Is(err, ErrNoAccount):
@@ -311,6 +318,11 @@ func (h *Handler) Unregister(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	detail := "계정 해제"
+	if name != "" {
+		detail = "계정 해제: " + name
+	}
+	h.svc.Audit(auth.OperatorName(r.Context()), store.AuditAccountUnregister, "account", id, 0, detail)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
 }
 

@@ -211,7 +211,7 @@ func (s *Service) StartLogin(id int64, realProfile, incognito bool) (int, error)
 	}
 	logPath := logFile.Name()
 	profiles, _ := filepath.Abs(filepath.Join(s.loginDataDir, "profiles"))
-	evidence, _ := filepath.Abs(filepath.Join(s.loginDataDir, "uploads", "evidence"))
+	evidence, _ := filepath.Abs(filepath.Join(s.loginDataDir, "evidence"))
 	childEnv := []string{"PROFILES_DIR=" + profiles, "EVIDENCE_DIR=" + evidence}
 	if platformJSON != "" {
 		childEnv = append(childEnv, "AI_PLATFORM_JSON="+platformJSON)

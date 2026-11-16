@@ -216,7 +216,8 @@ func BearerToken(r *http.Request) (string, error) {
 	return parts[1], nil
 }
 
-// Middleware rejects requests without a valid operator token.
+// Middleware rejects requests without a valid operator token. Validated
+// requests carry the operator identity for the W20-2 audit log.
 func (s *Service) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, err := BearerToken(r)
@@ -224,10 +225,11 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "operator login required")
 			return
 		}
-		if _, _, err := s.Validate(token); err != nil {
+		userID, username, err := s.Validate(token)
+		if err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid or expired session")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(WithOperator(r.Context(), userID, username)))
 	})
 }

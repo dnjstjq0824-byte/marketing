@@ -423,6 +423,67 @@ func TestAssignPayloadBodyAndImages(t *testing.T) {
 	}
 }
 
+// W14-6: publish payloads carry videos (reels) with their kind + MIME.
+func TestAssignPayloadCarriesVideo(t *testing.T) {
+	st := openTestStore(t)
+	svc := NewService(st, notify.NewService(st))
+	svc.FileKey = []byte("0123456789abcdef0123456789abcdef")
+	seedAccount(t, st, "nb1", "naver_blog", "connected", "auto")
+	p, err := st.CreateProduct("https://example.com/m", "A", 0, "LUNO")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetProductBrief(p.ID, blogBrief); err != nil {
+		t.Fatal(err)
+	}
+	v, err := st.CreateMediaFull(store.MediaAttrs{Kind: "gen_video", Path: "lib/v.webm", Bytes: 8, Mime: "video/webm", SHA256: "sha-v", Source: "generated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AttachMedia([]int64{v.ID}, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	d, err := st.CreateMediaFull(store.MediaAttrs{Kind: "upload", Path: "lib/d.pdf", Bytes: 8, Mime: "application/pdf", SHA256: "sha-d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AttachMedia([]int64{d.ID}, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	c, err := st.CreateContent(&store.Content{ProductID: p.ID, Channel: "blog", Title: "t", Body: "hello https://example.com/m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`UPDATE contents SET status='approved' WHERE id=?`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	res, err := svc.Assign(c.ID)
+	if err != nil || !res.Assigned {
+		t.Fatalf("assign = %+v err = %v", res, err)
+	}
+	jobs, err := st.ListJobsByRef(c.ID)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs = %+v err = %v", jobs, err)
+	}
+	var payload struct {
+		Images []struct {
+			MediaID int64  `json:"media_id"`
+			Kind    string `json:"kind"`
+			Mime    string `json:"mime"`
+			URL     string `json:"url"`
+		} `json:"images"`
+	}
+	if err := json.Unmarshal([]byte(jobs[0].Payload), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Images) != 1 || payload.Images[0].MediaID != v.ID {
+		t.Fatalf("images = %+v", payload.Images)
+	}
+	if payload.Images[0].Kind != "gen_video" || payload.Images[0].Mime != "video/webm" {
+		t.Fatalf("entry = %+v", payload.Images[0])
+	}
+}
+
 // W0: per-account cap overrides the global cap both directions.
 func TestAssignCapOverride(t *testing.T) {
 	st := openTestStore(t)
