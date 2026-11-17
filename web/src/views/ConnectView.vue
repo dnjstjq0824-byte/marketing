@@ -687,7 +687,7 @@ button.danger { color: var(--warn); }
 @media (max-width: 900px) {
   .drawer { width: 100%; }
 }
-@media (min-width: 1400px) {
+@media (min-width: 1150px) {
   .connect { display: grid; grid-template-columns: 1fr 1fr; align-items: start; }
   .connect > h1, .connect > .banner { grid-column: 1 / -1; }
 }

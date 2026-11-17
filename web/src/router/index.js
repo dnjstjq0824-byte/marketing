@@ -9,7 +9,16 @@ import ConnectView from '../views/ConnectView.vue'
 import TeamsView from '../views/TeamsView.vue'
 import TeamDetailView from '../views/TeamDetailView.vue'
 import SettingsView from '../views/SettingsView.vue'
+import PromoHomeView from '../views/PromoHomeView.vue'
+import PromoLoginView from '../views/PromoLoginView.vue'
+import PromoProductsView from '../views/PromoProductsView.vue'
+import PromoProductDetailView from '../views/PromoProductDetailView.vue'
+import PromoGuideView from '../views/PromoGuideView.vue'
+import PromoMeView from '../views/PromoMeView.vue'
+import PromoWorkView from '../views/PromoWorkView.vue'
+import PromoAdminView from '../views/PromoAdminView.vue'
 import { auth, refreshMe } from '../stores/auth.js'
+import { member, memberRefresh } from '../stores/member.js'
 
 // 7 screens (UI_DESIGN §3-1) + login. Removed paths land on home (§8).
 const routes = [
@@ -37,6 +46,15 @@ const routes = [
   { path: '/system', redirect: { name: 'settings' } },
   { path: '/metrics', redirect: { name: 'home' } },
   { path: '/mobile', redirect: { name: 'home' } },
+  // W24 public consignment surface (no operator login needed).
+  { path: '/promo', name: 'promo-home', component: PromoHomeView },
+  { path: '/promo/login', name: 'promo-login', component: PromoLoginView },
+  { path: '/promo/products', name: 'promo-products', component: PromoProductsView },
+  { path: '/promo/products/:id', name: 'promo-product-detail', component: PromoProductDetailView },
+  { path: '/promo/guide', name: 'promo-guide', component: PromoGuideView },
+  { path: '/promo/me', name: 'promo-me', component: PromoMeView },
+  { path: '/promo/work', name: 'promo-work', component: PromoWorkView },
+  { path: '/promo/admin', name: 'promo-admin', component: PromoAdminView },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
@@ -46,6 +64,28 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
+  if (to.path.startsWith('/promo')) {
+    if (to.path === '/promo/login') {
+      if (!member.token) return true
+      const me = member.user || (await memberRefresh())
+      return me ? (typeof to.query.next === 'string' && to.query.next.startsWith('/promo') ? to.query.next : '/promo') : true
+    }
+    if (to.path === '/promo/me' || to.path === '/promo/work') {
+      if (!member.token) return { path: '/promo/login', query: { next: to.fullPath } }
+      if (!member.user) {
+        const me = await memberRefresh()
+        if (!me) return { path: '/promo/login', query: { next: to.fullPath } }
+      }
+    }
+    if (to.path === '/promo/admin') {
+      if (!auth.token) return { path: '/login', query: { next: to.fullPath } }
+      if (!auth.user) {
+        const user = await refreshMe()
+        if (!user) return { path: '/login', query: { next: to.fullPath } }
+      }
+    }
+    return true
+  }
   if (to.path === '/login') {
     if (!auth.token) return true
     const user = auth.user || (await refreshMe())

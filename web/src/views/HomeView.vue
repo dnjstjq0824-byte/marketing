@@ -14,6 +14,7 @@
       <button @click="load">다시 시도</button>
     </div>
     <template v-else-if="data.today">
+      <div class="topgrid">
       <section class="card today" aria-label="오늘 한 일">
         <h2 class="section-title">오늘 한 일</h2>
         <p class="today-line">발행 <strong class="num">{{ data.today.publishedToday }}</strong>건 · 진행 중 <strong class="num">{{ data.today.running }}</strong>건 · 대기 <strong class="num">{{ data.today.queued }}</strong>건</p>
@@ -36,6 +37,7 @@
           </li>
         </ul>
       </section>
+      </div>
       <section class="stats" aria-label="오늘 현황">
         <RouterLink to="/works" class="stat"><b class="num">{{ data.today.running }}</b><span>진행 중</span></RouterLink>
         <RouterLink to="/works?tab=published" class="stat"><b class="num">{{ data.today.publishedToday }}</b><span>오늘 발행</span></RouterLink>
@@ -160,7 +162,11 @@ onMounted(() => poll.start())
 .sect-head h2 { flex: 1; }
 .more { font-size: 13px; }
 .today-line { margin: 0; font-size: 15px; }
-.today-line strong { font-size: 18px; }
+.today-line strong { font-size: 18px; color: var(--accent-dark); }
+.topgrid { display: flex; flex-direction: column; gap: var(--s5); }
+@media (min-width: 1100px) {
+  .topgrid { display: grid; grid-template-columns: 1.15fr 1fr; align-items: start; }
+}
 .donelist, .needlist { list-style: none; margin: var(--s2) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
 .donelist li { display: flex; gap: var(--s2); align-items: baseline; }
 .needlist li { display: flex; gap: var(--s2); align-items: center; justify-content: space-between; }
@@ -211,7 +217,14 @@ onMounted(() => poll.start())
   .stat b { font-size: 18px; }
   .tiles { grid-template-columns: repeat(3, 1fr); }
 }
-@media (min-width: 1400px) {
+@media (max-width: 700px) {
+  .stats { grid-template-columns: repeat(3, 1fr); }
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 1150px) {
   .cards { display: grid; grid-template-columns: 1fr 1fr; align-items: start; }
+}
+@media (min-width: 1700px) {
+  .cards { grid-template-columns: 1fr 1fr 1fr; }
 }
 </style>

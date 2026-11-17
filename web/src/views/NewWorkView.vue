@@ -274,7 +274,7 @@ label.check input { width: auto; }
 @media (max-width: 900px) {
   .chcfg { flex-wrap: wrap; }
 }
-@media (min-width: 1400px) {
+@media (min-width: 1150px) {
   .new { display: grid; grid-template-columns: 7fr 5fr; align-items: start; }
   .new > h1, .new > section:first-of-type, .new > .submitbar { grid-column: 1 / -1; }
 }

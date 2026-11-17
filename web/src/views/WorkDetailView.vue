@@ -322,7 +322,7 @@ onMounted(load)
 .modal input { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); background: var(--panel); width: 100%; }
 .modal h3 { margin: 0; }
 .error { color: var(--warn); }
-@media (min-width: 1400px) {
+@media (min-width: 1150px) {
   .detail { display: grid; grid-template-columns: 7fr 5fr; align-items: start; }
   .detail > .back, .detail > .head, .detail > :deep(.stages) { grid-column: 1 / -1; }
   .detail > section[aria-label="게시물"] { grid-column: 1; }

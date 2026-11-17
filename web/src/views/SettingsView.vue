@@ -448,7 +448,7 @@ input {
   font-weight: 400;
 }
 input[type="checkbox"] { width: auto; accent-color: var(--accent-dark); }
-@media (min-width: 1400px) {
+@media (min-width: 1150px) {
   .settings { display: grid; grid-template-columns: 7fr 5fr; align-items: start; }
   .settings > h1 { grid-column: 1 / -1; }
   .settings > section:nth-of-type(1) { grid-row: span 2; }

@@ -1,6 +1,6 @@
 <template>
   <div class="login">
-    <p class="brand"><span class="mark" aria-hidden="true">●</span> SOMUN</p>
+    <p class="brand"><span class="mark" aria-hidden="true">S</span> SOMUN</p>
     <p class="muted">AI가 만들고 올리는 마케팅</p>
     <form class="card" @submit.prevent="submit">
       <label>아이디
@@ -9,7 +9,7 @@
       <label>비밀번호
         <span class="pwrow">
           <input v-model="password" :type="show ? 'text' : 'password'" autocomplete="current-password" required />
-          <button type="button" class="ghost small" @click="show = !show" :aria-label="show ? '비밀번호 숨기기' : '비밀번호 보기'">👁</button>
+          <button type="button" class="ghost small" @click="show = !show">{{ show ? '숨기기' : '보기' }}</button>
         </span>
       </label>
       <p v-if="msg" class="error" role="alert">{{ msg }}</p>
@@ -67,8 +67,18 @@ async function submit() {
   gap: var(--s2);
   padding: var(--s4);
 }
-.brand { font-size: 28px; font-weight: 800; }
-.brand .mark { color: var(--accent); }
+.brand { font-size: 28px; font-weight: 800; display: flex; align-items: center; gap: var(--s3); }
+.brand .mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .card {
   background: var(--panel);
   border: 1px solid var(--line-soft);
@@ -88,7 +98,9 @@ input {
   padding: var(--s3);
   background: var(--panel);
   font-weight: 400;
+  font-size: 16px;
 }
+input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 .pwrow { display: flex; gap: var(--s2); }
 .pwrow input { flex: 1; }
 button[type="submit"] {
@@ -98,8 +110,11 @@ button[type="submit"] {
   border-radius: var(--r-md);
   padding: var(--s3);
   font-weight: 700;
+  font-size: 16px;
+  cursor: pointer;
 }
-button[type="submit"]:disabled { opacity: 0.6; }
+button[type="submit"]:hover { background: var(--accent-dark); }
+button[type="submit"]:disabled { opacity: 0.6; cursor: not-allowed; }
 .error { color: var(--warn); }
 .ghost { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: var(--r-md); }
 .small { font-size: 13px; padding: var(--s1) var(--s2); }

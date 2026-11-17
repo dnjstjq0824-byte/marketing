@@ -1,11 +1,11 @@
-/* SOMUN design tokens (UI_DESIGN §2-1). Existing values preserved. */
+/* SOMUN design tokens (UI_DESIGN §2-1). Bright clean console, teal kept. */
 :root {
-  --bg: #f4f1ea;
-  --panel: #fffdf8;
-  --soft: #faf7ef;
-  --ink: #1d2733;
-  --ink-soft: #43525f;
-  --muted: #6d7a72;
+  --bg: #f6f8f9;
+  --panel: #ffffff;
+  --soft: #eef2f4;
+  --ink: #17222b;
+  --ink-soft: #3d4c59;
+  --muted: #67727c;
   --accent: #0e7490;
   --accent-dark: #0b5d74;
   --accent-soft: #e2f1f6;
@@ -18,8 +18,8 @@
   --hold-soft: #fdf3dd;
   --gold: #b97f00;
   --gold-soft: #f7e8c8;
-  --line: #d8cfb6;
-  --line-soft: #e3dabd;
+  --line: #dde3e8;
+  --line-soft: #eceff2;
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 14px;

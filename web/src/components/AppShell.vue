@@ -15,6 +15,11 @@
         <RouterLink to="/connect" :aria-current="isActive('/connect') ? 'page' : undefined"><span class="mi" aria-hidden="true">⇄</span><span class="lbl">연결</span><span v-if="connectAlert" class="dot-alert" aria-label="연결 문제 있음"></span></RouterLink>
         <RouterLink to="/settings" :aria-current="isActive('/settings') ? 'page' : undefined"><span class="mi" aria-hidden="true">⚙</span><span class="lbl">설정</span></RouterLink>
       </nav>
+      <div class="golinks" aria-label="홍보 위탁 바로가기">
+        <span class="go-cap muted micro">홍보 위탁</span>
+        <RouterLink to="/promo">홍보 메인</RouterLink>
+        <RouterLink to="/promo/admin">위탁 관리</RouterLink>
+      </div>
       <p class="side-foot muted micro">{{ todayLine }}</p>
     </aside>
     <div class="body">
@@ -65,6 +70,7 @@
           <RouterLink to="/media" @click="moreOpen = false">미디어</RouterLink>
           <RouterLink to="/connect" @click="moreOpen = false">연결<span v-if="connectAlert" class="dot-alert" aria-label="연결 문제 있음"></span></RouterLink>
           <RouterLink to="/settings" @click="moreOpen = false">설정</RouterLink>
+          <RouterLink to="/promo/admin" @click="moreOpen = false">위탁 관리</RouterLink>
           <button @click="doLogout">로그아웃</button>
         </div>
       </div>
@@ -258,6 +264,7 @@ onUnmounted(() => {
   color: var(--ink-soft);
   font-size: 15px;
 }
+.side nav a { transition: background 0.12s ease; }
 .side nav a:hover { background: var(--soft); color: var(--ink); }
 .side nav a[aria-current="page"] {
   background: var(--accent-soft);
@@ -266,6 +273,24 @@ onUnmounted(() => {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .side nav .mi { width: 22px; text-align: center; font-size: 17px; }
+.golinks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: var(--s3);
+  margin-top: var(--s2);
+}
+.go-cap { padding: 0 var(--s3); }
+.golinks a {
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-md);
+  text-decoration: none;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+.golinks a:hover { background: var(--soft); color: var(--ink); }
+.golinks a.router-link-active { color: var(--accent-dark); font-weight: 800; }
 .side-foot { margin-top: auto; }
 .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .topbar {
@@ -416,6 +441,7 @@ onUnmounted(() => {
     min-width: 44px;
   }
   .tabs small { font-size: 11px; }
+  .tabs a.router-link-active { color: var(--accent-dark); font-weight: 800; }
   .tabs .fab {
     background: var(--accent);
     color: #fff;
@@ -429,6 +455,7 @@ onUnmounted(() => {
 }
 @media (min-width: 901px) and (max-width: 1279px) {
   .side { width: 64px; padding: var(--s5) var(--s2); align-items: center; }
+  .golinks { display: none; }
   .side .brand { justify-content: center; padding: 0; }
   .side .brand-t, .side .lbl, .side-foot { display: none; }
   .side nav a { justify-content: center; padding: var(--s2); }

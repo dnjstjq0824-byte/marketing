@@ -334,14 +334,16 @@ watch(() => route.query.view, (v) => {
   .denselist li { flex-wrap: wrap; gap: var(--s1) var(--s3); }
   .denselist .t { flex-basis: 100%; }
 }
-.filters { display: flex; gap: var(--s2); }
+.filters { display: flex; gap: var(--s2); flex-wrap: wrap; }
 .filters input {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   padding: var(--s2) var(--s3);
   background: var(--panel);
   flex: 1;
+  min-width: 160px;
 }
+.denselist .num { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .card {
   background: var(--panel);
   border: 1px solid var(--line-soft);
@@ -361,7 +363,10 @@ watch(() => route.query.view, (v) => {
   padding: var(--s2) var(--s4);
 }
 .cards { display: flex; flex-direction: column; gap: var(--s3); }
-@media (min-width: 1400px) {
+@media (min-width: 1150px) {
   .cards { display: grid; grid-template-columns: 1fr 1fr; align-items: start; }
+}
+@media (min-width: 1700px) {
+  .cards { grid-template-columns: 1fr 1fr 1fr; }
 }
 </style>
