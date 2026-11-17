@@ -65,13 +65,21 @@ def _frames(page):
 
 
 def fill_any(page, selector, text):
-    """Fill the first frame where the selector resolves. Returns the frame."""
+    """Fill the first frame where the selector resolves. Returns the frame.
+
+    When the element rejects fill() (contenteditable editors), fall back
+    to click + line-by-line typing on that same frame; when typing fails
+    too, keep looking in the remaining frames.
+    """
     last = None
     for frame in _frames(page):
         try:
             if frame.query_selector(selector) is None:
                 continue
-            frame.fill(selector, text or "")
+            try:
+                frame.fill(selector, text or "")
+            except Exception:
+                _type_lines(page, frame, selector, text or "")
             return frame
         except Exception as exc:
             last = exc
@@ -94,6 +102,80 @@ def click_any(page, selector):
         "%s selector not clickable: %s (%s)" % (PRE_PUBLISH, selector, last))
 
 
+def require_login(page, platform, account):
+    """Raise NeedsLogin unless the logged-in marker is visibly present.
+
+    Presence alone lies: some pages keep the marker node in the DOM for
+    logged-out sessions, so visibility decides.
+    """
+    try:
+        el = page.query_selector(platform.logged_in_selector)
+    except Exception:
+        el = None
+    visible = False
+    if el is not None:
+        try:
+            visible = bool(el.is_visible())
+        except Exception:
+            visible = False
+    if not visible:
+        raise NeedsLogin("account %s: save a login session first (adapter.login)" % account)
+
+
+def split_tags(tags):
+    """Split tag labels on commas.
+
+    A label with a blank segment ("a, ,b") is dropped whole instead of
+    patched: half-guessed tags would publish wrong metadata.
+    """
+    out = []
+    for label in tags or []:
+        pieces = [piece.strip() for piece in str(label).split(",")]
+        if all(pieces):
+            out.extend(pieces)
+    return out
+
+
+def _type_lines(page, frame, selector, text):
+    """Click-to-focus, then type line by line via the page keyboard.
+
+    Contenteditable editors (SmartEditor ONE) reject fill(): typing +
+    Enter between lines is the fallback. Empty lines still advance.
+    """
+    frame.click(selector)
+    keyboard = page.keyboard
+    lines = (text or "").split("\n")
+    for index, line in enumerate(lines):
+        if line:
+            keyboard.insert_text(line)
+        if index < len(lines) - 1:
+            keyboard.press("Enter")
+
+
+def enter_tags(page, selector, labels):
+    """Type each tag, confirming with Enter (Naver-style tag input)."""
+    for label in labels:
+        fill_any(page, selector, label)
+        page.keyboard.press("Enter")
+
+
+def dismiss_any(page, selector):
+    """Click a blocking overlay wherever it resolves; False when absent.
+
+    Help panels are conditional UI, so a missing element is a pass, not
+    a failure. Returns True when a dismiss click landed.
+    """
+    for frame in _frames(page):
+        try:
+            if frame.query_selector(selector) is None:
+                continue
+            frame.click(selector)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _relpath(path):
     rel = os.path.relpath(path, ".")
     if rel.startswith(".."):
@@ -109,8 +191,13 @@ def post(account, platform_name, title, body, base_url="", headless=None,
     A platform without file_selector refuses attachments loudly.
     tags: label strings for the platform tag input (W5-1); refused loudly
     when the platform defines no tag_selector.
-    Selector overlays (ADAPTER_SELECTORS_DIR) apply before the pin check,
-    and mid-flow failures capture a screenshot for diagnosis.
+    Selector overlays (ADAPTER_SELECTORS_DIR, else data/selectors) apply
+    before the pin check, and mid-flow failures capture a screenshot for
+    diagnosis. The login check runs on verify_path when the platform pins
+    one (login pages that always render the form). Platforms with
+    submit_confirm_selector publish in two stages (panel, then confirm)
+    with page dialogs auto-accepted; without it the legacy single click
+    applies. Tags use Enter-confirm mode when tag_entry is "enter".
     """
     try:
         platform = platforms.get_platform(platform_name)
@@ -138,23 +225,42 @@ def post(account, platform_name, title, body, base_url="", headless=None,
     with browser.BrowserSession(account, headless=headless) as sess:
         page = sess.page
         try:
-            page.goto(base + platform.login_path)
+            check_path = platform.verify_path or platform.login_path
+            page.goto(base + check_path if base else check_path)
             page.wait_for_load_state("domcontentloaded")
-            if not page.query_selector(platform.logged_in_selector):
-                raise NeedsLogin("account %s: save a login session first (adapter.login)" % account)
-            page.goto(base + platform.compose_path)
+            require_login(page, platform, account)
+            page.goto(base + platform.compose_path if base else platform.compose_path)
             page.wait_for_load_state("domcontentloaded")
+            if platform.dismiss_selector:
+                dismiss_any(page, platform.dismiss_selector)
             fill_any(page, platform.title_selector, title or "")
             fill_any(page, platform.body_selector, body or "")
             if labels:
-                fill_any(page, platform.tag_selector, ", ".join(labels))
+                if platform.tag_entry == "enter":
+                    enter_tags(page, platform.tag_selector, split_tags(labels))
+                else:
+                    fill_any(page, platform.tag_selector, ", ".join(labels))
             for path in files:
                 page.set_input_files(platform.file_selector, path)
-            with page.expect_navigation(timeout=config.NAV_TIMEOUT_SEC * 1000):
+            if platform.submit_confirm_selector:
+                # Two-stage publish: the first click only opens the
+                # confirm panel (nothing posted yet), so dialogs from
+                # here on are auto-accepted and only the final click
+                # flips the post to uncertain (W9-5).
+                try:
+                    page.on("dialog", lambda dialog: dialog.accept())
+                except Exception:
+                    pass
                 click_any(page, platform.submit_selector)
-                # The click landed: from here the post may exist even
-                # when the wait below times out (W9-5 uncertain).
-                submitted = True
+                with page.expect_navigation(timeout=config.NAV_TIMEOUT_SEC * 1000):
+                    click_any(page, platform.submit_confirm_selector)
+                    submitted = True
+            else:
+                with page.expect_navigation(timeout=config.NAV_TIMEOUT_SEC * 1000):
+                    click_any(page, platform.submit_selector)
+                    # The click landed: from here the post may exist even
+                    # when the wait below times out (W9-5 uncertain).
+                    submitted = True
             url = page.url
             if platform.posted_url_hint not in url:
                 raise UncertainPostFailed(

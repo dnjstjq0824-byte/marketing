@@ -26,6 +26,12 @@ PROFILES_DIR = _resolve(env("PROFILES_DIR", "data/profiles"))
 # folder to data/evidence on boot (config.MigrateEvidenceDir).
 EVIDENCE_DIR = _resolve(env("EVIDENCE_DIR", "data/evidence"))
 PROMPTS_DIR = _resolve(env("PROMPTS_DIR", "data/prompts"))
+# W5-1: pinned channel selectors live here (<platform>.json each).
+# load_overlay reads the env var dynamically; this is the default folder
+# fallback only. data/ is gitignored: overlays never ship with the code.
+# os.path.join keeps native separators (a "data/selectors" literal would
+# leave a mixed-separator path on Windows).
+SELECTORS_DIR = _resolve(env("ADAPTER_SELECTORS_DIR", os.path.join("data", "selectors")))
 HEADLESS = env("HEADLESS", "true").lower() not in ("0", "false", "no")
 NAV_TIMEOUT_SEC = int(env("ADAPTER_NAV_TIMEOUT_SEC", "30"))
 POLL_INTERVAL_SEC = float(env("POLL_INTERVAL_SEC", "5"))

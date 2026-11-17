@@ -36,6 +36,26 @@ class _NoFramePage:
         return None
 
 
+@contextlib.contextmanager
+def _empty_selectors_dir():
+    """Hide the operator's data/selectors folder for one test.
+
+    Refusal tests pin "unconfigured" as their precondition; without
+    isolation a real pinned overlay on disk would configure the
+    platform and the test would launch a browser.
+    """
+    import tempfile
+    prev = os.environ.get("ADAPTER_SELECTORS_DIR")
+    os.environ["ADAPTER_SELECTORS_DIR"] = tempfile.mkdtemp()
+    try:
+        yield
+    finally:
+        if prev is None:
+            del os.environ["ADAPTER_SELECTORS_DIR"]
+        else:
+            os.environ["ADAPTER_SELECTORS_DIR"] = prev
+
+
 class PureUnitTest(unittest.TestCase):
     def test_safe_name(self):
         self.assertEqual(browser.safe_name("insta-1"), "insta-1")
@@ -88,6 +108,130 @@ class PureUnitTest(unittest.TestCase):
         self.assertEqual(verify.match_logged_out(
             ["Log in to continue with email"], markers), "")
         self.assertEqual(verify.match_logged_out([], markers), "")
+
+    def test_naver_verify_uses_state_page(self):
+        # nidlogin.login renders the login form (exact "로그인") even for
+        # logged-in sessions, so verify must check the blog home instead:
+        # logged in shows the user ID, logged out shows "로그인".
+        naver = platforms.get_platform("naver_blog")
+        self.assertEqual(naver.verify_path, "https://blog.naver.com")
+        self.assertIn("로그인", platforms.effective_markers(naver))
+        self.assertEqual(platforms.get_platform("meta_ai").verify_path, "")
+
+    def test_selectors_dir_default(self):
+        from adapter import config as config_mod
+        self.assertTrue(config_mod.SELECTORS_DIR.endswith(
+            os.path.join("data", "selectors")))
+        # Env override wins dynamically (no import-time freeze).
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        prev = os.environ.get("ADAPTER_SELECTORS_DIR")
+        os.environ["ADAPTER_SELECTORS_DIR"] = tmp
+        try:
+            self.assertEqual(platforms.load_overlay("zz_no_such"), {})
+        finally:
+            if prev is None:
+                del os.environ["ADAPTER_SELECTORS_DIR"]
+            else:
+                os.environ["ADAPTER_SELECTORS_DIR"] = prev
+
+    def test_naver_flow_overlay_fields(self):
+        import json
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        with open(os.path.join(tmp, "naver_blog.json"), "w",
+                  encoding="utf-8") as out:
+            json.dump({"dismiss_selector": ".help-close",
+                       "submit_confirm_selector": ".final",
+                       "tag_entry": "enter"}, out)
+        prev = os.environ.get("ADAPTER_SELECTORS_DIR")
+        os.environ["ADAPTER_SELECTORS_DIR"] = tmp
+        try:
+            merged = platforms.with_overlay(
+                platforms.get_platform("naver_blog"))
+            self.assertEqual(merged.dismiss_selector, ".help-close")
+            self.assertEqual(merged.submit_confirm_selector, ".final")
+            self.assertEqual(merged.tag_entry, "enter")
+            self.assertEqual(merged.body_selector, "TBD")
+        finally:
+            if prev is None:
+                del os.environ["ADAPTER_SELECTORS_DIR"]
+            else:
+                os.environ["ADAPTER_SELECTORS_DIR"] = prev
+
+    def test_require_login_visibility(self):
+        class El:
+            def __init__(self, vis):
+                self._vis = vis
+
+            def is_visible(self):
+                return self._vis
+
+        class P:
+            def __init__(self, el):
+                self._el = el
+
+            def query_selector(self, sel):
+                return self._el
+
+        naver = platforms.get_platform("naver_blog")
+        session_post.require_login(P(El(True)), naver, "a")
+        with self.assertRaises(session_post.NeedsLogin):
+            session_post.require_login(P(El(False)), naver, "a")
+        with self.assertRaises(session_post.NeedsLogin):
+            session_post.require_login(P(None), naver, "a")
+
+    def test_fill_any_typing_fallback(self):
+        typed = []
+        pressed = []
+
+        class Keyboard:
+            def insert_text(self, text):
+                typed.append(text)
+
+            def press(self, key):
+                pressed.append(key)
+
+        class El:
+            def __init__(self):
+                self.clicked = 0
+
+            def click(self):
+                self.clicked += 1
+
+        class Frame:
+            def __init__(self):
+                self.el = El()
+
+            def query_selector(self, sel):
+                return self.el
+
+            def fill(self, sel, text):
+                raise RuntimeError("not fillable")
+
+            def click(self, sel):
+                self.el.click()
+
+        class Page:
+            def __init__(self, frames):
+                self.frames = frames
+                self.keyboard = Keyboard()
+
+            def query_selector(self, sel):
+                return None
+
+        frame = Frame()
+        session_post.fill_any(Page([frame]), "div", "a\nb")
+        self.assertEqual(frame.el.clicked, 1)
+        self.assertEqual(typed, ["a", "b"])
+        self.assertEqual(pressed, ["Enter"])
+
+    def test_split_tags(self):
+        self.assertEqual(session_post.split_tags(["a", "b"]), ["a", "b"])
+        self.assertEqual(
+            session_post.split_tags(["a, b", "c"]), ["a", "b", "c"])
+        self.assertEqual(session_post.split_tags([" a ,, "]), [])
+        self.assertEqual(session_post.split_tags([]), [])
 
     def test_chat_gating(self):
         for name in ("meta_ai", "claude_app", "chatgpt", "muse", "gemini"):
@@ -410,8 +554,9 @@ class PureUnitTest(unittest.TestCase):
                                    session_post.PostFailed))
         self.assertTrue(issubclass(session_post.UncertainPostFailed,
                                    session_post.PostFailed))
-        with self.assertRaises(session_post.PrePublishFailed) as ctx:
-            session_post.post("a", "naver_blog", "t", "b")
+        with _empty_selectors_dir():
+            with self.assertRaises(session_post.PrePublishFailed) as ctx:
+                session_post.post("a", "naver_blog", "t", "b")
         self.assertIn(session_post.PRE_PUBLISH, str(ctx.exception))
         with self.assertRaises(session_post.PrePublishFailed) as ctx:
             session_post.post("a", "no-such-platform", "t", "b")
@@ -448,8 +593,9 @@ class PureUnitTest(unittest.TestCase):
         self.assertIn(session_post.PRE_PUBLISH, str(ctx.exception))
 
     def test_unconfigured_platform_refuses(self):
-        with self.assertRaises(session_post.PostFailed):
-            session_post.post("a", "naver_blog", "t", "b")
+        with _empty_selectors_dir():
+            with self.assertRaises(session_post.PostFailed):
+                session_post.post("a", "naver_blog", "t", "b")
 
     def test_multipart_parser(self):
         body = (b"--B\r\n"

@@ -82,7 +82,8 @@ def check(account, platform_name, base_url="", json_path=""):
     try:
         with browser.BrowserSession(account) as sess:
             page = sess.page
-            page.goto(base + platform.login_path if base else platform.login_path)
+            check_path = platform.verify_path or platform.login_path
+            page.goto(base + check_path if base else check_path)
             try:
                 page.wait_for_load_state("networkidle", timeout=15000)
             except Exception:

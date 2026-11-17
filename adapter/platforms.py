@@ -64,6 +64,19 @@ class Platform:
     collect_likes: str = "TBD"
     collect_comments: str = "TBD"
     collect_verified: str = "unverified"
+    # Headless session-check URL ("" = login_path). Some login pages render
+    # the login form even for logged-in sessions (Naver nidlogin), so those
+    # platforms pin a state-reflecting page here instead.
+    verify_path: str = ""
+    # W5-1 real-blog flow hooks ("" = legacy single-stage behavior).
+    # dismiss_selector closes a blocking overlay before composing (e.g.
+    # the Naver help panel over the publish button). submit_confirm_selector
+    # finishes a 2-stage publish (panel open, then final confirm).
+    # tag_entry "enter" confirms each tag with Enter instead of one
+    # comma-joined fill.
+    dismiss_selector: str = ""
+    submit_confirm_selector: str = ""
+    tag_entry: str = ""
 
 
 # ChatGPT turns carry no per-message DOM hook: the assistant header
@@ -232,6 +245,8 @@ PLATFORMS = {
         submit_selector="TBD",
         posted_url_hint="blog.naver.com",
         notes=("Selectors need a real account session to pin down (P0-1).",),
+        verify_path="https://blog.naver.com",
+        logged_out_markers=("Log in", "로그인"),
     ),
     "tistory": Platform(
         name="tistory",
@@ -458,9 +473,13 @@ def load_overlay(name):
     """Return the selector overrides for one platform ({} when absent).
 
     Unknown fields are ignored; unreadable files fail loudly so a typo
-    never silently disables a pinned platform.
+    never silently disables a pinned platform. The env var wins
+    dynamically; when unset, config.SELECTORS_DIR (data/selectors)
+    applies so operators pinning to the default folder need no setup.
     """
-    directory = _os.environ.get("ADAPTER_SELECTORS_DIR", "")
+    from . import config as _config
+    directory = (_os.environ.get("ADAPTER_SELECTORS_DIR", "").strip()
+                 or _config.SELECTORS_DIR)
     if not directory:
         return {}
     path = _os.path.join(directory, name + ".json")
