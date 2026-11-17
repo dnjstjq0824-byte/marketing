@@ -18,6 +18,7 @@ sys.path.insert(0, "worker")
 
 from worker import WorkerClient, WorkerError  # noqa: E402
 
+from adapter import agent_relay
 from adapter import collect as collect_mod
 from adapter import config
 from adapter import session_post
@@ -72,18 +73,36 @@ def publish_handler(job_payload):
         raise ValueError("publish payload lacks account/platform")
     platform = config.platform_map().get(platform, platform)
     base_url = config.STUB_BASE_URL if platform == "stubboard" else ""
+    backend = (job_payload.get("backend") or agent_relay.DIRECT).strip()
+    if not backend:
+        backend = agent_relay.DIRECT
     attachments = download_images(job_payload.get("images") or [], config.SERVER_URL)
     tags = [t for t in (job_payload.get("tags") or []) if t]
     try:
-        return session_post.post(
-            account, platform,
+        if backend == agent_relay.DIRECT:
+            return session_post.post(
+                account, platform,
+                job_payload.get("title") or "", job_payload.get("body") or "",
+                base_url=base_url, attachments=attachments, tags=tags,
+            )
+        relay_account = (job_payload.get("relay_account") or "").strip()
+        if not relay_account:
+            raise ValueError("publish payload lacks relay_account")
+        return agent_relay.relay_publish(
+            relay_account, backend, platform,
             job_payload.get("title") or "", job_payload.get("body") or "",
-            base_url=base_url, attachments=attachments, tags=tags,
+            tags=tags, attachments=attachments,
         )
     except session_post.NeedsLogin as exc:
         # W9-5: a missing session never posted — pre-publish, safe to retry.
+        if backend == agent_relay.DIRECT:
+            raise RuntimeError("%s %s -- run: adapter\\.venv\\Scripts\\python -m adapter.login %s %s"
+                               % (session_post.PRE_PUBLISH, exc, account, platform))
+        known = agent_relay.BACKENDS.get(backend)
         raise RuntimeError("%s %s -- run: adapter\\.venv\\Scripts\\python -m adapter.login %s %s"
-                           % (session_post.PRE_PUBLISH, exc, account, platform))
+                           % (session_post.PRE_PUBLISH, exc,
+                              job_payload.get("relay_account"),
+                              known.ai_platform if known else backend))
     finally:
         import os
         for path in attachments:

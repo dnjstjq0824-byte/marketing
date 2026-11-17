@@ -17,7 +17,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/..")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from adapter import browser, chat, config, login, platforms, prompts, session_post, verify  # noqa: E402
+from adapter import agent_relay, browser, chat, config, login, platforms, prompts, session_post, verify  # noqa: E402
 
 PLAYWRIGHT_E2E = os.environ.get("PLAYWRIGHT_E2E") == "1"
 try:
@@ -596,6 +596,83 @@ class PureUnitTest(unittest.TestCase):
         with _empty_selectors_dir():
             with self.assertRaises(session_post.PostFailed):
                 session_post.post("a", "naver_blog", "t", "b")
+
+    def test_relay_compose_deterministic(self):
+        # W22: same inputs always yield the same instruction, verbatim.
+        first = agent_relay.compose_instruction(
+            "naver_blog", "T", "line1\nline2", ["a", "b"], ["img1.png"])
+        second = agent_relay.compose_instruction(
+            "naver_blog", "T", "line1\nline2", ["a", "b"], ["img1.png"])
+        self.assertEqual(first, second)
+        self.assertIn("naver_blog", first)
+        self.assertIn("line1\nline2", first)
+        self.assertIn("a, b", first)
+        self.assertIn("img1.png", first)
+        self.assertIn(agent_relay.REWRITE_BAN, first)
+        self.assertIn(agent_relay.URL_CONTRACT, first)
+        bare = agent_relay.compose_instruction("x", "", "", [], [])
+        self.assertIn("none", bare)
+
+    def test_relay_extract_url(self):
+        # W22: prefer the channel host, else first URL, else "".
+        text = "see https://example.com/a then https://blog.naver.com/x/1 ok"
+        self.assertEqual(agent_relay.extract_posted_url(text, "blog.naver.com"),
+                         "https://blog.naver.com/x/1")
+        self.assertEqual(agent_relay.extract_posted_url(text),
+                         "https://example.com/a")
+        self.assertEqual(agent_relay.extract_posted_url("no link here"), "")
+        self.assertEqual(agent_relay.extract_posted_url(""), "")
+
+    def test_relay_unproven_refuses(self):
+        # W22: unproven backends refuse before touching a browser.
+        with self.assertRaises(session_post.PrePublishFailed) as ctx:
+            agent_relay.relay_publish("cap", "muse", "naver_blog", "t", "b")
+        self.assertIn(session_post.PRE_PUBLISH, str(ctx.exception))
+        with self.assertRaises(session_post.PrePublishFailed) as ctx:
+            agent_relay.relay_publish("cap", "nope", "naver_blog", "t", "b")
+        self.assertIn("unknown publish backend", str(ctx.exception))
+        # Second gate: proven flag without pinned approval DOM still refuses.
+        import dataclasses
+        real = agent_relay.BACKENDS["muse"]
+        agent_relay.BACKENDS["muse"] = dataclasses.replace(real, enabled=True)
+        try:
+            with self.assertRaises(session_post.PrePublishFailed) as ctx:
+                agent_relay.relay_publish("cap", "muse", "naver_blog", "t", "b")
+            self.assertIn("approval DOM not pinned", str(ctx.exception))
+        finally:
+            agent_relay.BACKENDS["muse"] = real
+
+    def test_publish_routes_by_backend(self):
+        # W22: missing backend means direct; relay needs relay_account.
+        from adapter import worker_adapter
+        real_post, real_relay = session_post.post, agent_relay.relay_publish
+        calls = []
+
+        def _post(*args, **kwargs):
+            calls.append(("direct", args, kwargs))
+            return {"url": "direct-url"}
+
+        def _relay(*args, **kwargs):
+            calls.append(("relay", args, kwargs))
+            return {"url": "relay-url"}
+
+        session_post.post, agent_relay.relay_publish = _post, _relay
+        try:
+            got = worker_adapter.publish_handler({"account": "a",
+                                                  "platform": "stubboard"})
+            self.assertEqual(got["url"], "direct-url")
+            got = worker_adapter.publish_handler({"account": "a",
+                                                  "platform": "stubboard",
+                                                  "backend": "muse",
+                                                  "relay_account": "cap"})
+            self.assertEqual(got["url"], "relay-url")
+            self.assertEqual(calls[1][1][:3], ("cap", "muse", "stubboard"))
+            with self.assertRaises(ValueError):
+                worker_adapter.publish_handler({"account": "a",
+                                                "platform": "stubboard",
+                                                "backend": "muse"})
+        finally:
+            session_post.post, agent_relay.relay_publish = real_post, real_relay
 
     def test_multipart_parser(self):
         body = (b"--B\r\n"
