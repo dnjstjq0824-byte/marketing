@@ -14,7 +14,7 @@ import (
 )
 
 // SchemaVersion is the current DDL version recorded in app_meta.
-const SchemaVersion = "28"
+const SchemaVersion = "29"
 
 // schema is the whole Tranche-1 data model: 9 entities (§6).
 // No order/payment/delivery/personal-data tables: this system never takes orders.
@@ -262,6 +262,9 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateToV28(db); err != nil {
+		return err
+	}
+	if err := migrateToV29(db); err != nil {
 		return err
 	}
 	if _, err := db.Exec(
@@ -1058,6 +1061,41 @@ func migrateV28DiskLow(db *sql.DB) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("migrate v28 commit: %w", err)
+	}
+	return nil
+}
+
+// migrateToV29 adds W22 agent-relay publishing: per-account executor
+// selection (direct stays the default) plus the probe-gated backend
+// registry. direct and muse seed ready; later agents flip ready only
+// after a supervised live probe pins their approval path.
+func migrateToV29(db *sql.DB) error {
+	for _, stmt := range []struct{ table, col, ddl string }{
+		{"channel_accounts", "executor_backend", `ALTER TABLE channel_accounts ADD COLUMN executor_backend TEXT NOT NULL DEFAULT 'direct'`},
+		{"channel_accounts", "relay_account", `ALTER TABLE channel_accounts ADD COLUMN relay_account TEXT NOT NULL DEFAULT ''`},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, stmt.table, stmt.col).Scan(&n); err != nil {
+			return fmt.Errorf("migrate v29 check: %w", err)
+		}
+		if n == 0 {
+			if _, err := db.Exec(stmt.ddl); err != nil {
+				return fmt.Errorf("migrate v29: %w", err)
+			}
+		}
+	}
+	for _, ddl := range []string{
+		`CREATE TABLE IF NOT EXISTS publish_backends (
+			name TEXT PRIMARY KEY,
+			ai_platform TEXT NOT NULL DEFAULT '',
+			ready INTEGER NOT NULL DEFAULT 0
+		)`,
+		`INSERT OR IGNORE INTO publish_backends(name, ai_platform, ready) VALUES('direct', '', 1)`,
+		`INSERT OR IGNORE INTO publish_backends(name, ai_platform, ready) VALUES('muse', 'muse', 1)`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("migrate v29 ddl: %w", err)
+		}
 	}
 	return nil
 }

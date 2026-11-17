@@ -135,6 +135,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/system/health", op(http.HandlerFunc(d.health)))
 	mux.Handle("GET /api/channel-platforms", op(http.HandlerFunc(d.listPlatforms)))
 	mux.Handle("PATCH /api/channel-platforms/{key}", op(http.HandlerFunc(d.patchPlatform)))
+	mux.Handle("GET /api/publish-backends", op(http.HandlerFunc(sessionH.ListBackends)))
 	mux.Handle("GET /api/ai-platforms", op(http.HandlerFunc(d.listAIPlatforms)))
 	mux.Handle("POST /api/ai-platforms", op(http.HandlerFunc(d.createAIPlatform)))
 	mux.Handle("PATCH /api/ai-platforms/{key}", op(http.HandlerFunc(d.patchAIPlatform)))

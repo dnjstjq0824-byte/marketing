@@ -19,8 +19,8 @@ func openW20Store(t *testing.T) *Store {
 	if err := Migrate(st.DB()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if v, err := CurrentSchemaVersion(st.DB()); err != nil || v != "28" {
-		t.Fatalf("schema version = %q, %v; want 28", v, err)
+	if v, err := CurrentSchemaVersion(st.DB()); err != nil || v != "29" {
+		t.Fatalf("schema version = %q, %v; want 29", v, err)
 	}
 	return st
 }

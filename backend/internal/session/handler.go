@@ -125,6 +125,17 @@ func (h *Handler) ListAccounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": items})
 }
 
+// ListBackends handles GET /api/publish-backends: the probe-gated W22
+// execution registry. The console offers ready entries only.
+func (h *Handler) ListBackends(w http.ResponseWriter, r *http.Request) {
+	items, err := h.svc.ListBackends()
+	if err != nil || items == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"backends": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"backends": items})
+}
+
 type updateRequest struct {
 	SessionState   *string `json:"sessionState"`
 	Usage          *string `json:"usage"`
@@ -139,6 +150,8 @@ type updateRequest struct {
 	PlatformUserID *string `json:"platformUserId"`
 	PlanTier       *string `json:"planTier"`
 	Capabilities   *string `json:"capabilities"`
+	ExecutorBackend *string `json:"executorBackend"`
+	RelayAccount    *string `json:"relayAccount"`
 }
 
 // UpdateAccount handles PATCH /api/session/accounts/{id}: session state
@@ -261,6 +274,20 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err.Error())
 			default:
 				writeError(w, http.StatusInternalServerError, "cannot set plan fields")
+			}
+			return
+		}
+	}
+	if req.ExecutorBackend != nil || req.RelayAccount != nil {
+		account, err = h.svc.SetExecutorBackend(id, req.ExecutorBackend, req.RelayAccount)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrNoAccount):
+				writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrBadBackend), errors.Is(err, ErrBadRelay):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				writeError(w, http.StatusInternalServerError, "cannot set executor backend")
 			}
 			return
 		}

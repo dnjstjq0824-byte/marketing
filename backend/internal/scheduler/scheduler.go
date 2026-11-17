@@ -234,6 +234,8 @@ func (s *Service) platformFor(c *store.Content) (string, error) {
 // candidates lists connected auto channel accounts for one platform.
 // When the owning team links channels (W16-5), only those accounts qualify;
 // teams without links publish through every connected channel.
+// W22: relay-backend accounts qualify on the RELAY account's session,
+// not the channel's own (the agent holds that login instead).
 func (s *Service) candidates(platform string, teamID int64) ([]*store.ChannelAccount, error) {
 	rows, err := s.store.ListAccountRows()
 	if err != nil {
@@ -247,6 +249,10 @@ func (s *Service) candidates(platform string, teamID int64) ([]*store.ChannelAcc
 			}
 		}
 	}
+	byName := make(map[string]*store.ChannelAccount, len(rows))
+	for _, a := range rows {
+		byName[a.Name] = a
+	}
 	var out []*store.ChannelAccount
 	for _, a := range rows {
 		if a.Kind == "agent_service" || aiPlatforms[a.Platform] {
@@ -255,7 +261,14 @@ func (s *Service) candidates(platform string, teamID int64) ([]*store.ChannelAcc
 		if a.Platform != platform {
 			continue
 		}
-		if a.SessionState != "connected" || a.PostingMode != "auto" {
+		if a.PostingMode != "auto" {
+			continue
+		}
+		if backendOf(a) == "direct" {
+			if a.SessionState != "connected" {
+				continue
+			}
+		} else if r, ok := byName[a.RelayAccount]; !ok || r.SessionState != "connected" {
 			continue
 		}
 		if len(allowed) > 0 && !allowed[a.ID] {
@@ -264,6 +277,14 @@ func (s *Service) candidates(platform string, teamID int64) ([]*store.ChannelAcc
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+// backendOf normalizes legacy rows (empty means direct).
+func backendOf(a *store.ChannelAccount) string {
+	if a.ExecutorBackend == "" {
+		return "direct"
+	}
+	return a.ExecutorBackend
 }
 
 // hasCapRoom reports daily-cap headroom. A cap of 0 publishes nothing.
@@ -410,10 +431,24 @@ func (s *Service) ensurePublishJob(contentID int64, account, platform string) er
 	}
 	body := policy.AssembleBody(c.IsSponsored, c.Body, c.IsVirtualPersona, buyLinks)
 	images := s.imagePayload(c.ProductID)
-	payload, _ := json.Marshal(map[string]any{
+	// W22: the worker routes on backend (direct default); relay jobs name
+	// the AI account that publishes through the agent.
+	backend, relay := "direct", ""
+	if row, rerr := s.store.GetAccountRowByName(account); rerr == nil {
+		backend = backendOf(row)
+		if backend != "direct" {
+			relay = row.RelayAccount
+		}
+	}
+	job := map[string]any{
 		"content_id": c.ID, "account": account, "platform": platform,
 		"title": c.Title, "body": body, "images": images,
-	})
+		"backend": backend,
+	}
+	if relay != "" {
+		job["relay_account"] = relay
+	}
+	payload, _ := json.Marshal(job)
 	// Literal "publish": importing queue here would cycle (scheduler is
 	// called from queue, so queue -> scheduler -> queue is forbidden).
 	pubJob, err := s.store.CreateJobFull("publish", c.ID, string(payload), business, priority, false)

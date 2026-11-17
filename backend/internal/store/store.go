@@ -1726,11 +1726,16 @@ type ChannelAccount struct {
 	PlanTier     string `json:"planTier"`
 	Capabilities string `json:"capabilities"`
 	ProfileMode  string `json:"profileMode"`
-	CreatedAt    string `json:"createdAt"`
-	UpdatedAt    string `json:"updatedAt"`
+	// ExecutorBackend selects the W22 publish path (direct default, or a
+	// proven relay backend like muse). RelayAccount names the AI account
+	// that relays when the backend is not direct.
+	ExecutorBackend string `json:"executorBackend"`
+	RelayAccount    string `json:"relayAccount"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedAt       string `json:"updatedAt"`
 }
 
-const accountCols = `id,name,platform,owner,role,business,session_state,posting_mode,enc_id,enc_pw,last_checked_at,last_wake_at,usage,last_job_at,daily_cap,kind,platform_user_id,enc_api_token,api_model,plan_tier,capabilities,profile_mode,created_at,updated_at`
+const accountCols = `id,name,platform,owner,role,business,session_state,posting_mode,enc_id,enc_pw,last_checked_at,last_wake_at,usage,last_job_at,daily_cap,kind,platform_user_id,enc_api_token,api_model,plan_tier,capabilities,profile_mode,executor_backend,relay_account,created_at,updated_at`
 
 func scanAccount(row interface{ Scan(...any) error }) (*ChannelAccount, error) {
 	a := &ChannelAccount{}
@@ -1738,18 +1743,22 @@ func scanAccount(row interface{ Scan(...any) error }) (*ChannelAccount, error) {
 		&a.SessionState, &a.PostingMode, &a.EncID, &a.EncPW, &a.LastCheckedAt,
 		&a.LastWakeAt, &a.Usage, &a.LastJobAt, &a.DailyCap, &a.Kind, &a.PlatformUser,
 		&a.EncAPIToken, &a.ApiModel, &a.PlanTier, &a.Capabilities, &a.ProfileMode,
-		&a.CreatedAt, &a.UpdatedAt)
+		&a.ExecutorBackend, &a.RelayAccount, &a.CreatedAt, &a.UpdatedAt)
 	return a, err
 }
 
 // CreateAccountRow inserts one account. Duplicate names return ErrDuplicate.
 func (s *Store) CreateAccountRow(a *ChannelAccount) (*ChannelAccount, error) {
 	now := nowUTC()
+	backend := a.ExecutorBackend
+	if backend == "" {
+		backend = "direct"
+	}
 	res, err := s.db.Exec(`INSERT INTO channel_accounts(name,platform,owner,role,business,
-		session_state,posting_mode,enc_id,enc_pw,last_checked_at,last_wake_at,usage,last_job_at,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, a.Name, a.Platform, a.Owner, a.Role, a.Business,
+		session_state,posting_mode,enc_id,enc_pw,last_checked_at,last_wake_at,usage,last_job_at,executor_backend,relay_account,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, a.Name, a.Platform, a.Owner, a.Role, a.Business,
 		a.SessionState, a.PostingMode, a.EncID, a.EncPW, a.LastCheckedAt, a.LastWakeAt,
-		a.Usage, a.LastJobAt, now, now)
+		a.Usage, a.LastJobAt, backend, a.RelayAccount, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrDuplicate
@@ -1799,10 +1808,10 @@ func (s *Store) ListAccountRows() ([]*ChannelAccount, error) {
 // UpdateAccountRow rewrites one account row by id.
 func (s *Store) UpdateAccountRow(a *ChannelAccount) error {
 	res, err := s.db.Exec(`UPDATE channel_accounts SET platform=?,owner=?,role=?,business=?,
-		session_state=?,posting_mode=?,enc_id=?,enc_pw=?,last_checked_at=?,last_wake_at=?,usage=?,last_job_at=?,daily_cap=?,kind=?,platform_user_id=?,enc_api_token=?,api_model=?,plan_tier=?,capabilities=?,profile_mode=?,updated_at=?
+		session_state=?,posting_mode=?,enc_id=?,enc_pw=?,last_checked_at=?,last_wake_at=?,usage=?,last_job_at=?,daily_cap=?,kind=?,platform_user_id=?,enc_api_token=?,api_model=?,plan_tier=?,capabilities=?,profile_mode=?,executor_backend=?,relay_account=?,updated_at=?
 		WHERE id=?`, a.Platform, a.Owner, a.Role, a.Business, a.SessionState, a.PostingMode,
 		a.EncID, a.EncPW, a.LastCheckedAt, a.LastWakeAt, a.Usage, a.LastJobAt, a.DailyCap, a.Kind, a.PlatformUser,
-		a.EncAPIToken, a.ApiModel, a.PlanTier, a.Capabilities, a.ProfileMode, nowUTC(), a.ID)
+		a.EncAPIToken, a.ApiModel, a.PlanTier, a.Capabilities, a.ProfileMode, a.ExecutorBackend, a.RelayAccount, nowUTC(), a.ID)
 	if err != nil {
 		return err
 	}

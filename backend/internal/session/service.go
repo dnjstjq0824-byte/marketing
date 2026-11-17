@@ -62,6 +62,8 @@ var (
 	ErrDuplicate     = errors.New("account name already exists")
 	ErrVault = errors.New("credential vault unavailable")
 	ErrBadCapabilities = errors.New("capabilities must be a JSON array of text/image/video/file")
+	ErrBadBackend = errors.New("unknown or unready publish backend")
+	ErrBadRelay = errors.New("relay account must be an AI account on the backend platform")
 )
 
 // Account is one agent/channel account with session liveness.
@@ -87,6 +89,10 @@ type Account struct {
 	Capabilities   string `json:"capabilities"`
 	ProfileMode    string `json:"profileMode"`
 	ChatStatus     string `json:"chatStatus"`
+	// ExecutorBackend selects the W22 publish path; RelayAccount names the
+	// AI account that relays when the backend is not direct.
+	ExecutorBackend string `json:"executorBackend"`
+	RelayAccount    string `json:"relayAccount"`
 }
 
 // ReloginItem is one account needing its owner to log back in.
@@ -226,6 +232,7 @@ func toView(row *store.ChannelAccount) *Account {
 		Kind: row.Kind, PlatformUserID: row.PlatformUser,
 		PlanTier: row.PlanTier, Capabilities: row.Capabilities,
 		ProfileMode: row.ProfileMode,
+		ExecutorBackend: row.ExecutorBackend, RelayAccount: row.RelayAccount,
 	}
 }
 
@@ -487,6 +494,59 @@ func (s *Service) UpdateAccountFields(id int64, owner, role, business *string) (
 		return nil, err
 	}
 	return s.GetAccount(id)
+}
+
+// SetExecutorBackend selects one account's W22 publish path. Either field
+// may be nil (unchanged); validation runs on the combined result. Only
+// channel accounts take a relay backend, the backend must be probe-ready,
+// and the relay account must be an AI account on the backend's platform.
+// Liveness stays the scheduler's job: sessions flap, config must not.
+func (s *Service) SetExecutorBackend(id int64, backend, relay *string) (*Account, error) {
+	row, err := s.store.GetAccountRow(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrNoAccount
+		}
+		return nil, err
+	}
+	choice, relayName := row.ExecutorBackend, row.RelayAccount
+	if backend != nil {
+		choice = strings.TrimSpace(*backend)
+		if choice == "" {
+			choice = "direct"
+		}
+	}
+	if relay != nil {
+		relayName = strings.TrimSpace(*relay)
+	}
+	be, err := s.store.GetPublishBackend(choice)
+	if err != nil || !be.Ready {
+		return nil, ErrBadBackend
+	}
+	if choice == "direct" {
+		relayName = ""
+	} else {
+		if row.Kind == "agent_service" {
+			return nil, ErrBadBackend
+		}
+		if relayName == "" {
+			return nil, ErrBadRelay
+		}
+		r, err := s.store.GetAccountRowByName(relayName)
+		if err != nil || r.Kind != "agent_service" || r.Platform != be.AIPlatform {
+			return nil, ErrBadRelay
+		}
+	}
+	row.ExecutorBackend, row.RelayAccount = choice, relayName
+	if err := s.store.UpdateAccountRow(row); err != nil {
+		return nil, err
+	}
+	return s.GetAccount(id)
+}
+
+// ListBackends returns the probe-gated publish backend registry.
+func (s *Service) ListBackends() ([]*store.PublishBackend, error) {
+	return s.store.ListPublishBackends()
 }
 
 // SetPostingMode switches an account between auto and manual posting.

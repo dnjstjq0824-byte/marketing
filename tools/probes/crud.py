@@ -102,6 +102,28 @@ def main():
     code, body = c.op("PATCH", "/api/session/accounts/%d" % accid,
                       {"sessionState": "connected", "postingMode": "auto", "owner": "me"})
     check("acc-patch", code == 200, str(code))
+    code, body = c.op("GET", "/api/publish-backends")
+    names = {b["name"]: b for b in body.get("backends", [])}
+    check("backends-list", code == 200 and names.get("direct", {}).get("ready")
+          and names.get("muse", {}).get("ready")
+          and names.get("muse", {}).get("aiPlatform") == "muse", str(body))
+    code, body = c.op("PATCH", "/api/session/accounts/%d" % accid, {"executorBackend": "nope"})
+    check("backend-unknown-400", code == 400, str(code))
+    code, body = c.op("PATCH", "/api/session/accounts/%d" % accid, {"executorBackend": "muse"})
+    check("backend-norelay-400", code == 400, str(code))
+    code, body = c.op("POST", "/api/session/accounts",
+                      {"name": "cap9", "platform": "muse", "role": "chief", "kind": "agent_service"})
+    check("backend-relay-add", code == 201, str(code))
+    capid = body["id"]
+    code, body = c.op("PATCH", "/api/session/accounts/%d" % accid,
+                      {"executorBackend": "muse", "relayAccount": "cap9"})
+    check("backend-set", code == 200 and body.get("executorBackend") == "muse"
+          and body.get("relayAccount") == "cap9", str(body))
+    code, body = c.op("PATCH", "/api/session/accounts/%d" % accid, {"executorBackend": "direct"})
+    check("backend-direct-clears", code == 200 and body.get("executorBackend") == "direct"
+          and body.get("relayAccount") == "", str(body))
+    code, body = c.op("DELETE", "/api/session/accounts/%d" % capid)
+    check("backend-relay-del", code == 200, str(code))
     code, body = c.op("DELETE", "/api/session/accounts/%d" % accid)
     check("acc-del", code == 200, str(code))
 

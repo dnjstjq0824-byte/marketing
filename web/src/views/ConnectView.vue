@@ -32,7 +32,7 @@
       </div>
       <div v-for="g in channelGroups" :key="g.platform" class="group">
         <h3 class="muted small">{{ g.label }} · {{ g.items.length }}개</h3>
-        <AccountRow v-for="a in g.items" :key="a.id" :account="a" :held="heldOf(a.id)" :team="teamOf(a.id)" @login="openLogin(a)" @unregister="askUnregister(a)" @mode="flipMode(a)" />
+        <AccountRow v-for="a in g.items" :key="a.id" :account="a" :held="heldOf(a.id)" :team="teamOf(a.id)" @login="openLogin(a)" @unregister="askUnregister(a)" @mode="flipMode(a)" @backend="openBackend(a)" />
         <p v-if="!g.items.length" class="muted small">아직 없습니다.</p>
       </div>
     </section>
@@ -131,6 +131,30 @@
         </div>
       </div>
     </div>
+    <div v-if="backendDlg" class="modal-back" @click.self="backendDlg = null">
+      <div class="modal" role="dialog" :aria-label="backendDlg.name + ' 실행 방식'">
+        <h3>{{ backendDlg.name }} 실행 방식</h3>
+        <p class="muted small">직접 발행은 이 계정의 세션으로 올리고, 에이전트 경유는 지정한 AI가 대신 발행합니다.</p>
+        <div class="form">
+          <label>실행 방식
+            <select v-model="backendForm.backend">
+              <option v-for="b in readyBackends" :key="b.name" :value="b.name">{{ b.name === 'direct' ? '직접 발행' : `${b.name} 경유` }}</option>
+            </select>
+          </label>
+          <label v-if="backendForm.backend !== 'direct'">중계 AI
+            <select v-model="backendForm.relay">
+              <option value="">선택</option>
+              <option v-for="r in relayOptions" :key="r.name" :value="r.name">{{ r.name }} · {{ r.sessionState }}</option>
+            </select>
+          </label>
+        </div>
+        <p v-if="backendMsg" class="error">{{ backendMsg }}</p>
+        <div class="btnrow">
+          <button class="ghost" @click="backendDlg = null">취소</button>
+          <button @click="saveBackend">저장</button>
+        </div>
+      </div>
+    </div>
     <ConfirmModal v-if="unregTarget" title="계정을 해제할까요?" :message="unregTarget.name" confirmLabel="해제" danger @confirm="doUnregister" @cancel="unregTarget = null" />
     <div v-if="chatTarget" class="drawer-back" @click.self="chatTarget = null">
       <div class="drawer" role="dialog" :aria-label="chatTarget.name + ' 대화'">
@@ -155,6 +179,7 @@ const queue = ref([])
 const teams = ref([])
 const registry = ref({})
 const aiPlatforms = ref([])
+const backends = ref([])
 const loginDlg = ref(null)
 const addDlg = ref(null)
 const bulkDlg = ref(null)
@@ -162,6 +187,7 @@ const unregTarget = ref(null)
 const chatTarget = ref(null)
 const aiEdit = ref(null)
 const planDlg = ref(null)
+const backendDlg = ref(null)
 const addForm = ref({ platform: '', name: '', owner: '', role: 'worker', business: '', mode: 'manual' })
 const addMsg = ref('')
 const newAI = ref({ key: '', name: '', loginUrl: '' })
@@ -174,6 +200,8 @@ const aiEditMsg = ref('')
 const aiEditOk = ref(false)
 const planForm = ref({ tier: '', caps: [] })
 const planMsg = ref('')
+const backendForm = ref({ backend: 'direct', relay: '' })
+const backendMsg = ref('')
 const CAPS = [
   { key: 'text', label: '텍스트' },
   { key: 'image', label: '이미지 생성' },
@@ -260,18 +288,31 @@ const bulkPreview = computed(() => {
   return n === 1 ? `→ ${p}01` : `→ ${p}01 ~ ${p}${pad(Math.min(n, 50))}`
 })
 
+const readyBackends = computed(() => {
+  const ready = backends.value.filter((b) => b.ready)
+  return ready.length ? ready : [{ name: 'direct', aiPlatform: '', ready: true }]
+})
+
+const relayOptions = computed(() => {
+  const be = backends.value.find((b) => b.name === backendForm.value.backend)
+  if (!be || !be.aiPlatform) return []
+  return accounts.value.filter((a) => a.kind === 'agent_service' && a.platform === be.aiPlatform)
+})
+
 async function load() {
   try {
-    const [acc, q, t, reg, ai] = await Promise.all([
+    const [acc, q, t, reg, ai, be] = await Promise.all([
       apiFetch('/api/session/accounts'),
       apiFetch('/api/session/relogin-queue'),
       apiFetch('/api/teams').catch(() => ({ items: [] })),
       apiFetch('/api/channel-platforms').catch(() => ({ items: [] })),
       apiFetch('/api/ai-platforms').catch(() => ({ items: [] })),
+      apiFetch('/api/publish-backends').catch(() => ({ backends: [] })),
     ])
     accounts.value = acc.accounts || []
     queue.value = q.items || []
     teams.value = t.items || []
+    backends.value = be.backends || []
     const m = {}
     for (const p of reg.items || []) m[p.key] = p.status
     registry.value = m
@@ -522,6 +563,28 @@ async function savePlan() {
     await load()
   } catch (e) {
     planMsg.value = e.message
+  }
+}
+
+function openBackend(a) {
+  backendDlg.value = a
+  backendForm.value = { backend: a.executorBackend || 'direct', relay: a.relayAccount || '' }
+  backendMsg.value = ''
+}
+
+async function saveBackend() {
+  backendMsg.value = ''
+  try {
+    const be = backendForm.value.backend
+    await apiFetch(`/api/session/accounts/${backendDlg.value.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ executorBackend: be, relayAccount: be === 'direct' ? '' : backendForm.value.relay }),
+    })
+    backendDlg.value = null
+    toast('저장했습니다')
+    await load()
+  } catch (e) {
+    backendMsg.value = e.message
   }
 }
 

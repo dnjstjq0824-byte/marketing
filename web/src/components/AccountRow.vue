@@ -20,6 +20,7 @@
       <button v-if="account.sessionState === 'connected'" role="menuitem" @click="act('login')">로그인 다시</button>
       <button v-if="ai && account.sessionState === 'connected'" role="menuitem" @click="act('probe')">대화 연결 테스트</button>
       <button v-if="ai" role="menuitem" @click="act('plan')">요금제·기능</button>
+      <button v-if="!ai" role="menuitem" @click="act('backend')">실행 방식</button>
       <button role="menuitem" class="danger" @click="act('unregister')">해제</button>
     </div>
   </div>
@@ -36,7 +37,7 @@ const props = defineProps({
   held: { type: Number, default: 0 },
   team: { type: Object, default: null },
 })
-const emit = defineEmits(['chat', 'login', 'unregister', 'mode', 'probe', 'plan'])
+const emit = defineEmits(['chat', 'login', 'unregister', 'mode', 'probe', 'plan', 'backend'])
 const menu = ref(false)
 
 const stateKey = computed(() => {
@@ -59,10 +60,18 @@ const stateKind = computed(() => {
 
 const stateText = computed(() => ACCOUNT_STATE[stateKey.value] || props.account.sessionState)
 
+const backendText = computed(() => {
+  const be = props.account.executorBackend || 'direct'
+  if (be === 'direct') return '직접 발행'
+  const relay = props.account.relayAccount ? `(${props.account.relayAccount})` : ''
+  return `${be} 경유${relay}`
+})
+
 const metaLine = computed(() => {
   const parts = []
   if (props.account.owner) parts.push(props.account.owner)
   if (props.account.role && props.ai) parts.push(props.account.role === 'chief' ? '총괄' : '작업자')
+  if (!props.ai) parts.push(backendText.value)
   if (props.account.lastJobAt) parts.push(`마지막 작업 ${props.account.lastJobAt.slice(5, 16).replace('T', ' ')}`)
   return parts.join(' · ')
 })
