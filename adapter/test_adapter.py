@@ -623,24 +623,61 @@ class PureUnitTest(unittest.TestCase):
         self.assertEqual(agent_relay.extract_posted_url("no link here"), "")
         self.assertEqual(agent_relay.extract_posted_url(""), "")
 
+    def test_relay_unwrap_meta_url(self):
+        # W22: Muse wraps outbound links in an l.meta.ai redirect (?u=).
+        wrapped = ("https://l.meta.ai/?u=https%3A%2F%2Fblog.naver.com%2Fx%2F1&h=abc")
+        self.assertEqual(agent_relay.unwrap_meta_url(wrapped),
+                         "https://blog.naver.com/x/1")
+        plain = "https://blog.naver.com/x/1"
+        self.assertEqual(agent_relay.unwrap_meta_url(plain), plain)
+        other = "https://example.com/?u=https%3A%2F%2Fy"
+        self.assertEqual(agent_relay.unwrap_meta_url(other), other)
+        self.assertEqual(agent_relay.unwrap_meta_url(""), "")
+        hrefs = ["https://muse.ai/", wrapped]
+        self.assertEqual(agent_relay.extract_href_url(hrefs, "blog.naver.com"),
+                         "https://blog.naver.com/x/1")
+        self.assertEqual(agent_relay.extract_href_url([], "blog.naver.com"), "")
+
+    def test_post_text_matches(self):
+        # W22: fetched post must carry the exact approved content.
+        body = "line one\nline two"
+        self.assertTrue(agent_relay.post_text_matches(
+            "T\nline one\nline two\n#tag", "T", body, ["#tag"]))
+        self.assertFalse(agent_relay.post_text_matches(
+            "other\nline one", "T", body, []))
+        self.assertFalse(agent_relay.post_text_matches(
+            "T\nchanged lead", "T", body, []))
+        self.assertFalse(agent_relay.post_text_matches(
+            "T\nline one", "T", body, ["#tag"]))
+        self.assertTrue(agent_relay.post_text_matches("anything", "", "", []))
+
     def test_relay_unproven_refuses(self):
         # W22: unproven backends refuse before touching a browser.
-        with self.assertRaises(session_post.PrePublishFailed) as ctx:
-            agent_relay.relay_publish("cap", "muse", "naver_blog", "t", "b")
-        self.assertIn(session_post.PRE_PUBLISH, str(ctx.exception))
+        import dataclasses
+        self.assertTrue(issubclass(agent_relay.RelayNeedsInput,
+                                   session_post.PrePublishFailed))
+        self.assertTrue(agent_relay.is_ready(agent_relay.BACKENDS["muse"]))
         with self.assertRaises(session_post.PrePublishFailed) as ctx:
             agent_relay.relay_publish("cap", "nope", "naver_blog", "t", "b")
         self.assertIn("unknown publish backend", str(ctx.exception))
-        # Second gate: proven flag without pinned approval DOM still refuses.
-        import dataclasses
         real = agent_relay.BACKENDS["muse"]
-        agent_relay.BACKENDS["muse"] = dataclasses.replace(real, enabled=True)
+        agent_relay.BACKENDS["muse"] = dataclasses.replace(real, enabled=False)
         try:
             with self.assertRaises(session_post.PrePublishFailed) as ctx:
                 agent_relay.relay_publish("cap", "muse", "naver_blog", "t", "b")
-            self.assertIn("approval DOM not pinned", str(ctx.exception))
+            self.assertIn("not proven yet", str(ctx.exception))
         finally:
             agent_relay.BACKENDS["muse"] = real
+        agent_relay.BACKENDS["muse"] = dataclasses.replace(real, approval_labels=())
+        try:
+            with self.assertRaises(session_post.PrePublishFailed) as ctx:
+                agent_relay.relay_publish("cap", "muse", "naver_blog", "t", "b")
+            self.assertIn("approval labels not pinned", str(ctx.exception))
+        finally:
+            agent_relay.BACKENDS["muse"] = real
+        # Enabled backend without a relay session: NeedsLogin, no browser.
+        with self.assertRaises(session_post.NeedsLogin):
+            agent_relay.relay_publish("ghost-acct-xyz", "muse", "naver_blog", "t", "b")
 
     def test_publish_routes_by_backend(self):
         # W22: missing backend means direct; relay needs relay_account.
