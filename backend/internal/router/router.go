@@ -19,6 +19,7 @@ import (
 	"somun/internal/content"
 	"somun/internal/executor"
 	"somun/internal/media"
+	"somun/internal/member"
 	"somun/internal/notify"
 	"somun/internal/product"
 	"somun/internal/queue"
@@ -46,6 +47,7 @@ type Deps struct {
 	Agents   *agent.Service
 	Executor *executor.Service
 	Chat     *chat.Service
+	Member   *member.Service
 	// FileKey signs worker media URLs (W5-3). Empty refuses all.
 	FileKey []byte
 	// AdapterPython is the adapter venv python for AI media generation
@@ -71,6 +73,7 @@ func New(d *Deps) http.Handler {
 	mediaH := media.NewHandler(mediaSvc)
 	worksH := works.NewHandler(works.NewService(d.Store), d.Store, d.Config.UploadDir)
 	teamsH := teams.NewHandler(teams.NewService(d.Store), d.Store)
+	memberH := member.NewHandler(d.Member)
 
 	// Public.
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +139,28 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/channel-platforms", op(http.HandlerFunc(d.listPlatforms)))
 	mux.Handle("PATCH /api/channel-platforms/{key}", op(http.HandlerFunc(d.patchPlatform)))
 	mux.Handle("GET /api/publish-backends", op(http.HandlerFunc(sessionH.ListBackends)))
+
+	// Public consignment surface (W23): signup/login plus the catalog.
+	// No auth on reads; member middleware guards personal routes.
+	mux.HandleFunc("POST /api/promo/signup", memberH.Signup)
+	mux.HandleFunc("POST /api/promo/login", memberH.Login)
+	mux.HandleFunc("GET /api/promo/products", memberH.ListProducts)
+	mux.HandleFunc("GET /api/promo/products/{id}", memberH.ProductDetail)
+	mm := d.Member.Middleware
+	mux.Handle("POST /api/promo/logout", mm(http.HandlerFunc(memberH.Logout)))
+	mux.Handle("GET /api/promo/me", mm(http.HandlerFunc(memberH.Me)))
+	mux.Handle("POST /api/promo/products/{id}/apply", mm(http.HandlerFunc(memberH.Apply)))
+	mux.Handle("GET /api/promo/applications", mm(http.HandlerFunc(memberH.MyApplications)))
+	mux.Handle("GET /api/promo/applications/{id}/private-link", mm(http.HandlerFunc(memberH.PrivateLink)))
+
+	// Consignment administration (W23): operator-authenticated.
+	mux.Handle("POST /api/promo/admin/products", op(http.HandlerFunc(memberH.CreateProduct)))
+	mux.Handle("GET /api/promo/admin/products", op(http.HandlerFunc(memberH.ListProductsAdmin)))
+	mux.Handle("PATCH /api/promo/admin/products/{id}", op(http.HandlerFunc(memberH.UpdateProduct)))
+	mux.Handle("POST /api/promo/admin/products/{id}/recruit", op(http.HandlerFunc(memberH.Recruit)))
+	mux.Handle("GET /api/promo/admin/applications", op(http.HandlerFunc(memberH.ListApplicationsAdmin)))
+	mux.Handle("POST /api/promo/admin/applications/{id}/decision", op(http.HandlerFunc(memberH.Decide)))
+	mux.Handle("GET /api/promo/admin/overview", op(http.HandlerFunc(memberH.Overview)))
 	mux.Handle("GET /api/ai-platforms", op(http.HandlerFunc(d.listAIPlatforms)))
 	mux.Handle("POST /api/ai-platforms", op(http.HandlerFunc(d.createAIPlatform)))
 	mux.Handle("PATCH /api/ai-platforms/{key}", op(http.HandlerFunc(d.patchAIPlatform)))

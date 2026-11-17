@@ -14,7 +14,7 @@ import (
 )
 
 // SchemaVersion is the current DDL version recorded in app_meta.
-const SchemaVersion = "29"
+const SchemaVersion = "30"
 
 // schema is the whole Tranche-1 data model: 9 entities (§6).
 // No order/payment/delivery/personal-data tables: this system never takes orders.
@@ -265,6 +265,9 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateToV29(db); err != nil {
+		return err
+	}
+	if err := migrateToV30(db); err != nil {
 		return err
 	}
 	if _, err := db.Exec(
@@ -1095,6 +1098,64 @@ func migrateToV29(db *sql.DB) error {
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			return fmt.Errorf("migrate v29 ddl: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToV30 adds W23 consignment tables: public members with their own
+// sessions (operator auth untouched), consignment products carrying the
+// sealed private URL plus the fixed per-order fee, and member applications
+// with a pending/approved/rejected state machine.
+func migrateToV30(db *sql.DB) error {
+	for _, ddl := range []string{
+		`CREATE TABLE IF NOT EXISTS members (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			email TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			nickname TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS member_sessions (
+			token_hash TEXT PRIMARY KEY,
+			member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+			expires_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_member_sessions_member ON member_sessions(member_id)`,
+		`CREATE TABLE IF NOT EXISTS consignment_products (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL DEFAULT '',
+			store TEXT NOT NULL DEFAULT '',
+			price INTEGER NOT NULL DEFAULT 0,
+			photo TEXT NOT NULL DEFAULT '',
+			facts TEXT NOT NULL DEFAULT '',
+			points TEXT NOT NULL DEFAULT '',
+			banned_words TEXT NOT NULL DEFAULT '',
+			materials TEXT NOT NULL DEFAULT '',
+			fee_per_order INTEGER NOT NULL DEFAULT 0,
+			settle_terms TEXT NOT NULL DEFAULT '',
+			private_url_enc TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'recruiting' CHECK (status IN ('recruiting','closed')),
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS consignment_applications (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			product_id INTEGER NOT NULL REFERENCES consignment_products(id) ON DELETE CASCADE,
+			member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+			channels TEXT NOT NULL DEFAULT '',
+			plan TEXT NOT NULL DEFAULT '',
+			fee_agreed INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+			reason TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			UNIQUE (product_id, member_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_consign_app_product ON consignment_applications(product_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_consign_app_member ON consignment_applications(member_id)`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("migrate v30 ddl: %w", err)
 		}
 	}
 	return nil

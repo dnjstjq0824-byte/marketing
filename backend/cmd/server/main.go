@@ -20,6 +20,7 @@ import (
 	"somun/internal/config"
 	"somun/internal/content"
 	"somun/internal/executor"
+	"somun/internal/member"
 	"somun/internal/notify"
 	"somun/internal/product"
 	"somun/internal/publisher"
@@ -137,6 +138,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("session vault: %w", err)
 	}
+	memberSvc, err := member.NewService(st, cfg.VaultKeyPath)
+	if err != nil {
+		return fmt.Errorf("member vault: %w", err)
+	}
 	sessionSvc.ConfigureLogin(cfg.DataDir, adapterPython())
 	chatSvc := chat.NewService(st)
 	chatSvc.Configure(cfg.DataDir, adapterPython())
@@ -226,7 +231,7 @@ func run() error {
 	}
 	srv := &http.Server{
 		Addr:         cfg.BindAddr + ":" + cfg.Port,
-		Handler:      router.New(&router.Deps{Config: cfg, Store: st, Auth: authSvc, Queue: queueSvc, Content: contentSvc, Product: productSvc, Session: sessionSvc, Notify: notifySvc, Agents: agentSvc, Executor: execSvc, Chat: chatSvc, FileKey: sessionSvc.FileKey(), AdapterPython: adapterPython()}),
+		Handler:      router.New(&router.Deps{Config: cfg, Store: st, Auth: authSvc, Queue: queueSvc, Content: contentSvc, Product: productSvc, Session: sessionSvc, Notify: notifySvc, Agents: agentSvc, Executor: execSvc, Chat: chatSvc, Member: memberSvc, FileKey: sessionSvc.FileKey(), AdapterPython: adapterPython()}),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: writeTimeout,
 	}
