@@ -14,7 +14,7 @@ import (
 )
 
 // SchemaVersion is the current DDL version recorded in app_meta.
-const SchemaVersion = "30"
+const SchemaVersion = "32"
 
 // schema is the whole Tranche-1 data model: 9 entities (§6).
 // No order/payment/delivery/personal-data tables: this system never takes orders.
@@ -268,6 +268,12 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateToV30(db); err != nil {
+		return err
+	}
+	if err := migrateToV31(db); err != nil {
+		return err
+	}
+	if err := migrateToV32(db); err != nil {
 		return err
 	}
 	if _, err := db.Exec(
@@ -1156,6 +1162,54 @@ func migrateToV30(db *sql.DB) error {
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			return fmt.Errorf("migrate v30 ddl: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToV31 adds W25 consignment work tracking: admin-confirmed order
+// counts per application plus the member-registered posted URLs.
+func migrateToV31(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('consignment_applications') WHERE name='confirmed_orders'`).Scan(&n); err != nil {
+		return fmt.Errorf("migrate v31 check: %w", err)
+	}
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE consignment_applications ADD COLUMN confirmed_orders INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migrate v31: %w", err)
+		}
+	}
+	for _, ddl := range []string{
+		`CREATE TABLE IF NOT EXISTS consignment_posts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			application_id INTEGER NOT NULL REFERENCES consignment_applications(id) ON DELETE CASCADE,
+			url TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_consign_posts_app ON consignment_posts(application_id)`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("migrate v31 ddl: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToV32 adds consignment storefront fields: category chips and the
+// recruit deadline driving D-day display (closing stays manual).
+func migrateToV32(db *sql.DB) error {
+	for _, stmt := range []struct{ table, col, ddl string }{
+		{"consignment_products", "category", `ALTER TABLE consignment_products ADD COLUMN category TEXT NOT NULL DEFAULT ''`},
+		{"consignment_products", "recruit_until", `ALTER TABLE consignment_products ADD COLUMN recruit_until TEXT NOT NULL DEFAULT ''`},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, stmt.table, stmt.col).Scan(&n); err != nil {
+			return fmt.Errorf("migrate v32 check: %w", err)
+		}
+		if n == 0 {
+			if _, err := db.Exec(stmt.ddl); err != nil {
+				return fmt.Errorf("migrate v32: %w", err)
+			}
 		}
 	}
 	return nil

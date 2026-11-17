@@ -41,7 +41,7 @@ func TestMigrateV29BackendColumns(t *testing.T) {
 	if !got[0].Ready || !got[1].Ready || got[1].AIPlatform != "muse" {
 		t.Fatalf("seeds = %+v", got)
 	}
-	if v, err := CurrentSchemaVersion(st.DB()); err != nil || v != "30" {
+	if v, err := CurrentSchemaVersion(st.DB()); err != nil || v != "32" {
 		t.Fatalf("schema_version = %q err = %v", v, err)
 	}
 }

@@ -202,23 +202,26 @@ func (h *Handler) PrivateLink(w http.ResponseWriter, r *http.Request) {
 }
 
 type productRequest struct {
-	Name        string `json:"name"`
-	Store       string `json:"store"`
-	Price       int    `json:"price"`
-	Photo       string `json:"photo"`
-	Facts       string `json:"facts"`
-	Points      string `json:"points"`
-	BannedWords string `json:"bannedWords"`
-	Materials   string `json:"materials"`
-	FeePerOrder int    `json:"feePerOrder"`
-	SettleTerms string `json:"settleTerms"`
-	PrivateURL  string `json:"privateUrl"`
+	Name         string `json:"name"`
+	Store        string `json:"store"`
+	Price        int    `json:"price"`
+	Photo        string `json:"photo"`
+	Facts        string `json:"facts"`
+	Points       string `json:"points"`
+	BannedWords  string `json:"bannedWords"`
+	Materials    string `json:"materials"`
+	FeePerOrder  int    `json:"feePerOrder"`
+	SettleTerms  string `json:"settleTerms"`
+	PrivateURL   string `json:"privateUrl"`
+	Category     string `json:"category"`
+	RecruitUntil string `json:"recruitUntil"`
 }
 
 func (q *productRequest) input() ProductInput {
 	return ProductInput{Name: q.Name, Store: q.Store, Price: q.Price, Photo: q.Photo,
 		Facts: q.Facts, Points: q.Points, BannedWords: q.BannedWords, Materials: q.Materials,
-		FeePerOrder: q.FeePerOrder, SettleTerms: q.SettleTerms, PrivateURL: q.PrivateURL}
+		FeePerOrder: q.FeePerOrder, SettleTerms: q.SettleTerms, PrivateURL: q.PrivateURL,
+		Category: q.Category, RecruitUntil: q.RecruitUntil}
 }
 
 // CreateProduct handles POST /api/promo/admin/products (operator).
@@ -345,4 +348,78 @@ func (h *Handler) Decide(w http.ResponseWriter, r *http.Request) {
 // Overview handles GET /api/promo/admin/overview (operator).
 func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.svc.Overview())
+}
+
+// Work handles GET /api/promo/work: the member workspace.
+func (h *Handler) Work(w http.ResponseWriter, r *http.Request) {
+	id, ok := MemberFrom(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "member login required")
+		return
+	}
+	writeJSON(w, http.StatusOK, h.svc.MyWork(id))
+}
+
+// RegisterPost handles POST /api/promo/applications/{id}/posts.
+func (h *Handler) RegisterPost(w http.ResponseWriter, r *http.Request) {
+	id, ok := MemberFrom(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "member login required")
+		return
+	}
+	appID, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid application id")
+		return
+	}
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	p, err := h.svc.RegisterPost(id, appID, req.URL)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNoApplication):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrForbidden):
+			writeError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, ErrBadURL):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "cannot register post")
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, p)
+}
+
+// ConfirmOrders handles POST /api/promo/admin/applications/{id}/confirm (operator).
+func (h *Handler) ConfirmOrders(w http.ResponseWriter, r *http.Request) {
+	appID, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid application id")
+		return
+	}
+	var req struct {
+		Orders int `json:"orders"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := h.svc.ConfirmOrders(appID, req.Orders); err != nil {
+		switch {
+		case errors.Is(err, ErrNoApplication):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrBadDecision), errors.Is(err, ErrBadCount):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "cannot confirm orders")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

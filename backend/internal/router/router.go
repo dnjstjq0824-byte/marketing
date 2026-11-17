@@ -152,6 +152,8 @@ func New(d *Deps) http.Handler {
 	mux.Handle("POST /api/promo/products/{id}/apply", mm(http.HandlerFunc(memberH.Apply)))
 	mux.Handle("GET /api/promo/applications", mm(http.HandlerFunc(memberH.MyApplications)))
 	mux.Handle("GET /api/promo/applications/{id}/private-link", mm(http.HandlerFunc(memberH.PrivateLink)))
+	mux.Handle("GET /api/promo/work", mm(http.HandlerFunc(memberH.Work)))
+	mux.Handle("POST /api/promo/applications/{id}/posts", mm(http.HandlerFunc(memberH.RegisterPost)))
 
 	// Consignment administration (W23): operator-authenticated.
 	mux.Handle("POST /api/promo/admin/products", op(http.HandlerFunc(memberH.CreateProduct)))
@@ -161,6 +163,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("GET /api/promo/admin/applications", op(http.HandlerFunc(memberH.ListApplicationsAdmin)))
 	mux.Handle("POST /api/promo/admin/applications/{id}/decision", op(http.HandlerFunc(memberH.Decide)))
 	mux.Handle("GET /api/promo/admin/overview", op(http.HandlerFunc(memberH.Overview)))
+	mux.Handle("POST /api/promo/admin/applications/{id}/confirm", op(http.HandlerFunc(memberH.ConfirmOrders)))
 	mux.Handle("GET /api/ai-platforms", op(http.HandlerFunc(d.listAIPlatforms)))
 	mux.Handle("POST /api/ai-platforms", op(http.HandlerFunc(d.createAIPlatform)))
 	mux.Handle("PATCH /api/ai-platforms/{key}", op(http.HandlerFunc(d.patchAIPlatform)))
