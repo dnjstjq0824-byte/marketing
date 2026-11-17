@@ -638,6 +638,16 @@ class PureUnitTest(unittest.TestCase):
                          "https://blog.naver.com/x/1")
         self.assertEqual(agent_relay.extract_href_url([], "blog.naver.com"), "")
 
+    def test_park_reason(self):
+        # W22: secure modal wins, CAPTCHA parks, normal chatter passes.
+        muse = agent_relay.BACKENDS["muse"]
+        self.assertEqual(agent_relay.park_reason("비밀번호 입력 카드", muse), "secure")
+        self.assertEqual(agent_relay.park_reason("캡차나 추가 인증에서 걸림", muse), "captcha")
+        self.assertEqual(agent_relay.park_reason("stuck on CAPTCHA", muse), "captcha")
+        self.assertEqual(agent_relay.park_reason("어디서 막혔는지 보고", muse), "captcha")
+        self.assertEqual(agent_relay.park_reason("발행 완료했습니다", muse), "")
+        self.assertEqual(agent_relay.park_reason("", muse), "")
+
     def test_post_text_matches(self):
         # W22: fetched post must carry the exact approved content.
         body = "line one\nline two"

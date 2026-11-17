@@ -24,9 +24,10 @@ DIRECT = "direct"
 
 
 class RelayNeedsInput(session_post.PrePublishFailed):
-    """The agent parked on its credential modal: a human must store the
-    login once, then requeue the job from the console. Nothing posted
-    (the agent waits before logging in)."""
+    """The agent parked where only a human may proceed: its credential
+    modal (store the login once) or a CAPTCHA/additional check (take
+    control in the Muse app and solve it). Nothing posted yet in either
+    case; requeue from the console afterwards."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -39,6 +40,9 @@ class RelayBackend:
     # disjoint labels and is checked first, so the two never confuse.
     approval_labels: tuple = ("승인", "Approve", "허용")
     secure_labels: tuple = ("보안 로그인", "비밀번호 입력", "저장소에 저장")
+    # Observed 2026-11-17: Naver's new-environment check can stall the
+    # cloud login on a CAPTCHA or extra verification only a human passes.
+    captcha_words: tuple = ("캡차", "captcha", "추가 인증", "막혔", "차단")
     done_words: tuple = ("완료했", "발행했", "발행 완료")
     poll_sec: int = 15
     timeout_sec: int = 900
@@ -246,6 +250,17 @@ def _thread_hrefs(page, limit=30):
         return []
 
 
+def park_reason(blob, backend):
+    """Return "secure", "captcha", or "" for the polled thread text."""
+    text = blob or ""
+    if any(k in text for k in backend.secure_labels):
+        return "secure"
+    low = text.lower()
+    if any(k in low for k in backend.captcha_words):
+        return "captcha"
+    return ""
+
+
 def relay_publish(relay_account, backend_name, channel_platform, title, body,
                   tags=None, attachments=None):
     """Publish via a relay backend, returning {"url": ..., "evidence": ...}.
@@ -323,11 +338,17 @@ def relay_publish(relay_account, backend_name, channel_platform, title, body,
             except Exception as exc:
                 raise session_post.UncertainPostFailed(
                     "%s relay thread unreadable: %s" % (session_post.UNCERTAIN_POST, exc))
-            if any(k in blob for k in backend.secure_labels):
+            parked = park_reason(blob, backend)
+            if parked == "secure":
                 raise RelayNeedsInput(
                     "%s backend %s parked on its credential modal: store the %s login "
                     "once in the Muse app, then requeue this job"
                     % (session_post.PRE_PUBLISH, backend_name, channel_platform))
+            if parked == "captcha":
+                raise RelayNeedsInput(
+                    "%s backend %s parked on a CAPTCHA or additional check: take control "
+                    "in the Muse app (브라우저 제어), solve it, then requeue this job"
+                    % (session_post.PRE_PUBLISH, backend_name))
             if not clicked:
                 clicked = _click_first(page, backend.approval_labels)
             if any(w in blob for w in backend.done_words):
