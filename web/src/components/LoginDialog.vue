@@ -22,7 +22,8 @@
       </details>
       <p v-if="phase === 'waiting'" class="banner warn">브라우저가 열렸습니다. 로그인을 끝낸 뒤 아래 완료 확인을 누르세요.</p>
       <p v-if="phase === 'busy'" class="banner warn">확인 중입니다. 잠시 기다리세요.</p>
-      <p v-if="msg" :class="ok ? 'banner okk' : 'error'">{{ msg }}</p>
+      <p v-if="ok && msg" class="banner okk">{{ msg }}</p>
+      <FieldError v-else :message="msg" :hint="failHint" />
       <div class="btnrow">
         <button v-if="phase === 'ask'" @click="start">브라우저 열기</button>
         <button v-if="phase === 'ask'" class="ghost" @click="finish">터미널 로그인 후 바로 확인</button>
@@ -38,6 +39,7 @@
 import { ref } from 'vue'
 import { apiFetch } from '../stores/auth.js'
 import { GOOGLE_SSO_PLATFORMS, LOGIN_HINT, label, PLATFORM } from '../stores/labels.js'
+import FieldError from './console/FieldError.vue'
 
 const props = defineProps({
   account: { type: Object, required: true },
@@ -48,6 +50,7 @@ const emit = defineEmits(['done', 'close', 'next'])
 
 const phase = ref('ask')
 const msg = ref('')
+const failHint = ref('')
 const ok = ref(false)
 const realProfile = ref(false)
 
@@ -65,6 +68,7 @@ function needsGoogleLogin(p) {
 
 async function start() {
   msg.value = ''
+  failHint.value = ''
   try {
     await apiFetch(`/api/session/accounts/${props.account.id}/login-start`, {
       method: 'POST',
@@ -73,6 +77,7 @@ async function start() {
     phase.value = 'waiting'
   } catch (e) {
     msg.value = e.message
+    failHint.value = '브라우저가 막혔을 수 있습니다. 아래 터미널 방법으로도 로그인할 수 있습니다'
     ok.value = false
   }
 }
@@ -80,6 +85,7 @@ async function start() {
 async function finish() {
   phase.value = 'busy'
   msg.value = ''
+  failHint.value = ''
   try {
     const a = await apiFetch(`/api/session/accounts/${props.account.id}/login-finish`, { method: 'POST' })
     phase.value = 'done'
@@ -89,6 +95,7 @@ async function finish() {
   } catch (e) {
     phase.value = 'waiting'
     msg.value = e.message
+    failHint.value = '로그인 창에서 끝까지 마쳤는지 확인하고 다시 누르세요'
     ok.value = false
   }
 }
@@ -129,8 +136,10 @@ function onBackdrop() {
   flex-direction: column;
   gap: var(--s3);
 }
-.modal h3 { margin: 0; }
-.sect-head { display: flex; align-items: center; gap: var(--s2); }
+.modal h3 { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal { min-width: 0; }
+.modal p, .modal details { overflow-wrap: anywhere; min-width: 0; }
+.sect-head { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
 .pill { background: var(--soft); border-radius: 999px; padding: 0 10px; font-size: 12px; }
 .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); }
 .steps li { display: flex; align-items: center; gap: var(--s2); }
@@ -145,17 +154,19 @@ function onBackdrop() {
   font-size: 13px;
   color: var(--muted);
 }
-.n.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.n.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .check { display: flex; align-items: center; gap: var(--s2); }
 .check input { width: auto; }
 details summary { cursor: pointer; font-weight: 700; }
 details p { margin: var(--s1) 0 0; }
-code { background: var(--soft); padding: 0 4px; border-radius: 4px; font-size: 12px; }
+code { background: var(--soft); padding: 0 4px; border-radius: 4px; font-size: 12px; overflow-wrap: anywhere; word-break: break-all; }
 .banner { border-radius: var(--r-md); padding: var(--s3); }
 .banner.warn { background: var(--hold-soft); }
 .banner.okk { background: var(--ok-soft); color: var(--ok); }
 .error { color: var(--warn); }
 .btnrow { display: flex; gap: var(--s2); flex-wrap: wrap; }
-.btnrow button { border-radius: var(--r-md); padding: var(--s2) var(--s4); border: 1px solid var(--accent); background: var(--accent); color: #fff; }
-.btnrow button.ghost { border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+.btnrow button { border-radius: var(--r-md); padding: var(--s2) var(--s4); border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.btnrow button:hover { background: var(--accent-dark); }
+.btnrow button.ghost { border: 1px solid var(--line); background: var(--panel); color: var(--ink); font-weight: 500; }
+.btnrow button.ghost:hover { background: var(--soft); }
 </style>

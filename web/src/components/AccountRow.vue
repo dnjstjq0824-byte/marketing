@@ -111,9 +111,11 @@ function act(which) {
   flex-direction: column;
   gap: var(--s1);
   position: relative;
+  min-width: 0;
 }
-.who { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
-.who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; min-width: 0; }
+.who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.row > p { overflow-wrap: anywhere; min-width: 0; }
 .teamchip {
   font-size: 12px;
   font-weight: 700;
@@ -126,7 +128,7 @@ function act(which) {
 }
 .teamchip:hover { text-decoration: underline; }
 .leader { font-size: 12px; font-weight: 800; color: var(--hold); white-space: nowrap; }
-.btns { display: flex; gap: var(--s2); }
+.btns { display: flex; gap: var(--s2); flex-wrap: wrap; }
 .btns button, .ghost {
   border-radius: var(--r-md);
   padding: var(--s1) var(--s3);
@@ -134,8 +136,11 @@ function act(which) {
   background: var(--panel);
   color: var(--ink);
   font-size: 13px;
+  transition: background var(--t), border-color var(--t);
 }
-.btns button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+.btns button.ghost:hover { background: var(--soft); }
+.btns button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.btns button.primary:hover { background: var(--accent-dark); }
 .menu {
   position: absolute;
   right: 0;
@@ -149,6 +154,7 @@ function act(which) {
   z-index: 20;
   min-width: 140px;
 }
-.menu button { background: none; border: none; color: var(--ink); text-align: left; padding: var(--s2) var(--s3); }
+.menu button { background: none; border: none; color: var(--ink); text-align: left; padding: var(--s2) var(--s3); transition: background var(--t); }
+.menu button:hover { background: var(--soft); }
 .menu button.danger { color: var(--warn); }
 </style>

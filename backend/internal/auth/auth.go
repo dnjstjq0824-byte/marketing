@@ -64,8 +64,18 @@ func (s *Service) LoginSucceeded(username, ip string) {
 	s.limiter.Succeeded(username, ip)
 }
 
-// ClientIP returns the host part of the remote address for rate limiting.
+// ClientIP returns the caller address for rate limiting. Behind a tunnel or
+// proxy the edge address wins (CF-Connecting-IP, then X-Forwarded-For);
+// direct connections fall back to the remote address.
 func ClientIP(r *http.Request) string {
+	if ip := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); ip != "" {
+		return ip
+	}
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		if ip := strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0]); ip != "" {
+			return ip
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

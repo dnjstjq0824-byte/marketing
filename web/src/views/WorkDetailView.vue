@@ -1,6 +1,6 @@
 <template>
   <div class="detail">
-    <RouterLink to="/works" class="back">← 작업 목록</RouterLink>
+    <DetailCrumbs :title="data?.product?.name || data?.product?.sourceUrl || '작업'" />
     <Skeleton v-if="loading" :rows="5" />
     <div v-else-if="loadError" class="card center">
       <p>불러오지 못했습니다.</p>
@@ -48,37 +48,15 @@
           </div>
         </div>
       </section>
+      <section class="card" aria-label="진행 기록">
+        <h2 class="section-title">진행 기록</h2>
+        <WorkTimeline :items="timeline" />
+      </section>
       <section v-if="data.images.length" class="card" aria-label="첨부">
         <h2 class="section-title">첨부 {{ data.images.length }}건</h2>
         <div class="tiles">
           <a v-for="m in data.images" :key="m.id" :href="m.url" target="_blank" rel="noopener" class="tile"><img :src="m.url" alt="" loading="lazy" /></a>
         </div>
-      </section>
-      <section class="card" aria-label="AI 대화 기록">
-        <h2 class="section-title">AI와 주고받은 원문 보기</h2>
-        <div v-if="!log.length" class="muted">기록이 없습니다.</div>
-        <ol v-else class="log">
-          <li v-for="(e, i) in log" :key="i">
-            <StatusChip kind="info">{{ WORK_STAGE[e.stage] || AI_LOG_TYPE[e.type] || e.type }}</StatusChip>
-            <span class="muted small">{{ e.account || e.worker }} · {{ shortTime(e.at) }}</span>
-            <details v-if="e.prompt || e.reply" class="orig">
-              <summary class="small">원문 펼치기</summary>
-              <div v-if="e.prompt" class="small"><strong>보낸 내용</strong><pre class="pre">{{ e.prompt }}</pre></div>
-              <div v-if="e.reply" class="small"><strong>받은 답장</strong><pre class="pre">{{ e.reply }}</pre></div>
-            </details>
-            <p v-else class="small">{{ e.summary || e.error }}</p>
-          </li>
-        </ol>
-      </section>
-      <section class="card" aria-label="사람 조작 기록">
-        <h2 class="section-title">사람 조작 기록</h2>
-        <div v-if="!audit.length" class="muted">조작 기록이 없습니다.</div>
-        <ol v-else class="log">
-          <li v-for="a in audit" :key="a.id">
-            <span class="small"><strong>{{ AUDIT_ACTION[a.action] || a.action }}</strong> · {{ a.actor }} · {{ shortTime(a.createdAt) }}</span>
-            <p v-if="a.detail" class="muted small">{{ a.detail }}</p>
-          </li>
-        </ol>
       </section>
     </template>
     <ConfirmModal v-if="confirmDelete" title="작업을 삭제할까요?" message="게시물·기록·첨부가 함께 지워집니다." confirmLabel="삭제" danger @confirm="remove" @cancel="confirmDelete = false" />
@@ -107,6 +85,8 @@ import ConfirmModal from '../components/ConfirmModal.vue'
 import Skeleton from '../components/Skeleton.vue'
 import StageBar from '../components/StageBar.vue'
 import StatusChip from '../components/StatusChip.vue'
+import DetailCrumbs from '../components/console/DetailCrumbs.vue'
+import WorkTimeline from '../components/console/WorkTimeline.vue'
 import { AI_LOG_TYPE, AUDIT_ACTION, INDUSTRY, POST_STATE, WORK_STAGE } from '../stores/labels.js'
 
 const route = useRoute()
@@ -150,6 +130,29 @@ function stateKind(p) {
   if (p.status === 'queued' || p.status === 'approved') return 'info'
   return 'neutral'
 }
+
+const timeline = computed(() => {
+  const items = []
+  for (const e of log.value) {
+    const detail = [e.prompt && `보낸 내용\n${e.prompt}`, e.reply && `받은 답장\n${e.reply}`].filter(Boolean).join('\n\n')
+    items.push({
+      at: shortTime(e.at), raw: e.at || '',
+      title: WORK_STAGE[e.stage] || AI_LOG_TYPE[e.type] || e.type || 'AI',
+      note: [e.account || e.worker, e.summary || e.error].filter(Boolean).join(' · '),
+      detail: detail || '',
+      kind: e.error ? 'warn' : 'ai',
+    })
+  }
+  for (const a of audit.value) {
+    items.push({
+      at: shortTime(a.createdAt), raw: a.createdAt || '',
+      title: AUDIT_ACTION[a.action] || a.action,
+      note: [a.actor, a.detail].filter(Boolean).join(' · '),
+      detail: '', kind: 'human',
+    })
+  }
+  return items.sort((a, b) => (b.raw < a.raw ? -1 : 1)).slice(0, 40)
+})
 
 async function load() {
   loadError.value = false
@@ -277,7 +280,6 @@ onMounted(load)
 
 <style scoped>
 .detail { display: flex; flex-direction: column; gap: var(--s4); }
-.back { font-size: 13px; }
 .indrow { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
 .indsel { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s1) var(--s2); background: var(--panel); }
 .head { display: flex; align-items: flex-start; gap: var(--s4); }
@@ -312,11 +314,6 @@ onMounted(load)
 .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s2); }
 .tile { display: block; aspect-ratio: 1; border-radius: var(--r-md); overflow: hidden; background: var(--soft); border: 1px solid var(--line-soft); }
 .tile img { width: 100%; height: 100%; object-fit: cover; }
-.log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
-.log li { display: flex; flex-direction: column; gap: var(--s1); border-top: 1px solid var(--line-soft); padding-top: var(--s2); }
-.log p { margin: 0; overflow: hidden; text-overflow: ellipsis; }
-.orig summary { cursor: pointer; color: var(--accent-dark); }
-.pre { white-space: pre-wrap; word-break: break-word; background: var(--soft); border: 1px solid var(--line-soft); border-radius: var(--r-md); padding: var(--s2); margin: var(--s1) 0 0; max-height: 320px; overflow: auto; font-size: 12px; line-height: 1.6; }
 .modal-back { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); z-index: 150; display: flex; align-items: center; justify-content: center; padding: var(--s4); }
 .modal { background: var(--panel); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); padding: var(--s5); max-width: 440px; width: 100%; display: flex; flex-direction: column; gap: var(--s3); }
 .modal input { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); background: var(--panel); width: 100%; }
@@ -324,9 +321,9 @@ onMounted(load)
 .error { color: var(--warn); }
 @media (min-width: 1150px) {
   .detail { display: grid; grid-template-columns: 7fr 5fr; align-items: start; }
-  .detail > .back, .detail > .head, .detail > :deep(.stages) { grid-column: 1 / -1; }
+  .detail > nav, .detail > .head, .detail > :deep(.stages) { grid-column: 1 / -1; }
   .detail > section[aria-label="게시물"] { grid-column: 1; }
   .detail > section[aria-label="첨부"] { grid-column: 1; }
-  .detail > section[aria-label="AI 대화 기록"] { grid-column: 2; grid-row: span 2; }
+  .detail > section[aria-label="진행 기록"] { grid-column: 2; grid-row: span 2; }
 }
 </style>

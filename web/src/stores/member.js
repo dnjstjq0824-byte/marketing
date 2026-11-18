@@ -39,10 +39,10 @@ export async function promoFetch(path, opts = {}) {
   return data
 }
 
-export async function memberSignup(email, password, nickname) {
+export async function memberSignup(email, password, nickname, inviteCode) {
   const data = await promoFetch('/api/promo/signup', {
     method: 'POST',
-    body: JSON.stringify({ email, password, nickname }),
+    body: JSON.stringify({ email, password, nickname, inviteCode }),
   })
   setMemberSession(data.token, data.member)
   return data.member

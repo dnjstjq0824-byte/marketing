@@ -14,37 +14,43 @@
       <button @click="load">다시 시도</button>
     </div>
     <template v-else-if="data.today">
+      <section class="kpis" aria-label="오늘 현황">
+        <KpiCard label="진행 중" :value="data.today.running" :delta="null" to="/works" />
+        <KpiCard label="오늘 발행" :value="data.today.publishedToday" :delta="pubDelta" to="/works?tab=published" />
+        <KpiCard label="발행 대기" :value="data.today.queued" :delta="null" to="/works?tab=queued" />
+        <KpiCard label="실패" :value="data.today.failed" :delta="failDelta" to="/works?tab=failed" invert />
+      </section>
+      <section class="card" aria-label="발행 추이">
+        <div class="sect-head">
+          <h2 class="section-title">발행 추이</h2>
+          <span class="muted small">이번 주 조회 <b class="num">{{ data.today.weekViews }}</b></span>
+        </div>
+        <TrendChart :days="trend" />
+      </section>
       <div class="topgrid">
-      <section class="card today" aria-label="오늘 한 일">
-        <h2 class="section-title">오늘 한 일</h2>
-        <p class="today-line">발행 <strong class="num">{{ data.today.publishedToday }}</strong>건 · 진행 중 <strong class="num">{{ data.today.running }}</strong>건 · 대기 <strong class="num">{{ data.today.queued }}</strong>건</p>
-        <ul v-if="todayPosts.length" class="donelist">
-          <li v-for="p in todayPosts" :key="p.id">
-            <a v-if="p.url" :href="p.url" target="_blank" rel="noopener">{{ p.title }}</a>
-            <span v-else>{{ p.title }}</span>
-            <span class="muted small">{{ p.channel }}</span>
-          </li>
-        </ul>
-        <p v-else class="muted small">아직 발행된 글이 없습니다.</p>
-      </section>
-      <section class="card needs" :class="{ calm: needs.length === 0 }" aria-label="개입 필요">
-        <h2 class="section-title">개입 필요 {{ needs.length }}건</h2>
-        <p v-if="!needs.length" class="calm-msg">볼 일 없습니다 ✔</p>
-        <ul v-else class="needlist">
-          <li v-for="(n, i) in needs" :key="i">
-            <span class="nmsg">{{ n.text }}</span>
-            <RouterLink :to="n.to" class="ghost small link">{{ n.action }}</RouterLink>
-          </li>
-        </ul>
-      </section>
+        <section class="card today" aria-label="오늘 한 일">
+          <h2 class="section-title">오늘 한 일</h2>
+          <p class="today-line">발행 <strong class="num">{{ data.today.publishedToday }}</strong>건 · 진행 중 <strong class="num">{{ data.today.running }}</strong>건 · 대기 <strong class="num">{{ data.today.queued }}</strong>건</p>
+          <ul v-if="todayPosts.length" class="donelist">
+            <li v-for="p in todayPosts" :key="p.id">
+              <a v-if="p.url" :href="p.url" target="_blank" rel="noopener">{{ p.title }}</a>
+              <span v-else>{{ p.title }}</span>
+              <span class="muted small">{{ p.channel }}</span>
+            </li>
+          </ul>
+          <p v-else class="muted small">아직 발행된 글이 없습니다.</p>
+        </section>
+        <section class="card needs" :class="{ calm: needs.length === 0 }" aria-label="개입 필요">
+          <h2 class="section-title">개입 필요 {{ needs.length }}건</h2>
+          <p v-if="!needs.length" class="calm-msg">볼 일 없습니다 ✔</p>
+          <ul v-else class="needlist">
+            <li v-for="(n, i) in needs" :key="i">
+              <span class="nmsg">{{ n.text }}</span>
+              <RouterLink :to="n.to" class="ghost small link">{{ n.action }}</RouterLink>
+            </li>
+          </ul>
+        </section>
       </div>
-      <section class="stats" aria-label="오늘 현황">
-        <RouterLink to="/works" class="stat"><b class="num">{{ data.today.running }}</b><span>진행 중</span></RouterLink>
-        <RouterLink to="/works?tab=published" class="stat"><b class="num">{{ data.today.publishedToday }}</b><span>오늘 발행</span></RouterLink>
-        <RouterLink to="/works?tab=queued" class="stat"><b class="num">{{ data.today.queued }}</b><span>발행 대기</span></RouterLink>
-        <div class="stat"><b class="num">{{ data.today.weekViews }}</b><span>이번 주 조회</span></div>
-        <RouterLink to="/works?tab=failed" class="stat"><b class="num">{{ data.today.failed }}</b><span>실패</span></RouterLink>
-      </section>
       <section aria-label="진행 중인 작업">
         <div class="sect-head"><h2 class="section-title">진행 중</h2><RouterLink to="/works" class="more">전체 보기</RouterLink></div>
         <div v-if="data.running.length" class="cards">
@@ -78,8 +84,11 @@ import PostCard from '../components/PostCard.vue'
 import Skeleton from '../components/Skeleton.vue'
 import StatusChip from '../components/StatusChip.vue'
 import WorkCard from '../components/WorkCard.vue'
+import KpiCard from '../components/console/KpiCard.vue'
+import TrendChart from '../components/console/TrendChart.vue'
 
 const data = ref({ actions: [], today: null, running: [], recentPosts: [], recentMedia: [], firstRun: {} })
+const trend = ref([])
 const loading = ref(true)
 const loadError = ref(false)
 
@@ -120,10 +129,21 @@ const needs = computed(() => {
   return out.slice(0, 6)
 })
 
+function dayDelta(key) {
+  const d = trend.value
+  if (d.length < 2) return null
+  return d[d.length - 1][key] - d[d.length - 2][key]
+}
+const pubDelta = computed(() => dayDelta('published'))
+const failDelta = computed(() => dayDelta('failed'))
+
 async function load() {
   loadError.value = false
   try {
-    const res = await apiFetch('/api/overview')
+    const [res, tr] = await Promise.all([
+      apiFetch('/api/overview'),
+      apiFetch('/api/publish-trend?days=14').catch(() => ({ days: [] })),
+    ])
     data.value = {
       actions: res.actions || [],
       today: res.today,
@@ -132,6 +152,7 @@ async function load() {
       recentMedia: res.recentMedia || [],
       firstRun: res.firstRun || {},
     }
+    trend.value = tr.days || []
   } catch {
     loadError.value = true
   } finally {
@@ -193,32 +214,14 @@ onMounted(() => poll.start())
   padding: var(--s2) var(--s4);
   margin-top: var(--s2);
 }
-.stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--s3); }
-.stat {
-  background: var(--panel);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-lg);
-  padding: var(--s4) var(--s2);
-  text-align: center;
-  text-decoration: none;
-  color: var(--ink);
-  box-shadow: var(--shadow);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s1);
-}
-.stat b { font-size: 24px; }
-.stat span { font-size: 13px; color: var(--muted); }
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s3); }
 .cards { display: flex; flex-direction: column; gap: var(--s3); }
 .tiles { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--s2); }
 @media (max-width: 900px) {
-  .stats { grid-template-columns: repeat(5, 1fr); gap: var(--s2); }
-  .stat { padding: var(--s3) var(--s1); }
-  .stat b { font-size: 18px; }
+  .kpis { grid-template-columns: repeat(2, 1fr); gap: var(--s2); }
   .tiles { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 700px) {
-  .stats { grid-template-columns: repeat(3, 1fr); }
   .tiles { grid-template-columns: repeat(2, 1fr); }
 }
 @media (min-width: 1150px) {

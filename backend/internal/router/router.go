@@ -102,6 +102,7 @@ func New(d *Deps) http.Handler {
 	mux.Handle("DELETE /api/contents/{id}", op(http.HandlerFunc(contentH.Delete)))
 	mux.Handle("GET /api/contents/{id}/reviews", op(http.HandlerFunc(contentH.ListReviews)))
 	mux.Handle("GET /api/publish-logs", op(http.HandlerFunc(contentH.ListPublishLogs)))
+	mux.Handle("GET /api/publish-trend", op(http.HandlerFunc(contentH.PublishTrend)))
 	mux.Handle("GET /api/metrics", op(http.HandlerFunc(contentH.ListMetrics)))
 
 	mux.Handle("GET /api/session/accounts", op(http.HandlerFunc(sessionH.ListAccounts)))
@@ -146,6 +147,7 @@ func New(d *Deps) http.Handler {
 	mux.HandleFunc("POST /api/promo/login", memberH.Login)
 	mux.HandleFunc("GET /api/promo/products", memberH.ListProducts)
 	mux.HandleFunc("GET /api/promo/products/{id}", memberH.ProductDetail)
+	mux.HandleFunc("GET /api/promo/stats", memberH.Stats)
 	mm := d.Member.Middleware
 	mux.Handle("POST /api/promo/logout", mm(http.HandlerFunc(memberH.Logout)))
 	mux.Handle("GET /api/promo/me", mm(http.HandlerFunc(memberH.Me)))
@@ -164,6 +166,9 @@ func New(d *Deps) http.Handler {
 	mux.Handle("POST /api/promo/admin/applications/{id}/decision", op(http.HandlerFunc(memberH.Decide)))
 	mux.Handle("GET /api/promo/admin/overview", op(http.HandlerFunc(memberH.Overview)))
 	mux.Handle("POST /api/promo/admin/applications/{id}/confirm", op(http.HandlerFunc(memberH.ConfirmOrders)))
+	mux.Handle("POST /api/promo/admin/invites", op(http.HandlerFunc(memberH.MintInvites)))
+	mux.Handle("GET /api/promo/admin/invites", op(http.HandlerFunc(memberH.ListInvites)))
+	mux.Handle("POST /api/promo/admin/invites/{id}/revoke", op(http.HandlerFunc(memberH.RevokeInvite)))
 	mux.Handle("GET /api/ai-platforms", op(http.HandlerFunc(d.listAIPlatforms)))
 	mux.Handle("POST /api/ai-platforms", op(http.HandlerFunc(d.createAIPlatform)))
 	mux.Handle("PATCH /api/ai-platforms/{key}", op(http.HandlerFunc(d.patchAIPlatform)))
@@ -248,7 +253,7 @@ func New(d *Deps) http.Handler {
 
 	// Web console: serve the built SPA when present, else a JSON hint.
 	mux.HandleFunc("/", d.spaFallback())
-	return mux
+	return secureHeaders(mux)
 }
 
 func (d *Deps) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -648,6 +653,17 @@ func (d *Deps) purge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "jobs": jobs, "metrics": metrics, "notifications": notifs, "chat": chat, "media": swept})
 }
 
+// secureHeaders sets baseline response headers (beta hardening).
+// No clickjacking, no MIME sniffing, no leaking full URLs to others.
+func secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (d *Deps) spaFallback() http.HandlerFunc {
 	index := filepath.Join(d.Config.WebDistDir, "index.html")
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -665,6 +681,10 @@ func (d *Deps) spaFallback() http.HandlerFunc {
 		}
 		candidate := filepath.Join(d.Config.WebDistDir, filepath.Clean("/"+r.URL.Path))
 		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			if r.URL.Path == "/sw.js" {
+				// The worker script must revalidate so a release bump retires old shells.
+				w.Header().Set("Cache-Control", "no-cache")
+			}
 			http.ServeFile(w, r, candidate)
 			return
 		}

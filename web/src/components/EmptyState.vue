@@ -29,11 +29,13 @@ defineProps({
 .art { font-size: 40px; color: var(--line); margin: 0; }
 .btn {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   border-radius: var(--r-md);
   padding: var(--s2) var(--s4);
   text-decoration: none;
   font-weight: 700;
   margin-top: var(--s2);
+  transition: background var(--t);
 }
+.btn:hover { background: var(--accent-dark); }
 </style>

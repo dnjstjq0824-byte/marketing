@@ -1,8 +1,8 @@
 <template>
   <div class="teamdetail">
-    <div class="page-head">
+    <div class="page-head sticky-head">
       <RouterLink to="/teams" class="back">← 팀</RouterLink>
-      <h1 class="page-title">{{ team.name }} <span v-if="bizLine" class="muted sub">· {{ bizLine }}</span></h1>
+      <h1 class="page-title ellipsis">{{ team.name }} <span v-if="bizLine" class="muted sub">· {{ bizLine }}</span></h1>
       <span class="sp"></span>
       <label class="switch"><input type="checkbox" :checked="team.enabled" @change="flipEnabled" /> {{ team.enabled ? '가동' : '멈춤' }}</label>
       <div class="menuwrap">
@@ -13,9 +13,11 @@
         </div>
       </div>
     </div>
-    <p v-if="loadMsg" class="error">{{ loadMsg }}</p>
-    <p class="muted summary">에이전트 {{ members.length }}기 · 일하는 중 {{ working }} · 대기 {{ idle }} · 동시 실행 최대 {{ team.maxConcurrency || 0 }}</p>
-    <p class="muted summary">오늘 처리 {{ stats.todayDone }} · 발행 {{ stats.todayPublished }} · 실패 {{ stats.todayFailed }} · 이번 주 조회 {{ weekViews }}</p>
+    <Skeleton v-if="loading" :rows="4" />
+    <ErrorRetry v-else-if="loadMsg" :message="loadMsg" @retry="load" />
+    <template v-else>
+    <p class="muted summary">에이전트 <b class="num">{{ members.length }}</b>기 · 일하는 중 <b class="num">{{ working }}</b> · 대기 <b class="num">{{ idle }}</b> · 동시 실행 최대 <b class="num">{{ team.maxConcurrency || 0 }}</b></p>
+    <p class="muted summary">오늘 처리 <b class="num">{{ stats.todayDone }}</b> · 발행 <b class="num">{{ stats.todayPublished }}</b> · 실패 <b class="num">{{ stats.todayFailed }}</b> · 이번 주 조회 {{ weekViews }}</p>
     <div class="tabbar" role="tablist" aria-label="팀 정보">
       <button v-for="t in tabs" :key="t.key" role="tab" :aria-selected="tab === t.key" :class="{ on: tab === t.key }" @click="tab = t.key">{{ t.label }}</button>
     </div>
@@ -47,7 +49,10 @@
             </div>
           </li>
         </ul>
-        <p v-if="!members.length" class="muted small">에이전트가 없습니다. 추가해 보세요.</p>
+        <div v-if="!members.length" class="emptycta">
+          <p class="muted small">에이전트가 없습니다. 추가하면 이 팀이 일을 시작합니다.</p>
+          <button class="ghost small" @click="openAdd">＋ 에이전트 추가</button>
+        </div>
       </section>
       <section class="card panel" :class="{ active: tab === 'works' }" aria-label="진행 중인 작업">
         <div class="sect-head">
@@ -67,7 +72,10 @@
             </RouterLink>
           </li>
         </ul>
-        <p v-if="!works.length" class="muted small">진행 중인 작업이 없습니다.</p>
+        <div v-if="!works.length" class="emptycta">
+          <p class="muted small">진행 중인 작업이 없습니다.</p>
+          <RouterLink :to="assignLink" class="ghost small link">이 팀에 맡기기</RouterLink>
+        </div>
       </section>
       <section class="card panel" :class="{ active: tab === 'brand' }" aria-label="브랜드 정보">
         <div class="sect-head">
@@ -130,6 +138,7 @@
         </div>
       </section>
     </div>
+    </template>
     <div v-if="renameOpen" class="modal-back" @click.self="renameOpen = false">
       <div class="modal" role="dialog" aria-label="이름 변경">
         <h3>이름 변경</h3>
@@ -138,7 +147,7 @@
           <label>전담 사업<input v-model.trim="renameForm.business" placeholder="비우면 전담 해제" /></label>
           <label>설명<input v-model.trim="renameForm.description" /></label>
         </div>
-        <p v-if="renameMsg" class="error">{{ renameMsg }}</p>
+        <FieldError :message="renameMsg" :hint="renameHint" />
         <div class="btnrow">
           <button class="ghost" @click="renameOpen = false">취소</button>
           <button @click="saveRename">저장</button>
@@ -161,7 +170,7 @@
           </li>
         </ul>
         <p class="muted small"><RouterLink to="/connect">새 AI 계정 로그인 →</RouterLink></p>
-        <p v-if="addMsg" class="error">{{ addMsg }}</p>
+        <FieldError :message="addMsg" :hint="addHint" />
         <div class="btnrow">
           <button class="ghost" @click="addOpen = false">취소</button>
           <button @click="submitAdd">추가</button>
@@ -179,7 +188,7 @@
           </label>
         </div>
         <p class="muted small">하던 작업은 끝내고 넘어옵니다.</p>
-        <p v-if="moveMsg" class="error">{{ moveMsg }}</p>
+        <FieldError :message="moveMsg" :hint="moveHint" />
         <div class="btnrow">
           <button class="ghost" @click="moveTarget = null">취소</button>
           <button @click="submitMove">옮기기</button>
@@ -198,8 +207,8 @@
             </label>
           </li>
         </ul>
-        <p v-if="!channelAccounts.length" class="muted small">연결된 채널이 없습니다.</p>
-        <p v-if="chanMsg" class="error">{{ chanMsg }}</p>
+        <p v-if="!channelAccounts.length" class="muted small">연결된 채널이 없습니다. <RouterLink to="/connect">연결에서 추가 →</RouterLink></p>
+        <FieldError :message="chanMsg" :hint="chanHint" />
         <div class="btnrow">
           <button class="ghost" @click="chanOpen = false">취소</button>
           <button @click="submitChannels">저장</button>
@@ -216,6 +225,9 @@ import { apiFetch } from '../stores/auth.js'
 import { toast } from '../stores/toast.js'
 import { label, PLATFORM, POSTING_MODE, TEAM_ROLE, WORK_STAGE } from '../stores/labels.js'
 import ConfirmModal from '../components/ConfirmModal.vue'
+import Skeleton from '../components/Skeleton.vue'
+import ErrorRetry from '../components/console/ErrorRetry.vue'
+import FieldError from '../components/console/FieldError.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -228,6 +240,7 @@ const stats = ref({ todayDone: 0, todayPublished: 0, todayFailed: 0, runningWork
 const teams = ref([])
 const accounts = ref([])
 const memberTeams = ref({})
+const loading = ref(true)
 const loadMsg = ref('')
 const tab = ref('agents')
 const tabs = [
@@ -241,17 +254,21 @@ const rowMenu = ref(null)
 const renameOpen = ref(false)
 const renameForm = ref({ name: '', business: '', description: '' })
 const renameMsg = ref('')
+const renameHint = ref('')
 const delOpen = ref(false)
 const stopOpen = ref(false)
 const addOpen = ref(false)
 const addIds = ref([])
 const addMsg = ref('')
+const addHint = ref('')
 const moveTarget = ref(null)
 const moveTeamId = ref(0)
 const moveMsg = ref('')
+const moveHint = ref('')
 const chanOpen = ref(false)
 const chanIds = ref([])
 const chanMsg = ref('')
+const chanHint = ref('')
 const brandEdit = ref(false)
 const brandForm = ref({ intro: '', tone: '', banned: '', buyLink: '' })
 const settingsForm = ref({ roleMode: 'auto', maxConcurrency: 0, distributionMode: 'all', distributionCap: 5 })
@@ -300,6 +317,7 @@ function memberStatus(m) {
 }
 
 async function load() {
+  loading.value = true
   loadMsg.value = ''
   try {
     const d = await apiFetch(`/api/teams/${id.value}`)
@@ -312,6 +330,8 @@ async function load() {
     settingsForm.value = { roleMode: team.value.roleMode || 'auto', maxConcurrency: team.value.maxConcurrency || 0, distributionMode: team.value.distributionMode || 'all', distributionCap: team.value.distributionCap || 5 }
   } catch (e) {
     loadMsg.value = e.message || '팀을 불러오지 못했습니다'
+  } finally {
+    loading.value = false
   }
   try {
     const data = await apiFetch('/api/teams')
@@ -378,6 +398,7 @@ async function toggleRole(m, role) {
 async function openAdd() {
   addIds.value = []
   addMsg.value = ''
+  addHint.value = ''
   addOpen.value = true
   try {
     await ensureAccounts()
@@ -388,6 +409,12 @@ async function openAdd() {
 
 async function submitAdd() {
   addMsg.value = ''
+  addHint.value = ''
+  if (!addIds.value.length) {
+    addMsg.value = '추가할 에이전트를 고르세요'
+    addHint.value = '목록에 없으면 연결에서 새 AI 계정을 등록하세요'
+    return
+  }
   const list = [
     ...members.value.map((m) => ({ accountId: m.id, roles: (m.fixedRole || '').split(',').filter(Boolean) })),
     ...addIds.value.map((accountId) => ({ accountId, roles: [] })),
@@ -399,6 +426,7 @@ async function submitAdd() {
     await load()
   } catch (e) {
     addMsg.value = e.message || '추가 실패'
+    addHint.value = '선택을 확인하고 다시 시도하세요'
   }
 }
 
@@ -406,14 +434,17 @@ function openMove(m) {
   rowMenu.value = null
   moveTarget.value = m
   moveMsg.value = ''
+  moveHint.value = ''
   const first = otherTeams.value[0]
   moveTeamId.value = first ? first.id : 0
 }
 
 async function submitMove() {
   moveMsg.value = ''
+  moveHint.value = ''
   if (!moveTeamId.value) {
     moveMsg.value = '이동할 팀이 없습니다'
+    moveHint.value = '팀 목록에서 먼저 새 팀을 만드세요'
     return
   }
   try {
@@ -423,6 +454,7 @@ async function submitMove() {
     await load()
   } catch (e) {
     moveMsg.value = e.message || '옮기기 실패'
+    moveHint.value = '팀을 다시 고르고 시도하세요'
   }
 }
 
@@ -459,6 +491,7 @@ async function saveBrand() {
 async function openChannels() {
   chanIds.value = channels.value.map((c) => c.id)
   chanMsg.value = ''
+  chanHint.value = ''
   chanOpen.value = true
   try {
     await ensureAccounts()
@@ -469,6 +502,7 @@ async function openChannels() {
 
 async function submitChannels() {
   chanMsg.value = ''
+  chanHint.value = ''
   try {
     await apiFetch(`/api/teams/${id.value}/channels`, { method: 'PUT', body: JSON.stringify({ channels: chanIds.value }) })
     chanOpen.value = false
@@ -476,6 +510,7 @@ async function submitChannels() {
     toast('발행 채널을 저장했습니다')
   } catch (e) {
     chanMsg.value = e.message || '저장 실패'
+    chanHint.value = '선택을 확인하고 다시 시도하세요'
   }
 }
 
@@ -493,9 +528,11 @@ async function saveSettings() {
 
 async function saveRename() {
   renameMsg.value = ''
+  renameHint.value = ''
   renameForm.value = renameForm.value.name ? renameForm.value : { name: team.value.name, business: '', description: team.value.description || '' }
   if (!renameForm.value.name) {
     renameMsg.value = '팀 이름을 입력하세요'
+    renameHint.value = '빈 이름으로는 저장할 수 없습니다'
     return
   }
   try {
@@ -509,7 +546,16 @@ async function saveRename() {
     await load()
   } catch (e) {
     const msg = e.message || ''
-    renameMsg.value = msg.includes('already belongs') ? '다른 팀이 전담 중입니다' : (msg.includes('already exists') ? '같은 이름의 팀이 있습니다' : (msg || '저장 실패'))
+    if (msg.includes('already belongs')) {
+      renameMsg.value = '다른 팀이 전담 중입니다'
+      renameHint.value = '전담 사업을 비우거나 바꾸세요'
+    } else if (msg.includes('already exists')) {
+      renameMsg.value = '같은 이름의 팀이 있습니다'
+      renameHint.value = '다른 팀 이름으로 바꾸세요'
+    } else {
+      renameMsg.value = msg || '저장 실패'
+      renameHint.value = '입력값을 확인하고 다시 시도하세요'
+    }
   }
 }
 
@@ -529,6 +575,7 @@ watch(renameOpen, (open) => {
     const raw = team.value.businesses || ''
     renameForm.value = { name: team.value.name || '', business: raw, description: team.value.description || '' }
     renameMsg.value = ''
+    renameHint.value = ''
   }
 })
 watch(() => route.params.id, load)
@@ -536,8 +583,17 @@ onMounted(load)
 </script>
 
 <style scoped>
+.teamdetail { min-width: 0; }
 .page-head { display: flex; align-items: baseline; gap: var(--s3); margin-bottom: var(--s1); }
-.back { text-decoration: none; color: var(--ink-soft); white-space: nowrap; }
+.sticky-head {
+  position: sticky;
+  top: 60px;
+  z-index: 30;
+  background: var(--bg);
+  padding: var(--s2) 0;
+}
+.ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.back { text-decoration: none; color: var(--ink-soft); white-space: nowrap; flex-shrink: 0; }
 .link {
   border: 1px solid var(--line);
   background: var(--panel);
@@ -562,8 +618,9 @@ onMounted(load)
 }
 .menu button { background: none; border: none; text-align: left; padding: var(--s2) var(--s3); border-radius: var(--r-sm); color: var(--ink); margin: 0; }
 .menu button:hover { background: var(--accent-soft); }
-.menu .danger-t { color: var(--warn-ink, #9a5b00); }
-.summary { margin: 2px 0; font-size: 14px; }
+.menu .danger-t { color: var(--warn); }
+.summary { margin: 2px 0; font-size: 14px; overflow-wrap: anywhere; }
+.emptycta { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); padding: var(--s2) 0; }
 .tabbar { display: none; }
 .panels { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4); margin-top: var(--s4); }
 .panel.wide { grid-column: 1 / -1; }
@@ -577,16 +634,20 @@ onMounted(load)
   font-weight: 700; font-size: 13px;
 }
 .minfo { flex: 1; min-width: 0; }
-.mname { margin: 0; font-weight: 600; }
+.mname { margin: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel { min-width: 0; }
+.card { transition: border-color var(--t), box-shadow var(--t); }
+.chip { transition: background var(--t), border-color var(--t), color var(--t); }
+.menu button { transition: background var(--t); }
 .leader { font-size: 12px; font-weight: 700; background: var(--accent-soft); border-radius: 999px; padding: 1px 8px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: #bbb; display: inline-block; flex-shrink: 0; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; flex-shrink: 0; }
 .dot.on { background: var(--ok); }
 .rolechips { display: flex; gap: var(--s1); margin-top: 4px; flex-wrap: wrap; }
 .chip { display: inline-flex; align-items: center; border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 2px 10px; font-size: 12px; cursor: pointer; color: var(--muted); margin: 0; }
 .chip.on { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
 .wrow { display: flex; gap: var(--s2); text-decoration: none; color: inherit; align-items: center; }
 .thumb { width: 48px; height: 48px; object-fit: cover; border-radius: var(--r-sm); flex-shrink: 0; }
-.brandview p { margin: var(--s1) 0; }
+.brandview p { margin: var(--s1) 0; overflow-wrap: anywhere; }
 .setrow { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s2); flex-wrap: wrap; }
 .setrow label { display: inline-flex; align-items: center; gap: var(--s2); margin: 0; }
 .setrow .num { display: inline-block; width: 72px; margin-top: 0; }
@@ -598,6 +659,7 @@ onMounted(load)
 .pname { font-weight: 600; }
 .modal.wide { max-width: 560px; }
 @media (max-width: 900px) {
+  .sticky-head { position: static; }
   .panels { grid-template-columns: 1fr; }
   .tabbar { display: flex; gap: var(--s1); margin-top: var(--s3); border-bottom: 1px solid var(--line); position: sticky; top: 52px; background: var(--bg); z-index: 40; padding: var(--s1) 0; }
   .tabbar button { flex: 1; background: none; border: none; padding: var(--s2); margin: 0; color: var(--muted); border-bottom: 2px solid transparent; }

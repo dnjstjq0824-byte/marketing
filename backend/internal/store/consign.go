@@ -325,6 +325,13 @@ func (s *Store) PayableTotal() (int, error) {
 	return total, err
 }
 
+// CountConsignmentPosts counts every member-registered published URL.
+func (s *Store) CountConsignmentPosts() (int, error) {
+	var n int
+	err := s.ro.QueryRow(`SELECT COUNT(*) FROM consignment_posts`).Scan(&n)
+	return n, err
+}
+
 // ApplicationCounts returns per-product applicant totals.
 func (s *Store) ApplicationCounts() (map[int64]int, error) {
 	rows, err := s.ro.Query(`SELECT product_id, COUNT(*) FROM consignment_applications GROUP BY product_id`)

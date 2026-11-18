@@ -33,6 +33,7 @@ import { dismiss, toasts } from '../stores/toast.js'
   align-items: center;
   gap: var(--s3);
   font-size: 13px;
+  transition: opacity var(--t), transform var(--t);
 }
 .toast.t-error { background: var(--warn); }
 .toast button { color: #fff; border-color: rgba(255, 255, 255, 0.5); }

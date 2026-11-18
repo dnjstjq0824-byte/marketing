@@ -1,19 +1,22 @@
 <template>
-  <div class="shell">
+  <div class="shell" :class="{ 'lnb-min': collapsed }">
     <a class="skip" href="#main">본문으로 건너뛰기</a>
-    <aside class="side">
-      <RouterLink to="/" class="brand">
-        <span class="mark" aria-hidden="true">●</span>
-        <span class="brand-t"><strong>SOMUN</strong><small>마케팅 코어</small></span>
-      </RouterLink>
-      <RouterLink to="/new" class="newbtn"><span class="mi" aria-hidden="true">＋</span> <span class="lbl">새 작업</span></RouterLink>
+    <aside class="side" aria-label="작업 공간 메뉴">
+      <div class="side-head">
+        <RouterLink to="/" class="brand">
+          <LogoMark :size="34" />
+          <span class="brand-t"><strong>SOMUN</strong><small>마케팅 코어</small></span>
+        </RouterLink>
+        <button class="fold" :class="{ flip: collapsed }" @click="toggleCollapse" :aria-label="collapsed ? '메뉴 펼치기' : '메뉴 접기'" :aria-expanded="(!collapsed).toString()" v-html="icon('chevL', 16)"></button>
+      </div>
+      <RouterLink to="/new" class="newbtn" :aria-label="'새 작업'"><span class="mi" v-html="icon('plus')" aria-hidden="true"></span> <span class="lbl">새 작업</span></RouterLink>
       <nav aria-label="주 메뉴">
-        <RouterLink to="/" :aria-current="isActive('/') ? 'page' : undefined"><span class="mi" aria-hidden="true">⌂</span><span class="lbl">홈</span></RouterLink>
-        <RouterLink to="/works" :aria-current="isActive('/works') ? 'page' : undefined"><span class="mi" aria-hidden="true">▤</span><span class="lbl">작업</span></RouterLink>
-        <RouterLink to="/media" :aria-current="isActive('/media') ? 'page' : undefined"><span class="mi" aria-hidden="true">▣</span><span class="lbl">미디어</span></RouterLink>
-        <RouterLink to="/teams" :aria-current="isActive('/teams') ? 'page' : undefined"><span class="mi" aria-hidden="true">◎</span><span class="lbl">팀</span></RouterLink>
-        <RouterLink to="/connect" :aria-current="isActive('/connect') ? 'page' : undefined"><span class="mi" aria-hidden="true">⇄</span><span class="lbl">연결</span><span v-if="connectAlert" class="dot-alert" aria-label="연결 문제 있음"></span></RouterLink>
-        <RouterLink to="/settings" :aria-current="isActive('/settings') ? 'page' : undefined"><span class="mi" aria-hidden="true">⚙</span><span class="lbl">설정</span></RouterLink>
+        <RouterLink to="/" :aria-current="isActive('/') ? 'page' : undefined"><span class="mi" v-html="icon('home')" aria-hidden="true"></span><span class="lbl">홈</span></RouterLink>
+        <RouterLink to="/works" :aria-current="isActive('/works') ? 'page' : undefined"><span class="mi" v-html="icon('works')" aria-hidden="true"></span><span class="lbl">작업</span></RouterLink>
+        <RouterLink to="/media" :aria-current="isActive('/media') ? 'page' : undefined"><span class="mi" v-html="icon('media')" aria-hidden="true"></span><span class="lbl">미디어</span></RouterLink>
+        <RouterLink to="/teams" :aria-current="isActive('/teams') ? 'page' : undefined"><span class="mi" v-html="icon('teams')" aria-hidden="true"></span><span class="lbl">팀</span></RouterLink>
+        <RouterLink to="/connect" :aria-current="isActive('/connect') ? 'page' : undefined"><span class="mi" v-html="icon('connect')" aria-hidden="true"></span><span class="lbl">연결</span><span v-if="connectAlert" class="dot-alert" aria-label="연결 문제 있음"></span></RouterLink>
+        <RouterLink to="/settings" :aria-current="isActive('/settings') ? 'page' : undefined"><span class="mi" v-html="icon('settings')" aria-hidden="true"></span><span class="lbl">설정</span></RouterLink>
       </nav>
       <div class="golinks" aria-label="홍보 위탁 바로가기">
         <span class="go-cap muted micro">홍보 위탁</span>
@@ -24,16 +27,26 @@
     </aside>
     <div class="body">
       <header class="topbar">
-        <strong class="title">{{ title }}</strong>
+        <button class="iconbtn menu" @click="drawerOpen = true" aria-label="메뉴 열기" v-html="icon('menu')"></button>
+        <div class="crumbbox">
+          <nav class="crumbs" aria-label="현재 위치">
+            <template v-for="(c, i) in crumbs" :key="i">
+              <span v-if="i > 0" class="sep" aria-hidden="true">/</span>
+              <RouterLink v-if="c.to" :to="c.to">{{ c.label }}</RouterLink>
+              <span v-else class="cur" aria-current="page">{{ c.label }}</span>
+            </template>
+          </nav>
+          <strong class="title">{{ title }}</strong>
+        </div>
         <div class="top-right">
           <button v-if="automation !== null" class="auto-chip" :class="{ off: !automation }" @click="confirmStop = true" :aria-label="automation ? '자동화 켜짐, 멈추려면 클릭' : '자동화 멈춤, 켜려면 클릭'">
             <span class="dot" :class="{ on: automation }" aria-hidden="true"></span>{{ automation ? '자동화 켜짐' : '멈춤' }}
           </button>
           <button class="iconbtn" @click="bellOpen = !bellOpen; if (bellOpen) loadNotes()" aria-label="알림">
-            🔔<span v-if="unread > 0" class="bdg">{{ unread > 99 ? '99+' : unread }}</span>
+            <span v-html="icon('bell')" aria-hidden="true"></span><span v-if="unread > 0" class="bdg">{{ unread > 99 ? '99+' : unread }}</span>
           </button>
           <div class="opwrap">
-            <button class="iconbtn" @click="opOpen = !opOpen" aria-label="운영자 메뉴">👤</button>
+            <button class="iconbtn" @click="opOpen = !opOpen" aria-label="운영자 메뉴" v-html="icon('user')"></button>
             <div v-if="opOpen" class="opdrop" role="menu">
               <RouterLink to="/settings" role="menuitem" @click="opOpen = false">비밀번호 변경</RouterLink>
               <button role="menuitem" @click="doLogout">로그아웃</button>
@@ -59,19 +72,33 @@
         <slot />
       </main>
       <nav class="tabs" aria-label="하단 메뉴">
-        <RouterLink to="/">⌂<small>홈</small></RouterLink>
-        <RouterLink to="/works">▤<small>작업</small></RouterLink>
-        <RouterLink to="/new" class="fab" aria-label="새 작업">＋</RouterLink>
-        <RouterLink to="/teams">◎<small>팀</small></RouterLink>
-        <button @click="moreOpen = true" aria-label="더보기">☰<small>더보기</small><span v-if="connectAlert" class="dot-alert" aria-hidden="true"></span></button>
+        <RouterLink to="/" :aria-current="isActive('/') ? 'page' : undefined"><span v-html="icon('home', 22)" aria-hidden="true"></span><small>홈</small></RouterLink>
+        <RouterLink to="/works" :aria-current="isActive('/works') ? 'page' : undefined"><span v-html="icon('works', 22)" aria-hidden="true"></span><small>작업</small></RouterLink>
+        <RouterLink to="/new" class="fab" aria-label="새 작업" v-html="icon('plus', 26)"></RouterLink>
+        <RouterLink to="/teams" :aria-current="isActive('/teams') ? 'page' : undefined"><span v-html="icon('teams', 22)" aria-hidden="true"></span><small>팀</small></RouterLink>
+        <RouterLink to="/media" :aria-current="isActive('/media') ? 'page' : undefined"><span v-html="icon('media', 22)" aria-hidden="true"></span><small>미디어</small></RouterLink>
       </nav>
-      <div v-if="moreOpen" class="sheet-back" @click.self="moreOpen = false">
-        <div class="sheet" role="dialog" aria-label="더보기">
-          <RouterLink to="/media" @click="moreOpen = false">미디어</RouterLink>
-          <RouterLink to="/connect" @click="moreOpen = false">연결<span v-if="connectAlert" class="dot-alert" aria-label="연결 문제 있음"></span></RouterLink>
-          <RouterLink to="/settings" @click="moreOpen = false">설정</RouterLink>
-          <RouterLink to="/promo/admin" @click="moreOpen = false">위탁 관리</RouterLink>
-          <button @click="doLogout">로그아웃</button>
+      <div v-if="drawerOpen" class="drawer-back" @click.self="drawerOpen = false">
+        <div class="drawer" role="dialog" aria-label="전체 메뉴">
+          <div class="drawer-head">
+            <strong>SOMUN</strong>
+            <button class="iconbtn" @click="drawerOpen = false" aria-label="메뉴 닫기" v-html="icon('close')"></button>
+          </div>
+          <RouterLink to="/new" class="newbtn" @click="drawerOpen = false"><span v-html="icon('plus', 18)" aria-hidden="true"></span> 새 작업</RouterLink>
+          <nav aria-label="전체 메뉴 목록">
+            <RouterLink to="/" :aria-current="isActive('/') ? 'page' : undefined" @click="drawerOpen = false"><span v-html="icon('home')" aria-hidden="true"></span> 홈</RouterLink>
+            <RouterLink to="/works" :aria-current="isActive('/works') ? 'page' : undefined" @click="drawerOpen = false"><span v-html="icon('works')" aria-hidden="true"></span> 작업</RouterLink>
+            <RouterLink to="/media" :aria-current="isActive('/media') ? 'page' : undefined" @click="drawerOpen = false"><span v-html="icon('media')" aria-hidden="true"></span> 미디어</RouterLink>
+            <RouterLink to="/teams" :aria-current="isActive('/teams') ? 'page' : undefined" @click="drawerOpen = false"><span v-html="icon('teams')" aria-hidden="true"></span> 팀</RouterLink>
+            <RouterLink to="/connect" :aria-current="isActive('/connect') ? 'page' : undefined" @click="drawerOpen = false"><span v-html="icon('connect')" aria-hidden="true"></span> 연결<span v-if="connectAlert" class="dot-alert" aria-label="연결 문제 있음"></span></RouterLink>
+            <RouterLink to="/settings" :aria-current="isActive('/settings') ? 'page' : undefined" @click="drawerOpen = false"><span v-html="icon('settings')" aria-hidden="true"></span> 설정</RouterLink>
+          </nav>
+          <div class="golinks" aria-label="홍보 위탁 바로가기">
+            <span class="go-cap muted micro">홍보 위탁</span>
+            <RouterLink to="/promo" @click="drawerOpen = false">홍보 메인</RouterLink>
+            <RouterLink to="/promo/admin" @click="drawerOpen = false">위탁 관리</RouterLink>
+          </div>
+          <button class="logout" @click="doLogout">로그아웃</button>
         </div>
       </div>
       <div v-if="confirmStop" class="modal-back" @click.self="confirmStop = false">
@@ -90,19 +117,38 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiFetch, auth, logout } from '../stores/auth.js'
 import { toast } from '../stores/toast.js'
 import Toast from './Toast.vue'
+import LogoMark from './LogoMark.vue'
 
 defineProps({ title: { type: String, default: '' } })
+
+const ICON_PATHS = {
+  home: '<path d="M4.5 11.5 12 4.5l7.5 7M6.5 10.5V19.5h11v-9"/>',
+  works: '<path d="M12 3.5 20 7.5l-8 4-8-4z"/><path d="M4.5 12.5l7.5 3.7 7.5-3.7"/><path d="M4.5 16.5 12 20.2l7.5-3.7"/>',
+  media: '<rect x="4" y="5" width="16" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M4.5 17.5 10 12.5l3.5 3 2.5-2 3.5 2.5"/>',
+  teams: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9" r="2.4"/><path d="M15.7 14.3c2.7.2 4.3 1.7 4.8 4.7"/>',
+  connect: '<path d="M4 8.5h11M13 5.5l3 3-3 3"/><path d="M20 15.5H9M11 12.5l-3 3 3 3"/>',
+  settings: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8"/>',
+  plus: '<path d="M12 5.5v13M5.5 12h13"/>',
+  bell: '<path d="M6 16.5v-5.2a6 6 0 0 1 12 0v5.2l1.5 2.5h-15z"/><path d="M10.2 21a2.1 2.1 0 0 0 3.6 0"/>',
+  user: '<circle cx="12" cy="8" r="3.6"/><path d="M5.3 19.8c1-3.4 3.6-5.3 6.7-5.3s5.7 1.9 6.7 5.3"/>',
+  menu: '<path d="M5 7.5h14M5 12h14M5 16.5h14"/>',
+  close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  chevL: '<path d="M14.5 6 8.5 12l6 6"/>',
+}
+function icon(name, size = 20) {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ''}</svg>`
+}
 
 const route = useRoute()
 const router = useRouter()
 const bellOpen = ref(false)
 const opOpen = ref(false)
-const moreOpen = ref(false)
+const drawerOpen = ref(false)
 const confirmStop = ref(false)
 const notes = ref([])
 const unread = ref(0)
@@ -110,6 +156,39 @@ const automation = ref(null)
 const connectAlert = ref(false)
 const todayLine = ref('')
 const online = ref(typeof navigator === 'undefined' ? true : navigator.onLine)
+const collapsed = ref(false)
+
+const SECTIONS = {
+  '/': '홈',
+  '/new': '새 작업',
+  '/works': '작업',
+  '/media': '미디어',
+  '/teams': '팀',
+  '/connect': '연결',
+  '/settings': '설정',
+}
+const crumbs = computed(() => {
+  const list = [{ to: '/', label: '홈' }]
+  if (route.path === '/') return [{ label: '홈' }]
+  if (route.path.startsWith('/works/')) {
+    list.push({ to: '/works', label: '작업' }, { label: '상세' })
+    return list
+  }
+  if (route.path.startsWith('/teams/')) {
+    list.push({ to: '/teams', label: '팀' }, { label: '상세' })
+    return list
+  }
+  const seg = '/' + route.path.split('/')[1]
+  list.push({ label: SECTIONS[seg] || '작업 공간' })
+  return list
+})
+
+function toggleCollapse() {
+  collapsed.value = !collapsed.value
+  try {
+    localStorage.setItem('somun.lnb', collapsed.value ? 'min' : 'full')
+  } catch { /* private mode */ }
+}
 
 function isActive(to) {
   return to === '/' ? route.path === '/' : route.path.startsWith(to)
@@ -184,26 +263,38 @@ async function loadSide() {
 
 async function doLogout() {
   opOpen.value = false
-  moreOpen.value = false
+  drawerOpen.value = false
   await logout()
   router.push('/login')
 }
 
 function onOnline() { online.value = true }
 function onOffline() { online.value = false }
+function onKey(e) {
+  if (e.key === 'Escape') {
+    drawerOpen.value = false
+    bellOpen.value = false
+    opOpen.value = false
+  }
+}
 
 let timer = null
 onMounted(() => {
+  try {
+    collapsed.value = localStorage.getItem('somun.lnb') === 'min'
+  } catch { /* private mode */ }
   loadAutomation()
   loadNotes()
   loadSide()
   window.addEventListener('online', onOnline)
   window.addEventListener('offline', onOffline)
+  document.addEventListener('keydown', onKey)
   timer = setInterval(() => { loadNotes() }, 60000)
 })
 onUnmounted(() => {
   window.removeEventListener('online', onOnline)
   window.removeEventListener('offline', onOffline)
+  document.removeEventListener('keydown', onKey)
   if (timer) clearInterval(timer)
 })
 </script>
@@ -223,26 +314,38 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   height: 100vh;
+  transition: width var(--t);
 }
-.brand { display: flex; align-items: center; gap: var(--s3); text-decoration: none; color: var(--ink); padding: var(--s1) var(--s2); }
-.brand .mark {
-  flex: none;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  background: var(--accent);
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 19px;
-}
+.side-head { display: flex; align-items: center; gap: var(--s2); }
+.brand { display: flex; align-items: center; gap: var(--s3); text-decoration: none; color: var(--ink); padding: var(--s1) var(--s2); flex: 1; min-width: 0; }
 .brand-t { display: flex; flex-direction: column; line-height: 1.25; }
 .brand-t strong { font-size: 19px; letter-spacing: 1.5px; }
 .brand-t small { font-size: 12px; color: var(--muted); }
+.fold {
+  flex: none;
+  border: 1px solid var(--line-soft);
+  background: none;
+  color: var(--muted);
+  border-radius: var(--r-sm);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--t);
+}
+.fold.flip { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) {
+  .fold { transition: none; }
+}
+.fold:hover { background: var(--soft); color: var(--ink); }
 .newbtn {
-  display: block;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   background: var(--accent);
   color: #fff;
   border-radius: var(--r-md);
@@ -264,7 +367,7 @@ onUnmounted(() => {
   color: var(--ink-soft);
   font-size: 15px;
 }
-.side nav a { transition: background 0.12s ease; }
+.side nav a { transition: background var(--t); }
 .side nav a:hover { background: var(--soft); color: var(--ink); }
 .side nav a[aria-current="page"] {
   background: var(--accent-soft);
@@ -272,7 +375,15 @@ onUnmounted(() => {
   font-weight: 800;
   box-shadow: inset 3px 0 0 var(--accent);
 }
-.side nav .mi { width: 22px; text-align: center; font-size: 17px; }
+.mi { display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.side nav .mi { width: 22px; height: 22px; }
+.shell.lnb-min .side { width: 76px; padding: var(--s5) var(--s2); align-items: stretch; }
+.shell.lnb-min .side-head { flex-direction: column; }
+.shell.lnb-min .brand { justify-content: center; padding: 0; }
+.shell.lnb-min .brand-t, .shell.lnb-min .lbl, .shell.lnb-min .side-foot, .shell.lnb-min .golinks { display: none; }
+.shell.lnb-min .side nav a { justify-content: center; padding: var(--s2); }
+.shell.lnb-min .side nav a[aria-current="page"] { box-shadow: none; }
+.shell.lnb-min .newbtn { width: 44px; height: 44px; padding: 0; border-radius: 50%; font-size: 20px; margin: 0 auto; }
 .golinks {
   display: flex;
   flex-direction: column;
@@ -294,11 +405,11 @@ onUnmounted(() => {
 .side-foot { margin-top: auto; }
 .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .topbar {
-  height: 60px;
+  min-height: 60px;
   display: flex;
   align-items: center;
   gap: var(--s4);
-  padding: 0 var(--s6);
+  padding: var(--s2) var(--s6);
   border-bottom: 1px solid var(--line-soft);
   box-shadow: 0 1px 2px rgba(29, 39, 51, 0.06);
   background: var(--panel);
@@ -306,6 +417,13 @@ onUnmounted(() => {
   top: 0;
   z-index: 50;
 }
+.topbar .menu { display: none; }
+.crumbbox { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.crumbs { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.crumbs a { color: var(--muted); text-decoration: none; }
+.crumbs a:hover { color: var(--accent-dark); }
+.crumbs .cur { color: var(--ink-soft); font-weight: 700; }
+.crumbs .sep { opacity: 0.6; }
 .topbar .title { font-size: 20px; font-weight: 800; letter-spacing: -0.3px; }
 .top-right { margin-left: auto; display: flex; align-items: center; gap: var(--s3); }
 .auto-chip {
@@ -322,7 +440,7 @@ onUnmounted(() => {
 }
 .auto-chip:hover { background: var(--soft); }
 .auto-chip.off { color: var(--muted); }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: #bbb; display: inline-block; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
 .dot.on { background: var(--ok); }
 .dot-alert { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); display: inline-block; margin-left: var(--s1); }
 .iconbtn {
@@ -331,8 +449,12 @@ onUnmounted(() => {
   color: var(--ink);
   border-radius: var(--r-md);
   padding: var(--s2);
-  font-size: 19px;
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  min-height: 40px;
 }
 .iconbtn:hover { background: var(--soft); border-color: var(--line-soft); }
 .bdg {
@@ -375,25 +497,50 @@ onUnmounted(() => {
 .offlineband { background: var(--ink-soft); color: #fff; text-align: center; padding: var(--s2); font-size: 13px; }
 .main { padding: var(--s6); width: 100%; }
 .tabs { display: none; }
-.sheet-back {
+.drawer-back {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
   z-index: 150;
-  display: flex;
-  align-items: flex-end;
 }
-.sheet { background: var(--panel); width: 100%; border-radius: var(--r-lg) var(--r-lg) 0 0; padding: var(--s4); display: flex; flex-direction: column; }
-.sheet a, .sheet button {
+.drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 300px;
+  max-width: 86vw;
+  background: var(--panel);
   padding: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  overflow-y: auto;
+  box-shadow: var(--shadow-lg);
+}
+.drawer-head { display: flex; align-items: center; justify-content: space-between; }
+.drawer nav { display: flex; flex-direction: column; gap: 2px; }
+.drawer nav a {
+  padding: var(--s3);
   text-decoration: none;
-  color: var(--ink);
-  background: none;
-  background: none;
-  border: none;
-  border-bottom: 1px solid var(--line-soft);
-  text-align: left;
+  color: var(--ink-soft);
+  border-radius: var(--r-md);
   font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.drawer nav a > span { display: inline-flex; }
+.drawer nav a:hover { background: var(--soft); color: var(--ink); }
+.drawer nav a[aria-current="page"] { background: var(--accent-soft); color: var(--ink); font-weight: 800; }
+.drawer .logout {
+  margin-top: auto;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: var(--r-md);
+  padding: var(--s3);
+  font-size: 15px;
 }
 .modal-back {
   position: fixed;
@@ -411,8 +558,11 @@ onUnmounted(() => {
 .btnrow button.danger { background: var(--warn); border-color: var(--warn); color: #fff; }
 @media (max-width: 900px) {
   .side { display: none; }
-  .topbar { height: 52px; padding: 0 var(--s4); }
+  .topbar { min-height: 52px; padding: var(--s2) var(--s4); gap: var(--s2); }
+  .topbar .menu { display: inline-flex; }
+  .crumbs { font-size: 11px; }
   .topbar .title { font-size: 16px; }
+  .auto-chip { font-size: 12px; padding: var(--s1) var(--s3); }
   .main { padding: var(--s4) var(--s4) 88px; }
   .tabs {
     display: flex;
@@ -426,22 +576,21 @@ onUnmounted(() => {
     border-top: 1px solid var(--line);
     z-index: 100;
   }
-  .tabs a, .tabs button {
+  .tabs a {
     flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 3px;
     text-decoration: none;
     color: var(--ink-soft);
-    background: none;
-    border: none;
-    font-size: 20px;
     min-height: 44px;
     min-width: 44px;
   }
+  .tabs a > span { display: inline-flex; }
   .tabs small { font-size: 11px; }
-  .tabs a.router-link-active { color: var(--accent-dark); font-weight: 800; }
+  .tabs a[aria-current="page"] { color: var(--accent-dark); font-weight: 800; }
   .tabs .fab {
     background: var(--accent);
     color: #fff;
@@ -454,12 +603,13 @@ onUnmounted(() => {
   }
 }
 @media (min-width: 901px) and (max-width: 1279px) {
-  .side { width: 64px; padding: var(--s5) var(--s2); align-items: center; }
-  .golinks { display: none; }
-  .side .brand { justify-content: center; padding: 0; }
-  .side .brand-t, .side .lbl, .side-foot { display: none; }
-  .side nav a { justify-content: center; padding: var(--s2); }
-  .side nav a[aria-current="page"] { box-shadow: none; }
-  .newbtn { width: 44px; height: 44px; padding: 0; border-radius: 50%; font-size: 20px; }
+  .shell:not(.lnb-min) .side { width: 76px; padding: var(--s5) var(--s2); }
+  .shell:not(.lnb-min) .golinks { display: none; }
+  .shell:not(.lnb-min) .side .brand { justify-content: center; padding: 0; }
+  .shell:not(.lnb-min) .side-head { flex-direction: column; }
+  .shell:not(.lnb-min) .brand-t, .shell:not(.lnb-min) .lbl, .shell:not(.lnb-min) .side-foot { display: none; }
+  .shell:not(.lnb-min) .side nav a { justify-content: center; padding: var(--s2); }
+  .shell:not(.lnb-min) .side nav a[aria-current="page"] { box-shadow: none; }
+  .shell:not(.lnb-min) .newbtn { width: 44px; height: 44px; padding: 0; border-radius: 50%; font-size: 20px; margin: 0 auto; }
 }
 </style>

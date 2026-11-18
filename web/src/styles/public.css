@@ -2,15 +2,16 @@
    Bright storefront: Pretendard, pink accent, round cards, flat pastels. */
 .pu-page {
   --pu-bg: #ffffff;
-  --pu-panel: #fafafa;
-  --pu-ink: #191919;
-  --pu-soft: #3d3d3d;
-  --pu-muted: #767676;
-  --pu-line: #ececec;
-  --pu-line-soft: #f4f4f4;
-  --pu-accent: #f43f5e;
-  --pu-accent-dark: #be123c;
-  --pu-accent-soft: #ffe9ef;
+  --pu-card: #ffffff;
+  --pu-panel: #f8f9fa;
+  --pu-ink: #212529;
+  --pu-soft: #495057;
+  --pu-muted: #868e96;
+  --pu-line: #e9ecef;
+  --pu-line-soft: #f1f3f5;
+  --pu-accent: #ff6f0f;
+  --pu-accent-dark: #e05f00;
+  --pu-accent-soft: #fff1e6;
   --pu-ok: #067647;
   --pu-ok-soft: #dcf0e5;
   --pu-warn: #b42318;
@@ -18,9 +19,10 @@
   --pu-hold: #8a5a00;
   --pu-hold-soft: #fdf3dd;
   --pu-r: 16px;
-  --pu-r-sm: 10px;
+  --pu-r-sm: 12px;
   --pu-max: 1120px;
-  --pu-shadow: 0 1px 2px rgba(25, 25, 25, 0.05), 0 8px 24px -16px rgba(25, 25, 25, 0.18);
+  --pu-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+  --pu-t: 150ms ease-out;
   background: var(--pu-bg);
   color: var(--pu-ink);
   min-height: 100vh;
@@ -28,8 +30,25 @@
   flex-direction: column;
   font-size: 15px;
   line-height: 1.55;
-  font-family: 'Pretendard Variable', Pretendard, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+  font-family: var(--font, 'Pretendard Variable', Pretendard, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif);
 }
+@media (prefers-color-scheme: dark) {
+  .pu-page {
+    --pu-bg: #10161c;
+    --pu-card: #172029;
+    --pu-panel: #1e2833;
+    --pu-ink: #e8edf1;
+    --pu-soft: #b9c4cc;
+    --pu-muted: #8b98a3;
+    --pu-line: #2a3540;
+    --pu-line-soft: #222c36;
+    --pu-accent: #ff8a3d;
+    --pu-accent-dark: #ff6f0f;
+    --pu-accent-soft: #3a2210;
+    --pu-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  }
+}
+.pu-num, .pu-fee { font-variant-numeric: tabular-nums; }
 .pu-wrap { width: 100%; max-width: var(--pu-max); margin: 0 auto; padding: 28px 20px 72px; flex: 1; }
 .pu-wrap.wide { max-width: none; padding: 0 0 72px; }
 .pu-admin { display: grid; grid-template-columns: 230px 1fr; align-items: start; }
@@ -42,7 +61,7 @@
   position: sticky;
   top: 64px;
   min-height: calc(100vh - 64px);
-  background: #fff;
+  background: var(--pu-card);
 }
 .pu-side h2 { font-size: 16px; font-weight: 800; margin: 0 0 10px; padding: 0 12px; }
 .pu-side button {
@@ -64,7 +83,7 @@
 .pu-side .pu-back a:hover { color: var(--pu-ink); }
 .pu-adminbody { padding: 24px 28px; min-width: 0; }
 .pu-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
-.pu-stat { border: 1px solid var(--pu-line); border-radius: var(--pu-r); padding: 16px; background: #fff; box-shadow: var(--pu-shadow); }
+.pu-stat { border: 1px solid var(--pu-line); border-radius: var(--pu-r); padding: 16px; background: var(--pu-card); box-shadow: var(--pu-shadow); }
 .pu-stat p { margin: 0; }
 .pu-stat .pu-num { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
 .pu-rows { display: flex; flex-direction: column; gap: 12px; }
@@ -96,9 +115,10 @@
 .pu-card {
   border: 1px solid var(--pu-line);
   border-radius: var(--pu-r);
-  background: #fff;
+  background: var(--pu-card);
   padding: 18px;
   box-shadow: var(--pu-shadow);
+  transition: border-color var(--pu-t), box-shadow var(--pu-t);
 }
 a.pu-card { text-decoration: none; color: inherit; display: block; }
 a.pu-card:hover { border-color: var(--pu-accent); }
@@ -106,9 +126,10 @@ a.pu-card:hover { border-color: var(--pu-accent); }
 .pu-btn {
   display: inline-block;
   border: 1px solid var(--pu-line);
-  background: #fff;
+  background: var(--pu-card);
   color: var(--pu-ink);
   border-radius: 999px;
+  transition: background var(--pu-t), border-color var(--pu-t), color var(--pu-t);
   padding: 11px 22px;
   font-size: 15px;
   font-weight: 700;
@@ -148,7 +169,7 @@ a.pu-card:hover { border-color: var(--pu-accent); }
   font-size: 15px;
   font-family: inherit;
   color: var(--pu-ink);
-  background: #fff;
+  background: var(--pu-card);
 }
 .pu-form input:focus, .pu-form select:focus, .pu-form textarea:focus {
   outline: 2px solid var(--pu-accent-soft);
@@ -168,7 +189,7 @@ a.pu-card:hover { border-color: var(--pu-accent); }
   border-radius: var(--pu-r);
   padding: 16px 16px 16px 56px;
   position: relative;
-  background: #fff;
+  background: var(--pu-card);
   box-shadow: var(--pu-shadow);
 }
 .pu-steps li::before {
@@ -203,6 +224,9 @@ a.pu-card:hover { border-color: var(--pu-accent); }
 .pu-pcard .pu-pfee { margin: 0 0 10px; font-size: 15px; }
 .pu-foot { border-top: 1px solid var(--pu-line); margin-top: auto; }
 .pu-foot-in { max-width: var(--pu-max); margin: 0 auto; padding: 24px 20px; color: var(--pu-muted); font-size: 13px; display: flex; gap: 16px; flex-wrap: wrap; }
+.pu-foot-in.base { align-items: center; }
+.pu-legal { margin-left: auto; }
+.pu-legal a { color: var(--pu-muted); }
 /* Storefront: banners, category chips, campaign cards. */
 .pu-banners { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 28px; }
 .pu-banner {
@@ -217,7 +241,7 @@ a.pu-card:hover { border-color: var(--pu-accent); }
 .pu-banner strong { display: block; font-size: 21px; font-weight: 800; line-height: 1.35; margin-bottom: 6px; letter-spacing: -0.4px; }
 .pu-banner span { font-size: 13px; color: var(--pu-soft); }
 .pu-banner em { font-style: normal; color: var(--pu-accent-dark); font-weight: 800; }
-.pu-banner.b1 { background: #fdeef4; }
+.pu-banner.b1 { background: #fff1e6; }
 .pu-banner.b2 { background: #e7f0fe; }
 .pu-banner.b3 { background: #e9f5f0; }
 .pu-cats { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 10px; margin-bottom: 8px; }
@@ -244,7 +268,7 @@ a.pu-card:hover { border-color: var(--pu-accent); }
   align-items: center;
   justify-content: center;
 }
-.pu-cat:nth-child(5n+1) i { background: #fdeef4; color: #be123c; }
+.pu-cat:nth-child(5n+1) i { background: #fff1e6; color: #e05f00; }
 .pu-cat:nth-child(5n+2) i { background: #e3edfb; color: #1d4ed8; }
 .pu-cat:nth-child(5n+3) i { background: #e9f5f0; color: #067647; }
 .pu-cat:nth-child(5n+4) i { background: #fdf3dd; color: #8a5a00; }
@@ -275,7 +299,8 @@ a.pu-card:hover { border-color: var(--pu-accent); }
 .pu-tabs { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
 .pu-tab {
   border: 1px solid var(--pu-line);
-  background: #fff;
+  background: var(--pu-card);
+  transition: background var(--pu-t), border-color var(--pu-t), color var(--pu-t);
   border-radius: 999px;
   padding: 9px 18px;
   font-size: 14px;

@@ -1,11 +1,11 @@
 <template>
   <div class="settings">
-    <h1 class="page-title">설정</h1>
-    <Skeleton v-if="loading" :rows="6" />
-    <div v-else-if="loadError" class="card center">
-      <p>불러오지 못했습니다.</p>
-      <button @click="load">다시 시도</button>
+    <div class="page-head sticky-head">
+      <h1 class="page-title">설정</h1>
+      <span class="muted small ctx">자동화 {{ form.enabled ? '켜짐' : '꺼짐' }} · 운영자 <b class="num">{{ users.length }}</b>명</span>
     </div>
+    <Skeleton v-if="loading" :rows="6" />
+    <ErrorRetry v-else-if="loadError" @retry="load" />
     <template v-else>
       <section class="card" aria-label="자동화">
         <h2 class="section-title">자동화</h2>
@@ -18,25 +18,25 @@
         <div class="grid">
           <label>계정당 발행 간격
             <span class="inrow"><input v-model.number="form.publishIntervalMin" type="number" min="0" max="1440" /> 분</span>
-            <span v-if="errors.interval" class="error" role="alert">{{ errors.interval }}</span>
+            <FieldError :message="errors.interval" hint="0이면 간격 제한 없음" />
           </label>
           <label>계정당 하루 최대
             <span class="inrow"><input v-model.number="form.dailyCap" type="number" min="0" max="999" /> 건</span>
-            <span v-if="errors.cap" class="error" role="alert">{{ errors.cap }}</span>
+            <FieldError :message="errors.cap" hint="0이면 수량 제한 없음" />
           </label>
-          <label>발행 시간대
+          <label class="span2">발행 시간대
             <span class="inrow"><input v-model="form.windowStart" type="time" aria-label="시작 시각" /> ~ <input v-model="form.windowEnd" type="time" aria-label="종료 시각" /></span>
             <span class="hint">밖이면 다음 날로 미룸</span>
-            <span v-if="errors.window" class="error" role="alert">{{ errors.window }}</span>
+            <FieldError :message="errors.window" hint="시작과 종료를 다르게 입력하세요" />
           </label>
           <label>블로그 최소 분량
             <span class="inrow"><input v-model.number="form.blogMinLen" type="number" min="0" max="20000" /> 자</span>
-            <span v-if="errors.blog" class="error" role="alert">{{ errors.blog }}</span>
+            <FieldError :message="errors.blog" hint="0이면 분량 제한 없음" />
           </label>
           <label>동시 실행 최대
             <span class="inrow"><input v-model.number="form.maxConcurrent" type="number" min="1" max="50" /> 건</span>
             <span class="hint">AI 작업 동시 진행 상한</span>
-            <span v-if="errors.conc" class="error" role="alert">{{ errors.conc }}</span>
+            <FieldError :message="errors.conc" />
           </label>
         </div>
         <fieldset>
@@ -78,7 +78,7 @@
             <label>비밀번호(8자+) <input v-model="newUser.password" type="password" autocomplete="new-password" /></label>
             <button @click="addUser">운영자 추가</button>
           </div>
-          <p v-if="userError" class="banner err">{{ userError }}</p>
+          <FieldError :message="userError" hint="아이디가 겹치면 다른 이름으로 시도하세요" />
         </div>
       </section>
 
@@ -106,7 +106,7 @@
             <label class="inline">안 쓰인 생성물 <input v-model.number="form.mediaRetentionDays" class="narrow" type="number" min="1" max="365" /> 일 뒤 정리</label>
             <label class="check"><input v-model="form.backupIncludeVideo" type="checkbox" /> 영상 백업 포함</label>
           </div>
-          <p v-if="errors.retention" class="error" role="alert">{{ errors.retention }}</p>
+          <FieldError :message="errors.retention" />
           <p class="hint">자동 정리는 추후 연결됩니다. 값은 미리 저장됩니다.</p>
           <div class="btnrow">
             <button :disabled="savingAdv" @click="saveAdvanced">{{ savingAdv ? '저장 중…' : '저장' }}</button>
@@ -130,7 +130,7 @@
         <label>현재 비밀번호 <input v-model="pwForm.current" type="password" autocomplete="current-password" /></label>
         <label>새 비밀번호(8자+) <input v-model="pwForm.next" type="password" autocomplete="new-password" /></label>
         <p v-if="pwMsg" class="banner okk">{{ pwMsg }}</p>
-        <p v-if="pwError" class="banner err">{{ pwError }}</p>
+        <FieldError :message="pwError" hint="현재 비밀번호를 확인하고 8자 이상으로 입력하세요" />
         <div class="btnrow">
           <button class="ghost" @click="pwOpen = false">닫기</button>
           <button @click="changePassword">변경</button>
@@ -156,6 +156,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { apiFetch } from '../stores/auth.js'
 import { toast } from '../stores/toast.js'
 import Skeleton from '../components/Skeleton.vue'
+import ErrorRetry from '../components/console/ErrorRetry.vue'
+import FieldError from '../components/console/FieldError.vue'
 
 const loading = ref(true)
 const loadError = ref(false)
@@ -251,8 +253,10 @@ async function save(section) {
     const saved = await apiFetch('/api/settings/automation', { method: 'PUT', body: JSON.stringify(form.value) })
     form.value = { ...saved, outputs: { ...saved.outputs } }
     flash(section)
+    toast('저장했습니다')
   } catch (e) {
     errors.value = { ...errors.value, form: e.message || '저장 실패' }
+    toast(e.message || '저장 실패', 'error')
   } finally {
     flag.value = false
   }
@@ -357,7 +361,16 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>
 
 <style scoped>
-.settings { display: flex; flex-direction: column; gap: var(--s4); }
+.settings { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+.page-head { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; }
+.sticky-head {
+  position: sticky;
+  top: 60px;
+  z-index: 30;
+  background: var(--bg);
+  padding: var(--s2) 0;
+}
+.ctx { overflow-wrap: anywhere; }
 .card {
   background: var(--panel);
   border: 1px solid var(--line-soft);
@@ -369,16 +382,22 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   gap: var(--s3);
 }
 .center { align-items: center; text-align: center; }
-.frow { display: flex; align-items: center; gap: var(--s3); }
+.frow { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
 .frow > span:first-child { flex: none; min-width: 120px; font-weight: 700; }
+.frow > span, .frow .muted { min-width: 0; overflow-wrap: anywhere; }
 .frow button:last-child, .frow .muted { margin-left: auto; }
 .warnline { color: var(--warn); font-weight: 700; }
 .frow.wrap { flex-wrap: wrap; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s3); }
+.grid { display: grid; grid-template-columns: 1fr; gap: var(--s3); }
+.grid > label { min-width: 0; }
+@media (min-width: 700px) {
+  .grid { grid-template-columns: repeat(2, 1fr); }
+  .grid > .span2 { grid-column: span 2; }
+}
 label { display: flex; flex-direction: column; gap: var(--s1); font-weight: 700; font-size: 13px; }
-.inrow { display: flex; align-items: center; gap: var(--s2); font-weight: 400; }
+.inrow { display: flex; align-items: center; gap: var(--s2); font-weight: 400; flex-wrap: wrap; }
 .inrow input { width: 90px; }
-input[type="time"] { width: auto; }
+input[type="time"] { width: auto; min-width: 0; max-width: 100%; }
 label.inline { flex-direction: row; align-items: center; font-weight: 400; }
 input.narrow { width: 70px; }
 .hint { font-weight: 400; font-size: 12px; color: var(--muted); }
@@ -396,13 +415,14 @@ legend { font-size: 13px; font-weight: 700; padding: 0 var(--s1); }
   padding: var(--s1) var(--s3) var(--s1) var(--s1);
   font-weight: 700;
 }
-.switch .knob { width: 28px; height: 18px; border-radius: 999px; background: #bbb; }
+.switch .knob { width: 28px; height: 18px; border-radius: 999px; background: var(--muted); transition: background var(--t); }
 .switch.on { border-color: var(--ok); }
 .switch.on .knob { background: var(--ok); }
 .btnrow { display: flex; align-items: center; gap: var(--s3); }
 .ops { display: flex; flex-direction: column; gap: var(--s3); border-top: 1px solid var(--line-soft); padding-top: var(--s3); }
 .userlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.userlist li { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); padding: var(--s2) 0; border-bottom: 1px solid var(--line-soft); }
+.userlist li { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); padding: var(--s2) 0; border-bottom: 1px solid var(--line-soft); min-width: 0; }
+.userlist li > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .role { background: var(--soft); border-radius: 999px; padding: 0 10px; font-size: 12px; }
 .addrow { display: flex; gap: var(--s3); align-items: flex-end; flex-wrap: wrap; }
 .addrow label { flex: 1; min-width: 160px; }
@@ -450,7 +470,10 @@ input {
 input[type="checkbox"] { width: auto; accent-color: var(--accent-dark); }
 @media (min-width: 1150px) {
   .settings { display: grid; grid-template-columns: 7fr 5fr; align-items: start; }
-  .settings > h1 { grid-column: 1 / -1; }
+  .settings > .page-head { grid-column: 1 / -1; }
   .settings > section:nth-of-type(1) { grid-row: span 2; }
+}
+@media (max-width: 900px) {
+  .sticky-head { top: 52px; }
 }
 </style>

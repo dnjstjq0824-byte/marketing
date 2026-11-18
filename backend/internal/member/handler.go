@@ -5,18 +5,21 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"somun/internal/auth"
 	"somun/internal/store"
 )
 
 // Handler maps promo HTTP to the member service.
 type Handler struct {
-	svc *Service
+	svc     *Service
+	limiter *auth.LoginLimiter
 }
 
 // NewHandler builds the promo handler.
 func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+	return &Handler{svc: svc, limiter: auth.NewLoginLimiter()}
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {
@@ -34,42 +37,72 @@ func pathID(r *http.Request) (int64, error) {
 }
 
 type authRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Nickname string `json:"nickname"`
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	Nickname   string `json:"nickname"`
+	InviteCode string `json:"inviteCode"`
 }
 
 // Signup handles POST /api/promo/signup and logs the member in.
+// Beta gate: a valid invite code is required, and failures rate-limit.
 func (h *Handler) Signup(w http.ResponseWriter, r *http.Request) {
 	var req authRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	ip := auth.ClientIP(r)
+	if h.limiter.Blocked(req.Email, ip) {
+		writeError(w, http.StatusTooManyRequests, "too many failed attempts; try again later")
+		return
+	}
+	fail := func(code int, msg string) {
+		h.limiter.Failed(req.Email, ip)
+		writeError(w, code, msg)
+	}
+	if strings.TrimSpace(req.InviteCode) == "" {
+		fail(http.StatusForbidden, "invite code required")
+		return
+	}
+	if err := h.svc.CheckInvite(strings.TrimSpace(req.InviteCode)); err != nil {
+		fail(http.StatusForbidden, err.Error())
+		return
+	}
 	token, m, err := h.svc.Signup(req.Email, req.Password, req.Nickname)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrDuplicate):
-			writeError(w, http.StatusConflict, err.Error())
+			fail(http.StatusConflict, err.Error())
 		case errors.Is(err, ErrBadEmail), errors.Is(err, ErrWeakPassword), errors.Is(err, ErrBadNickname):
-			writeError(w, http.StatusBadRequest, err.Error())
+			fail(http.StatusBadRequest, err.Error())
 		default:
-			writeError(w, http.StatusInternalServerError, "cannot sign up")
+			fail(http.StatusInternalServerError, "cannot sign up")
 		}
 		return
 	}
+	if err := h.svc.ConsumeInvite(strings.TrimSpace(req.InviteCode)); err != nil {
+		fail(http.StatusConflict, err.Error())
+		return
+	}
+	h.limiter.Succeeded(req.Email, ip)
 	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "member": m})
 }
 
-// Login handles POST /api/promo/login.
+// Login handles POST /api/promo/login with failure rate limiting.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var req authRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	ip := auth.ClientIP(r)
+	if h.limiter.Blocked(req.Email, ip) {
+		writeError(w, http.StatusTooManyRequests, "too many failed logins; try again later")
+		return
+	}
 	token, m, err := h.svc.Login(req.Email, req.Password)
 	if err != nil {
+		h.limiter.Failed(req.Email, ip)
 		if errors.Is(err, ErrBadCredentials) {
 			writeError(w, http.StatusUnauthorized, err.Error())
 			return
@@ -77,6 +110,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "cannot log in")
 		return
 	}
+	h.limiter.Succeeded(req.Email, ip)
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "member": m})
 }
 
@@ -350,6 +384,11 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.svc.Overview())
 }
 
+// Stats handles GET /api/promo/stats (public, counts only, no PII).
+func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.svc.PublicStats())
+}
+
 // Work handles GET /api/promo/work: the member workspace.
 func (h *Handler) Work(w http.ResponseWriter, r *http.Request) {
 	id, ok := MemberFrom(r)
@@ -419,6 +458,53 @@ func (h *Handler) ConfirmOrders(w http.ResponseWriter, r *http.Request) {
 		default:
 			writeError(w, http.StatusInternalServerError, "cannot confirm orders")
 		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// MintInvites handles POST /api/promo/admin/invites (operator).
+func (h *Handler) MintInvites(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Count   int `json:"count"`
+		MaxUses int `json:"maxUses"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	_, username, _ := auth.OperatorFrom(r.Context())
+	out, err := h.svc.MintInvites(req.Count, req.MaxUses, username)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot mint invites")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"invites": out})
+}
+
+// ListInvites handles GET /api/promo/admin/invites (operator).
+func (h *Handler) ListInvites(w http.ResponseWriter, r *http.Request) {
+	out, err := h.svc.ListInvites()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot list invites")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invites": out})
+}
+
+// RevokeInvite handles POST /api/promo/admin/invites/{id}/revoke (operator).
+func (h *Handler) RevokeInvite(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid invite id")
+		return
+	}
+	if err := h.svc.RevokeInvite(id); err != nil {
+		if errors.Is(err, store.ErrNoInvite) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cannot revoke invite")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

@@ -1,20 +1,37 @@
 <template>
   <div class="teams">
-    <div class="page-head">
+    <div class="page-head sticky-head">
       <h1 class="page-title">팀</h1>
-      <span class="muted">에이전트 {{ agentTotal }}기 · 팀 {{ teams.length }}개</span>
+      <span class="muted small ctx">에이전트 <b class="num">{{ agentTotal }}</b>기 · 팀 <b class="num">{{ teams.length }}</b>개</span>
       <span class="sp"></span>
-      <button @click="openCreate">＋ 팀 만들기</button>
+      <button class="primary" @click="openCreate">＋ 팀 만들기</button>
     </div>
-    <p v-if="onlyDefault" class="hint">브랜드별로 팀을 나눠 보세요. 예: 마케팅1팀 = LUNO 전담</p>
-    <p v-if="loadMsg" class="error">{{ loadMsg }}</p>
-    <p v-if="teams.length && !loadMsg" class="healthline" aria-label="팀 건강 요약">
-      <span class="h-ok">정상 {{ healthCounts.ok }}</span> ·
-      <span class="h-warn">주의 {{ healthCounts.warn }}</span> ·
-      <span class="h-bad">위험 {{ healthCounts.bad }}</span>
+    <p v-if="onlyDefault && !loading && !loadMsg" class="hint">브랜드별로 팀을 나눠 보세요. 예: 마케팅1팀 = LUNO 전담</p>
+    <Skeleton v-if="loading" :rows="3" />
+    <ErrorRetry v-else-if="loadMsg" :message="loadMsg" @retry="load" />
+    <div v-else-if="!teams.length" class="emptywrap">
+      <EmptyState title="팀이 없습니다" hint="첫 팀을 만들어 에이전트를 배치하세요" art="◎" />
+      <button class="primary" @click="openCreate">팀 만들기</button>
+    </div>
+    <template v-else>
+    <p class="healthline" aria-label="팀 건강 요약">
+      <span class="h-ok">정상 <b class="num">{{ healthCounts.ok }}</b></span> ·
+      <span class="h-warn">주의 <b class="num">{{ healthCounts.warn }}</b></span> ·
+      <span class="h-bad">위험 <b class="num">{{ healthCounts.bad }}</b></span>
     </p>
-    <div class="grid">
-      <RouterLink v-for="c in sortedTeams" :key="c.team.id" class="card teamcard" :class="'h-' + health(c)" :to="'/teams/' + c.team.id">
+    <div class="filterbar" role="search">
+      <input v-model="teamQuery" placeholder="팀·사업 검색" aria-label="팀 검색" />
+      <select v-model="healthFilter" aria-label="상태">
+        <option value="">전체 상태</option>
+        <option value="ok">정상</option>
+        <option value="warn">주의</option>
+        <option value="bad">위험</option>
+      </select>
+      <span v-if="teamQuery || healthFilter" class="muted small">{{ filteredTeams.length }}개 표시</span>
+    </div>
+    <p v-if="!filteredTeams.length" class="muted">조건에 맞는 팀이 없습니다.</p>
+    <div v-else class="grid">
+      <RouterLink v-for="c in filteredTeams" :key="c.team.id" class="card teamcard" :class="'h-' + health(c)" :to="'/teams/' + c.team.id">
         <div class="t-head">
           <strong class="t-name">{{ c.team.name }}</strong>
           <span class="health" :class="health(c)">{{ healthText(health(c)) }}</span>
@@ -33,6 +50,7 @@
         <p v-for="w in warnings(c)" :key="w" class="warn">⚠ {{ w }}</p>
       </RouterLink>
     </div>
+    </template>
     <div v-if="createOpen" class="modal-back" @click.self="createOpen = false">
       <div class="modal wide" role="dialog" aria-label="팀 만들기">
         <ol class="steps">
@@ -99,7 +117,7 @@
             <p v-if="channelAccounts.length" class="muted small">안 고르면 연결된 전 채널로 발행합니다.</p>
           </fieldset>
         </div>
-        <p v-if="createMsg" class="error">{{ createMsg }}</p>
+        <FieldError :message="createMsg" :hint="createHint" />
         <div class="btnrow">
           <button class="ghost" @click="createOpen = false">취소</button>
           <span class="sp"></span>
@@ -119,18 +137,26 @@ import { useRouter } from 'vue-router'
 import { apiFetch } from '../stores/auth.js'
 import { toast } from '../stores/toast.js'
 import { AI_PLATFORMS, label, PLATFORM, TEAM_ROLE } from '../stores/labels.js'
+import EmptyState from '../components/EmptyState.vue'
+import Skeleton from '../components/Skeleton.vue'
+import ErrorRetry from '../components/console/ErrorRetry.vue'
+import FieldError from '../components/console/FieldError.vue'
 
 const router = useRouter()
 const teams = ref([])
 const accounts = ref([])
 const memberTeams = ref({})
+const loading = ref(true)
 const loadMsg = ref('')
 const createOpen = ref(false)
 const step = ref(1)
 const creating = ref(false)
 const createMsg = ref('')
+const createHint = ref('')
 const agentFilter = ref('')
 const agentQuery = ref('')
+const teamQuery = ref('')
+const healthFilter = ref('')
 const form = ref({ name: '', business: '', description: '', memberIds: [], roles: {}, roleMode: 'auto', intro: '', tone: '', banned: '', buyLink: '', channelIds: [] })
 const roleKeys = ['analyze', 'strategy', 'generate', 'review']
 
@@ -199,6 +225,15 @@ function healthText(h) {
 
 const healthRank = { bad: 0, warn: 1, ok: 2 }
 const sortedTeams = computed(() => [...teams.value].sort((a, b) => healthRank[health(a)] - healthRank[health(b)]))
+const filteredTeams = computed(() => {
+  const q = teamQuery.value.trim().toLowerCase()
+  return sortedTeams.value.filter((c) => {
+    if (healthFilter.value && health(c) !== healthFilter.value) return false
+    if (!q) return true
+    const hay = `${c.team.name || ''} ${(c.businesses || []).join(' ')}`.toLowerCase()
+    return hay.includes(q)
+  })
+})
 const healthCounts = computed(() => {
   const out = { ok: 0, warn: 0, bad: 0 }
   for (const c of teams.value) out[health(c)]++
@@ -213,18 +248,22 @@ function toggleAll(e) {
 }
 
 async function load() {
+  loading.value = true
   loadMsg.value = ''
   try {
     const data = await apiFetch('/api/teams')
     teams.value = data.items || []
   } catch (e) {
     loadMsg.value = e.message || '팀 목록을 불러오지 못했습니다'
+  } finally {
+    loading.value = false
   }
 }
 
 async function openCreate() {
   step.value = 1
   createMsg.value = ''
+  createHint.value = ''
   form.value = { name: '', business: '', description: '', memberIds: [], roles: {}, roleMode: 'auto', intro: '', tone: '', banned: '', buyLink: '', channelIds: [] }
   agentFilter.value = ''
   agentQuery.value = ''
@@ -234,6 +273,7 @@ async function openCreate() {
     accounts.value = data.accounts || []
   } catch (e) {
     createMsg.value = e.message || '계정 목록을 불러오지 못했습니다'
+    createHint.value = '연결 화면에서 계정 상태를 확인하세요'
     return
   }
   const names = {}
@@ -248,8 +288,10 @@ async function openCreate() {
 
 async function submitCreate() {
   createMsg.value = ''
+  createHint.value = ''
   if (!form.value.name) {
     createMsg.value = '팀 이름을 입력하세요'
+    createHint.value = '1단계 팀 정보에서 이름을 입력하세요'
     step.value = 1
     return
   }
@@ -279,9 +321,16 @@ async function submitCreate() {
     router.push(`/teams/${id}`)
   } catch (e) {
     const msg = e.message || ''
-    if (msg.includes('already belongs')) createMsg.value = `${form.value.business}은(는) 다른 팀이 전담 중입니다`
-    else if (msg.includes('already exists')) createMsg.value = '같은 이름의 팀이 있습니다'
-    else createMsg.value = msg || '팀 만들기에 실패했습니다'
+    if (msg.includes('already belongs')) {
+      createMsg.value = `${form.value.business}은(는) 다른 팀이 전담 중입니다`
+      createHint.value = '전담 사업을 비우거나 다른 사업으로 바꾸세요'
+    } else if (msg.includes('already exists')) {
+      createMsg.value = '같은 이름의 팀이 있습니다'
+      createHint.value = '다른 팀 이름으로 바꾸세요'
+    } else {
+      createMsg.value = msg || '팀 만들기에 실패했습니다'
+      createHint.value = '입력값을 확인하고 다시 시도하세요'
+    }
   } finally {
     creating.value = false
   }
@@ -291,20 +340,33 @@ onMounted(load)
 </script>
 
 <style scoped>
-.page-head { display: flex; align-items: baseline; gap: var(--s3); margin-bottom: var(--s4); }
+.teams { min-width: 0; }
+.page-head { display: flex; align-items: baseline; gap: var(--s3); margin-bottom: var(--s4); flex-wrap: wrap; }
 .page-head .page-title { margin: 0; }
+.sticky-head {
+  position: sticky;
+  top: 60px;
+  z-index: 30;
+  background: var(--bg);
+  padding: var(--s2) 0;
+  margin-bottom: var(--s2);
+}
+.ctx { white-space: nowrap; }
+button.primary { background: var(--accent); border-color: var(--accent-dark); color: var(--accent-ink); font-weight: 700; border-radius: var(--r-md); }
+button.primary:hover { background: var(--accent-dark); }
 .sp { flex: 1; }
 .hint { color: var(--muted); margin: 0 0 var(--s4); }
+.emptywrap { display: flex; flex-direction: column; align-items: center; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--s4); }
-.teamcard { text-decoration: none; color: inherit; display: block; }
-.teamcard:hover { border-color: var(--accent); }
-.t-head { display: flex; align-items: center; gap: var(--s2); }
-.t-name { font-size: 17px; flex: 1; }
+.teamcard { text-decoration: none; color: inherit; display: block; min-width: 0; transition: border-color var(--t), box-shadow var(--t); }
+.teamcard:hover { border-color: var(--accent); box-shadow: var(--shadow-lg); }
+.t-head { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.t-name { font-size: 17px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t-state { font-size: 13px; color: var(--ink-soft); display: flex; align-items: center; gap: 4px; }
 .t-state.off { color: var(--muted); }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: #bbb; display: inline-block; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; flex-shrink: 0; }
 .dot.on { background: var(--ok); }
-.t-biz { margin: var(--s1) 0; }
+.t-biz { margin: var(--s1) 0; overflow-wrap: anywhere; }
 .t-comp { margin: 0 0 var(--s2); font-weight: 600; }
 .faces { display: flex; gap: 4px; margin-bottom: var(--s2); }
 .ava {
@@ -316,14 +378,31 @@ onMounted(load)
 .ava.sm { width: 24px; height: 24px; font-size: 12px; }
 .more { color: var(--muted); font-size: 13px; align-self: center; }
 .t-nums { margin: 2px 0; font-size: 14px; }
-.warn { margin: var(--s1) 0 0; font-size: 13px; color: var(--warn-ink, #9a5b00); }
+.warn { margin: var(--s1) 0 0; font-size: 13px; color: var(--hold); overflow-wrap: anywhere; }
 .healthline { margin: 0 0 var(--s3); font-size: 14px; font-weight: 700; }
+.filterbar { display: flex; gap: var(--s2); flex-wrap: wrap; align-items: center; margin-bottom: var(--s3); }
+.filterbar input {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--s2) var(--s3);
+  background: var(--panel);
+  color: var(--ink);
+  flex: 1;
+  min-width: 160px;
+}
+.filterbar select {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--s2) var(--s3);
+  background: var(--panel);
+  color: var(--ink);
+}
 .h-ok { color: var(--ok); }
-.h-warn { color: var(--warn-ink, #9a5b00); }
+.h-warn { color: var(--hold); }
 .h-bad { color: var(--warn); }
-.health { font-size: 12px; font-weight: 800; border-radius: 999px; padding: 1px 10px; white-space: nowrap; }
+.health { font-size: 12px; font-weight: 800; border-radius: 999px; padding: 1px 10px; white-space: nowrap; flex-shrink: 0; }
 .health.ok { background: var(--ok-soft); color: var(--ok); }
-.health.warn { background: var(--hold-soft); color: var(--warn-ink, #9a5b00); }
+.health.warn { background: var(--hold-soft); color: var(--hold); }
 .health.bad { background: var(--warn-soft); color: var(--warn); }
 .teamcard.h-bad { border-color: var(--warn); }
 .steps { display: flex; gap: var(--s3); list-style: none; margin: 0 0 var(--s4); padding: 0; }
@@ -335,8 +414,8 @@ onMounted(load)
 .picklist { list-style: none; margin: 0 0 var(--s2); padding: 0; max-height: 280px; overflow: auto; border: 1px solid var(--line-soft); border-radius: var(--r-md); }
 .picklist li { padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line-soft); }
 .picklist li:last-child { border-bottom: none; }
-.chk { display: flex; align-items: center; gap: var(--s2); cursor: pointer; }
-.pname { font-weight: 600; }
+.chk { display: flex; align-items: center; gap: var(--s2); cursor: pointer; min-width: 0; }
+.pname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rolechips { display: flex; gap: var(--s1); margin: var(--s1) 0 var(--s1) 26px; flex-wrap: wrap; }
 .chip { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 13px; cursor: pointer; color: var(--muted); }
 .chip input { display: none; }
@@ -346,5 +425,6 @@ onMounted(load)
 .chanbox legend { padding: 0 var(--s1); font-size: 14px; }
 @media (max-width: 900px) {
   .grid { grid-template-columns: 1fr; }
+  .sticky-head { top: 52px; }
 }
 </style>

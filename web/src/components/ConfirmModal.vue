@@ -45,7 +45,10 @@ defineEmits(['confirm', 'cancel'])
 }
 .modal h3 { margin: 0; }
 .btnrow { display: flex; gap: var(--s3); justify-content: flex-end; margin-top: var(--s2); }
-.btnrow button { border-radius: var(--r-md); padding: var(--s2) var(--s4); border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+.btnrow button { border-radius: var(--r-md); padding: var(--s2) var(--s4); border: 1px solid var(--accent-dark); background: var(--accent); color: var(--accent-ink); font-weight: 700; transition: background var(--t), border-color var(--t); }
+.btnrow button:hover { background: var(--accent-dark); }
 .btnrow button.danger { background: var(--warn); border-color: var(--warn); color: #fff; }
-.ghost { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: var(--r-md); }
+.btnrow button.danger:hover { background: #8f1b13; }
+.btnrow button.ghost { border-color: var(--line); background: var(--panel); color: var(--ink); font-weight: 500; }
+.btnrow button.ghost:hover { background: var(--soft); }
 </style>

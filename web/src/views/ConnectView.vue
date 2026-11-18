@@ -1,10 +1,30 @@
 <template>
   <div class="connect">
-    <h1 class="page-title">연결</h1>
-    <div v-if="queueTotal > 0" class="banner" role="alert">
+    <div class="page-head sticky-head">
+      <h1 class="page-title">연결</h1>
+      <span class="muted small ctx">AI <b class="num">{{ aiTotal }}</b>기 · 채널 <b class="num">{{ channelTotal }}</b>개 · 로그인 대기 <b class="num">{{ queueTotal }}</b>건</span>
+    </div>
+    <div v-if="queueTotal > 0 && !loading && !loadError" class="banner" role="alert">
       <span>로그인 대기 {{ queueTotal }}건</span>
       <button @click="startQueue">이어서 로그인</button>
     </div>
+    <div v-if="!loading && !loadError" class="filterbar" role="search">
+      <input v-model="fq" placeholder="이름·주인 검색" aria-label="계정 검색" />
+      <select v-model="fteam" aria-label="팀">
+        <option value="">전체 팀</option>
+        <option value="__none__">무소속</option>
+        <option v-for="t in teams" :key="t.team.id" :value="String(t.team.id)">{{ t.team.name }}</option>
+      </select>
+      <select v-model="fstatus" aria-label="상태">
+        <option value="">전체 상태</option>
+        <option value="connected">연결됨</option>
+        <option value="need">로그인 필요</option>
+      </select>
+      <span v-if="filterActive" class="muted small fcount">{{ shownTotal }}건 표시 <button class="ghost small" @click="clearFilter">해제</button></span>
+    </div>
+    <div v-if="loading" class="spanall"><Skeleton :rows="4" /></div>
+    <div v-else-if="loadError" class="spanall"><ErrorRetry :message="loadMsg" hint="계정 목록을 가져오지 못했습니다. 잠시 후 다시 시도하세요." @retry="load" /></div>
+    <template v-else>
     <section class="card" aria-label="AI 계정">
       <div class="sect-head">
         <h2 class="section-title">AI 계정</h2>
@@ -12,16 +32,26 @@
         <button class="ghost small" @click="openAdd('agent_service')">계정 추가</button>
         <button class="ghost small" @click="openBulk('agent_service')">여러 개 한 번에</button>
       </div>
+      <div v-if="!aiTotal" class="emptycta">
+        <EmptyState title="AI 계정이 없습니다" hint="첫 계정을 등록하고 로그인하세요" art="◎" />
+        <button @click="openAdd('agent_service')">계정 추가</button>
+      </div>
+      <template v-else>
       <div v-for="g in aiGroups" :key="g.platform" class="group">
-        <h3 class="muted small">{{ g.label }} · {{ g.items.length }}기
+        <h3 class="muted small ghead">
+          <button class="fold" @click="toggleGroup('ai:' + g.platform)" :aria-expanded="(!collapsedGroups['ai:' + g.platform]).toString()" :aria-label="g.label + ' 접기/펼치기'">{{ collapsedGroups['ai:' + g.platform] ? '▸' : '▾' }}</button>
+          {{ g.label }} · <span class="num">{{ g.items.length }}</span>기
           <span v-if="g.custom"> · 내가 추가한 AI</span>
           <span v-if="g.chatStatus === 'ok'"> · 대화 연결됨</span>
           <span v-else-if="g.chatStatus === 'unlinked'"> · 대화 미연결</span>
           <button v-if="g.custom" class="ghost small" @click="openAIEdit(g.platform)">관리</button>
         </h3>
+        <template v-if="!collapsedGroups['ai:' + g.platform]">
         <AccountRow v-for="a in g.items" :key="a.id" :account="a" :held="heldOf(a.id)" :team="teamOf(a.id)" ai @chat="openChat(a)" @login="openLogin(a)" @unregister="askUnregister(a)" @probe="runProbe(a)" @plan="openPlan(a)" />
         <p v-if="!g.items.length" class="muted small">아직 없습니다.</p>
+        </template>
       </div>
+      </template>
     </section>
     <section class="card" aria-label="발행 채널">
       <div class="sect-head">
@@ -30,12 +60,22 @@
         <button class="ghost small" @click="openAdd('channel')">채널 추가</button>
         <button class="ghost small" @click="openBulk('channel')">여러 개 한 번에</button>
       </div>
+      <div v-if="!channelTotal" class="emptycta">
+        <EmptyState title="발행 채널이 없습니다" hint="채널을 등록하면 팀 발행에 쓸 수 있습니다" art="⇄" />
+        <button @click="openAdd('channel')">채널 추가</button>
+      </div>
       <div v-for="g in channelGroups" :key="g.platform" class="group">
-        <h3 class="muted small">{{ g.label }} · {{ g.items.length }}개</h3>
+        <h3 class="muted small ghead">
+          <button class="fold" @click="toggleGroup('ch:' + g.platform)" :aria-expanded="(!collapsedGroups['ch:' + g.platform]).toString()" :aria-label="g.label + ' 접기/펼치기'">{{ collapsedGroups['ch:' + g.platform] ? '▸' : '▾' }}</button>
+          {{ g.label }} · <span class="num">{{ g.items.length }}</span>개
+        </h3>
+        <template v-if="!collapsedGroups['ch:' + g.platform]">
         <AccountRow v-for="a in g.items" :key="a.id" :account="a" :held="heldOf(a.id)" :team="teamOf(a.id)" @login="openLogin(a)" @unregister="askUnregister(a)" @mode="flipMode(a)" @backend="openBackend(a)" />
         <p v-if="!g.items.length" class="muted small">아직 없습니다.</p>
+        </template>
       </div>
     </section>
+    </template>
     <LoginDialog v-if="loginDlg" :key="loginDlg.id" :account="loginDlg" :next="nextPending" :real-holder="realHolderName" @done="onLoginDone" @close="loginDlg = null" @next="openLogin" />
     <div v-if="addDlg" class="modal-back" @click.self="addDlg = null">
       <div class="modal" role="dialog" :aria-label="addDlg.kind === 'agent_service' ? 'AI 계정 추가' : '발행 채널 추가'">
@@ -64,7 +104,7 @@
           </label>
           <label>담당 사업 <input v-model="addForm.business" /></label>
         </div>
-        <p v-if="addMsg" class="error">{{ addMsg }}</p>
+        <FieldError :message="addMsg" :hint="addHint" />
         <div class="btnrow">
           <button class="ghost" @click="addDlg = null">취소</button>
           <button @click="submitAdd">추가</button>
@@ -87,7 +127,8 @@
           <label>주인 <input v-model="bulkForm.owner" /></label>
         </div>
         <p class="muted small">{{ bulkPreview }}</p>
-        <p v-if="bulkMsg" :class="bulkOk ? 'banner okk' : 'error'">{{ bulkMsg }}</p>
+        <p v-if="bulkOk && bulkMsg" class="banner okk">{{ bulkMsg }}</p>
+        <FieldError v-else :message="bulkMsg" :hint="bulkHint" />
         <div class="btnrow">
           <button class="ghost" @click="bulkDlg = null">닫기</button>
           <button v-if="bulkOk && bulkMade > 0" @click="bulkToQueue">이어서 로그인</button>
@@ -106,7 +147,8 @@
           <label>답장 선택자 <input v-model="aiEditForm.replySelector" /></label>
           <label>로그아웃 표시 문구(쉼표) <input v-model="aiEditForm.markers" /></label>
         </div>
-        <p v-if="aiEditMsg" :class="aiEditOk ? 'banner okk' : 'error'">{{ aiEditMsg }}</p>
+        <p v-if="aiEditOk && aiEditMsg" class="banner okk">{{ aiEditMsg }}</p>
+        <FieldError v-else :message="aiEditMsg" :hint="aiEditHint" />
         <div class="btnrow">
           <button class="ghost danger" @click="deleteAI">삭제</button>
           <span class="sp"></span>
@@ -124,7 +166,7 @@
             <label v-for="c in CAPS" :key="c.key" class="check"><input v-model="planForm.caps" type="checkbox" :value="c.key" /> {{ c.label }}</label>
           </div>
         </div>
-        <p v-if="planMsg" class="error">{{ planMsg }}</p>
+        <FieldError :message="planMsg" :hint="planHint" />
         <div class="btnrow">
           <button class="ghost" @click="planDlg = null">취소</button>
           <button @click="savePlan">저장</button>
@@ -148,7 +190,7 @@
             </select>
           </label>
         </div>
-        <p v-if="backendMsg" class="error">{{ backendMsg }}</p>
+        <FieldError :message="backendMsg" :hint="backendHint" />
         <div class="btnrow">
           <button class="ghost" @click="backendDlg = null">취소</button>
           <button @click="saveBackend">저장</button>
@@ -172,9 +214,16 @@ import { AI_PLATFORMS, label, PLATFORM, PLATFORM_GROUPS } from '../stores/labels
 import AccountRow from '../components/AccountRow.vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
+import EmptyState from '../components/EmptyState.vue'
 import LoginDialog from '../components/LoginDialog.vue'
+import Skeleton from '../components/Skeleton.vue'
+import ErrorRetry from '../components/console/ErrorRetry.vue'
+import FieldError from '../components/console/FieldError.vue'
 
 const accounts = ref([])
+const loading = ref(true)
+const loadError = ref(false)
+const loadMsg = ref('')
 const queue = ref([])
 const teams = ref([])
 const registry = ref({})
@@ -190,18 +239,23 @@ const planDlg = ref(null)
 const backendDlg = ref(null)
 const addForm = ref({ platform: '', name: '', owner: '', role: 'worker', business: '', mode: 'manual' })
 const addMsg = ref('')
+const addHint = ref('')
 const newAI = ref({ key: '', name: '', loginUrl: '' })
 const bulkForm = ref({ prefix: '', platform: '', owner: '', count: 10 })
 const bulkMsg = ref('')
+const bulkHint = ref('')
 const bulkOk = ref(false)
 const bulkMade = ref(0)
 const aiEditForm = ref({ chatUrl: '', composerSelector: '', sendSelector: '', replySelector: '', markers: '' })
 const aiEditMsg = ref('')
+const aiEditHint = ref('')
 const aiEditOk = ref(false)
 const planForm = ref({ tier: '', caps: [] })
 const planMsg = ref('')
+const planHint = ref('')
 const backendForm = ref({ backend: 'direct', relay: '' })
 const backendMsg = ref('')
+const backendHint = ref('')
 const CAPS = [
   { key: 'text', label: '텍스트' },
   { key: 'image', label: '이미지 생성' },
@@ -249,8 +303,43 @@ function isAI(a) {
   return AI_PLATFORMS.includes(a.platform)
 }
 
+const fq = ref('')
+const fteam = ref('')
+const fstatus = ref('')
+const collapsedGroups = ref({})
+const filterActive = computed(() => !!(fq.value.trim() || fteam.value || fstatus.value))
+
 const aiGroups = computed(() => groupAccounts(true))
 const channelGroups = computed(() => groupAccounts(false))
+const aiTotal = computed(() => accounts.value.filter((a) => isAI(a)).length)
+const channelTotal = computed(() => accounts.value.filter((a) => !isAI(a)).length)
+const shownTotal = computed(() => [...aiGroups.value, ...channelGroups.value].reduce((n, g) => n + g.items.length, 0))
+
+function matchAccount(a) {
+  if (fq.value.trim()) {
+    const q = fq.value.trim().toLowerCase()
+    if (!((a.name || '').toLowerCase().includes(q) || (a.owner || '').toLowerCase().includes(q))) return false
+  }
+  if (fteam.value) {
+    const t = teamOf(a.id)
+    if (fteam.value === '__none__') {
+      if (t) return false
+    } else if (!t || String(t.id) !== fteam.value) return false
+  }
+  if (fstatus.value === 'connected' && a.sessionState !== 'connected') return false
+  if (fstatus.value === 'need' && !['pending', 'expired', 'limited'].includes(a.sessionState)) return false
+  return true
+}
+
+function clearFilter() {
+  fq.value = ''
+  fteam.value = ''
+  fstatus.value = ''
+}
+
+function toggleGroup(key) {
+  collapsedGroups.value[key] = !collapsedGroups.value[key]
+}
 
 function groupAccounts(ai) {
   const platforms = ai ? AI_OPTIONS.value : CHANNEL_PLATFORMS.value
@@ -261,9 +350,9 @@ function groupAccounts(ai) {
       label: platformLabel(p),
       custom: ai && meta.builtin === false,
       chatStatus: ai ? meta.chatStatus || '' : '',
-      items: accounts.value.filter((a) => a.platform === p && isAI(a) === ai),
+      items: accounts.value.filter((a) => a.platform === p && isAI(a) === ai && matchAccount(a)),
     }
-  }).filter((g) => g.items.length || ai)
+  }).filter((g) => g.items.length || (ai && !filterActive.value))
 }
 
 const realHolderName = computed(() => {
@@ -300,6 +389,9 @@ const relayOptions = computed(() => {
 })
 
 async function load() {
+  loading.value = true
+  loadError.value = false
+  loadMsg.value = ''
   try {
     const [acc, q, t, reg, ai, be] = await Promise.all([
       apiFetch('/api/session/accounts'),
@@ -318,7 +410,11 @@ async function load() {
     registry.value = m
     aiPlatforms.value = ai.items || []
   } catch (e) {
+    loadError.value = true
+    loadMsg.value = e.message || '불러오기 실패'
     toast(e.message || '불러오기 실패', 'error')
+  } finally {
+    loading.value = false
   }
 }
 
@@ -369,10 +465,39 @@ function openAdd(kind) {
   addForm.value = { platform: '', name: '', owner: '', role: 'worker', business: '', mode: 'manual' }
   newAI.value = { key: '', name: '', loginUrl: '' }
   addMsg.value = ''
+  addHint.value = ''
 }
 
 async function submitAdd() {
   addMsg.value = ''
+  addHint.value = ''
+  if (!addForm.value.platform) {
+    addMsg.value = addDlg.value.kind === 'agent_service' ? 'AI 종류를 고르세요' : '플랫폼을 고르세요'
+    addHint.value = addDlg.value.kind === 'agent_service' ? '목록에 없으면 ＋ 새 AI 등록을 고르세요' : '발행할 채널의 플랫폼을 고르세요'
+    return
+  }
+  if (addForm.value.platform === '__new__') {
+    if (!/^[a-z][a-z0-9_]*$/.test(newAI.value.key.trim())) {
+      addMsg.value = 'AI 키는 영문 소문자·숫자·밑줄로 입력하세요'
+      addHint.value = '예: perplexity'
+      return
+    }
+    if (!newAI.value.name.trim()) {
+      addMsg.value = 'AI 이름을 입력하세요'
+      addHint.value = '예: Perplexity'
+      return
+    }
+    if (!newAI.value.loginUrl.trim().startsWith('https://')) {
+      addMsg.value = '로그인 주소는 https로 시작해야 합니다'
+      addHint.value = '예: https://www.perplexity.ai'
+      return
+    }
+  }
+  if (!addForm.value.name.trim()) {
+    addMsg.value = '이름을 입력하세요'
+    addHint.value = addDlg.value.kind === 'agent_service' ? '예: meta-2' : '예: luno-blog-1'
+    return
+  }
   try {
     let platform = addForm.value.platform
     if (addDlg.value.kind === 'agent_service' && platform === '__new__') {
@@ -402,6 +527,7 @@ async function submitAdd() {
     await load()
   } catch (e) {
     addMsg.value = e.message
+    addHint.value = '이름이 겹쳤다면 다른 이름으로 시도하세요'
   }
 }
 
@@ -409,6 +535,7 @@ function openBulk(kind) {
   bulkDlg.value = { kind }
   bulkForm.value = { prefix: '', platform: '', owner: '', count: 10 }
   bulkMsg.value = ''
+  bulkHint.value = ''
   bulkOk.value = false
   bulkMade.value = 0
 }
@@ -427,6 +554,23 @@ async function bulkToQueue() {
 
 async function submitBulk() {
   bulkMsg.value = ''
+  bulkHint.value = ''
+  bulkOk.value = false
+  if (!bulkForm.value.prefix.trim()) {
+    bulkMsg.value = '이름 앞부분을 입력하세요'
+    bulkHint.value = '예: luno_meta_ → luno_meta_01부터 만들어집니다'
+    return
+  }
+  if (!bulkForm.value.platform) {
+    bulkMsg.value = bulkDlg.value.kind === 'agent_service' ? 'AI 종류를 고르세요' : '플랫폼을 고르세요'
+    bulkHint.value = '한 번에 한 종류씩 만듭니다'
+    return
+  }
+  if (!Number.isInteger(bulkForm.value.count) || bulkForm.value.count < 1 || bulkForm.value.count > 50) {
+    bulkMsg.value = '개수는 1~50 사이로 입력하세요'
+    bulkHint.value = '많으면 나눠서 만드세요'
+    return
+  }
   try {
     const data = await apiFetch('/api/session/accounts/bulk', {
       method: 'POST',
@@ -444,6 +588,7 @@ async function submitBulk() {
   } catch (e) {
     bulkOk.value = false
     bulkMsg.value = e.message
+    bulkHint.value = '앞부분을 바꿔 다시 시도하세요'
   }
 }
 
@@ -489,11 +634,13 @@ function openAIEdit(key) {
     markers,
   }
   aiEditMsg.value = ''
+  aiEditHint.value = ''
   aiEditOk.value = false
 }
 
 async function saveAIEdit() {
   aiEditMsg.value = ''
+  aiEditHint.value = ''
   try {
     const markers = aiEditForm.value.markers.split(',').map((s) => s.trim()).filter(Boolean)
     await apiFetch(`/api/ai-platforms/${aiEdit.value.key}`, {
@@ -512,6 +659,7 @@ async function saveAIEdit() {
   } catch (e) {
     aiEditOk.value = false
     aiEditMsg.value = e.message
+    aiEditHint.value = '주소를 확인하고 다시 저장하세요'
   }
 }
 
@@ -549,10 +697,12 @@ function openPlan(a) {
   } catch { caps = [] }
   planForm.value = { tier: a.planTier || '', caps }
   planMsg.value = ''
+  planHint.value = ''
 }
 
 async function savePlan() {
   planMsg.value = ''
+  planHint.value = ''
   try {
     await apiFetch(`/api/session/accounts/${planDlg.value.id}`, {
       method: 'PATCH',
@@ -563,6 +713,7 @@ async function savePlan() {
     await load()
   } catch (e) {
     planMsg.value = e.message
+    planHint.value = '다시 저장해 보세요'
   }
 }
 
@@ -570,10 +721,17 @@ function openBackend(a) {
   backendDlg.value = a
   backendForm.value = { backend: a.executorBackend || 'direct', relay: a.relayAccount || '' }
   backendMsg.value = ''
+  backendHint.value = ''
 }
 
 async function saveBackend() {
   backendMsg.value = ''
+  backendHint.value = ''
+  if (backendForm.value.backend !== 'direct' && !backendForm.value.relay) {
+    backendMsg.value = '중계 AI를 고르세요'
+    backendHint.value = '직접 발행으로 두려면 실행 방식을 바꾸세요'
+    return
+  }
   try {
     const be = backendForm.value.backend
     await apiFetch(`/api/session/accounts/${backendDlg.value.id}`, {
@@ -585,6 +743,7 @@ async function saveBackend() {
     await load()
   } catch (e) {
     backendMsg.value = e.message
+    backendHint.value = '중계 AI가 로그인됐는지 확인하세요'
   }
 }
 
@@ -592,7 +751,59 @@ onMounted(load)
 </script>
 
 <style scoped>
-.connect { display: flex; flex-direction: column; gap: var(--s4); }
+.connect { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+.page-head { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; }
+.sticky-head {
+  position: sticky;
+  top: 60px;
+  z-index: 30;
+  background: var(--bg);
+  padding: var(--s2) 0;
+}
+.ctx { overflow-wrap: anywhere; }
+.filterbar { display: flex; gap: var(--s2); flex-wrap: wrap; align-items: center; }
+.filterbar input {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--s2) var(--s3);
+  background: var(--panel);
+  color: var(--ink);
+  flex: 1;
+  min-width: 160px;
+}
+.filterbar select {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--s2) var(--s3);
+  background: var(--panel);
+  color: var(--ink);
+  max-width: 220px;
+}
+.fcount { display: inline-flex; align-items: center; gap: var(--s2); }
+.ghead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fold {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  border-radius: var(--r-sm);
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin: 0;
+  font-size: 12px;
+}
+.fold:hover { background: var(--soft); color: var(--ink); }
+.spanall { grid-column: 1 / -1; }
+.emptycta { display: flex; flex-direction: column; align-items: center; }
+.emptycta button {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--r-md);
+  padding: var(--s2) var(--s4);
+  font-weight: 700;
+}
+.emptycta button:hover { background: var(--accent-dark); }
 .banner {
   background: var(--hold-soft);
   border: 1px solid var(--gold);
@@ -604,12 +815,13 @@ onMounted(load)
 }
 .banner button {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   border: none;
   border-radius: var(--r-md);
   padding: var(--s2) var(--s4);
   font-weight: 700;
   margin-left: auto;
+  flex-shrink: 0;
 }
 .card {
   background: var(--panel);
@@ -620,11 +832,14 @@ onMounted(load)
   display: flex;
   flex-direction: column;
   gap: var(--s3);
+  min-width: 0;
+  transition: border-color var(--t), box-shadow var(--t);
 }
-.sect-head { display: flex; align-items: center; gap: var(--s2); }
-.sect-head h2 { flex: 1; }
+.sect-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.sect-head h2 { flex: 1; white-space: nowrap; }
 .sect-head .sp { flex: 1; }
-.group h3 { margin: 0 0 var(--s2); }
+.group { min-width: 0; }
+.group h3 { margin: 0 0 var(--s2); overflow-wrap: anywhere; }
 .form { display: flex; flex-direction: column; gap: var(--s3); }
 .form label { display: flex; flex-direction: column; gap: var(--s1); font-weight: 700; }
 .form input, .form select {
@@ -672,7 +887,8 @@ button.danger { color: var(--warn); }
   background: var(--panel);
   color: var(--ink);
 }
-.btnrow button:not(.ghost) { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+.btnrow button:not(.ghost) { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.btnrow button:not(.ghost):hover { background: var(--accent-dark); }
 .small { font-size: 13px; padding: var(--s1) var(--s2); }
 .error { color: var(--warn); }
 .drawer-back {
@@ -686,9 +902,10 @@ button.danger { color: var(--warn); }
 .drawer { width: min(480px, 100%); background: var(--panel); height: 100%; box-shadow: var(--shadow-lg); }
 @media (max-width: 900px) {
   .drawer { width: 100%; }
+  .sticky-head { top: 52px; }
 }
 @media (min-width: 1150px) {
   .connect { display: grid; grid-template-columns: 1fr 1fr; align-items: start; }
-  .connect > h1, .connect > .banner { grid-column: 1 / -1; }
+  .connect > .page-head, .connect > .banner, .connect > .filterbar, .connect > .spanall { grid-column: 1 / -1; }
 }
 </style>

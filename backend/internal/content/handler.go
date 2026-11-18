@@ -163,6 +163,25 @@ func (h *Handler) ListPublishLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"logs": items})
 }
 
+// PublishTrend handles GET /api/publish-trend?days= (console chart).
+func (h *Handler) PublishTrend(w http.ResponseWriter, r *http.Request) {
+	days := 14
+	if q := strings.TrimSpace(r.URL.Query().Get("days")); q != "" {
+		n, err := strconv.Atoi(q)
+		if err != nil || n < 1 || n > 90 {
+			writeError(w, http.StatusBadRequest, "days must be 1..90")
+			return
+		}
+		days = n
+	}
+	items, err := h.store.PublishTrend(days)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load publish trend")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"days": items})
+}
+
 // ListMetrics handles GET /api/metrics.
 func (h *Handler) ListMetrics(w http.ResponseWriter, r *http.Request) {
 	items, err := h.store.ListMetrics(200)

@@ -1,6 +1,9 @@
 <template>
   <div class="new">
-    <h1 class="page-title">새 작업</h1>
+    <div class="page-head sticky-head">
+      <h1 class="page-title">새 작업</h1>
+      <span class="muted small ctx">채널 <b class="num">{{ pickedCount }}</b>개 · {{ teamName || '자동 배정' }}</span>
+    </div>
     <section class="card" aria-label="대상">
       <h2 class="section-title">무엇으로 만드나요?</h2>
       <div class="seg" role="tablist" aria-label="입력 종류">
@@ -9,7 +12,7 @@
       <input v-if="kind === 'url'" v-model="url" type="url" placeholder="https://상품-페이지-주소" aria-label="링크" />
       <input v-else-if="kind === 'topic'" v-model="topic" placeholder="주제 (예: 여름 신상 패딩)" aria-label="주제" maxlength="200" />
       <Dropzone v-else />
-      <p v-if="errors.input" class="error" role="alert">{{ errors.input }}</p>
+      <FieldError :message="errors.input" :hint="hints.input" />
     </section>
     <section class="card" aria-label="채널과 버전">
       <h2 class="section-title">어디에 올리나요?</h2>
@@ -33,23 +36,24 @@
           </div>
         </div>
       </div>
-      <p v-if="errors.channels" class="error" role="alert">{{ errors.channels }}</p>
+      <FieldError :message="errors.channels" :hint="hints.channels" />
     </section>
     <section class="card" aria-label="사업과 옵션">
       <h2 class="section-title">사업과 옵션</h2>
       <label>사업 <input v-model="business" placeholder="비우면 공용" maxlength="80" /></label>
       <label>맡길 팀
-        <select v-model="team">
+        <select v-model="team" :disabled="teamsLoading">
           <option value="">자동 (사업 전담팀이 맡음)</option>
           <option v-for="t in teams" :key="t.team.id" :value="String(t.team.id)">{{ t.team.name }}</option>
         </select>
-        <span class="hint">팀을 고르면 그 팀이 맡고, 자동이면 사업 전담팀이 맡습니다.</span>
+        <span class="hint">{{ teamsLoading ? '팀 목록 불러오는 중…' : '팀을 고르면 그 팀이 맡고, 자동이면 사업 전담팀이 맡습니다.' }}</span>
+        <span v-if="!teamsLoading && !teams.length" class="hint">팀이 없으면 <RouterLink to="/teams">팀에서 만들기 →</RouterLink></span>
       </label>
       <label class="check"><input v-model="useStart" type="checkbox" /> 발행 시작 시간 정하기</label>
       <input v-if="useStart" v-model="startAt" type="datetime-local" aria-label="발행 시작" />
       <label class="check"><input v-model="sponsored" type="checkbox" /> 제휴·광고입니다</label>
       <label v-if="sponsored">대가 표시 문구 <textarea v-model="disclosure" rows="2" placeholder="예: 이 게시물은 대가를 받고 작성됐습니다"></textarea></label>
-      <p v-if="errors.affiliate" class="error" role="alert">{{ errors.affiliate }}</p>
+      <FieldError :message="errors.affiliate" :hint="hints.affiliate" />
     </section>
     <div class="submitbar">
       <button class="ghost" @click="router.back()">취소</button>
@@ -67,6 +71,7 @@ import { toast } from '../stores/toast.js'
 import { uploads } from '../stores/upload.js'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import Dropzone from '../components/Dropzone.vue'
+import FieldError from '../components/console/FieldError.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -97,7 +102,9 @@ const sponsored = ref(false)
 const disclosure = ref('')
 const busy = ref(false)
 const confirming = ref(false)
+const teamsLoading = ref(true)
 const errors = ref({})
+const hints = ref({})
 
 function kindLabel(k) {
   return k === 'url' ? '링크' : k === 'image' ? '사진·파일' : '주제'
@@ -151,10 +158,14 @@ function bump(key, d) {
 const doneMedia = computed(() => uploads.filter((r) => r.state === 'done' && r.mediaId).map((r) => r.mediaId))
 const uploading = computed(() => uploads.some((r) => r.state === 'queued' || r.state === 'active'))
 
-const confirmText = computed(() => {
-  const n = Object.keys(picked.value).length
+const pickedCount = computed(() => Object.keys(picked.value).length)
+const teamName = computed(() => {
   const t = teams.value.find((x) => String(x.team.id) === team.value)
-  return `채널 ${n}개로 작업을 만듭니다.` + (t ? ` (${t.team.name} 맡음)` : '')
+  return t ? t.team.name : ''
+})
+
+const confirmText = computed(() => {
+  return `채널 ${pickedCount.value}개로 작업을 만듭니다.` + (teamName.value ? ` (${teamName.value} 맡음)` : '')
 })
 
 onMounted(async () => {
@@ -163,6 +174,8 @@ onMounted(async () => {
     teams.value = data.items || []
   } catch {
     teams.value = []
+  } finally {
+    teamsLoading.value = false
   }
   if (typeof route.query.team === 'string' && route.query.team) team.value = route.query.team
   if (typeof route.query.business === 'string' && route.query.business) business.value = route.query.business
@@ -171,15 +184,34 @@ onMounted(async () => {
 
 function validate() {
   const e = {}
-  if (kind.value === 'url' && !url.value.trim()) e.input = '링크를 입력하세요.'
-  if (kind.value === 'topic' && !topic.value.trim()) e.input = '주제를 입력하세요.'
-  if (kind.value === 'image') {
-    if (uploading.value) e.input = '파일이 올라가는 중입니다. 잠시 기다리세요.'
-    else if (!doneMedia.value.length) e.input = '파일을 올리세요.'
+  const h = {}
+  if (kind.value === 'url' && !url.value.trim()) {
+    e.input = '링크를 입력하세요.'
+    h.input = '상품 페이지 주소를 붙여넣으세요'
   }
-  if (!Object.keys(picked.value).length) e.channels = '채널을 하나 이상 고르세요.'
-  if (sponsored.value && !disclosure.value.trim()) e.affiliate = '대가 표시 문구를 입력하세요.'
+  if (kind.value === 'topic' && !topic.value.trim()) {
+    e.input = '주제를 입력하세요.'
+    h.input = '예: 여름 신상 패딩'
+  }
+  if (kind.value === 'image') {
+    if (uploading.value) {
+      e.input = '파일이 올라가는 중입니다. 잠시 기다리세요.'
+      h.input = '업로드가 끝나면 자동으로 넘어갑니다'
+    } else if (!doneMedia.value.length) {
+      e.input = '파일을 올리세요.'
+      h.input = '클릭하거나 끌어다 놓으세요'
+    }
+  }
+  if (!Object.keys(picked.value).length) {
+    e.channels = '채널을 하나 이상 고르세요.'
+    h.channels = '연결된 채널이 자동 선택됩니다. 없으면 연결에서 등록하세요'
+  }
+  if (sponsored.value && !disclosure.value.trim()) {
+    e.affiliate = '대가 표시 문구를 입력하세요.'
+    h.affiliate = '예: 이 게시물은 대가를 받고 작성됐습니다'
+  }
   errors.value = e
+  hints.value = h
   return !Object.keys(e).length
 }
 
@@ -217,7 +249,16 @@ async function submit() {
 </script>
 
 <style scoped>
-.new { display: flex; flex-direction: column; gap: var(--s4); }
+.new { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+.page-head { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; }
+.sticky-head {
+  position: sticky;
+  top: 60px;
+  z-index: 30;
+  background: var(--bg);
+  padding: var(--s2) 0;
+}
+.ctx { overflow-wrap: anywhere; }
 .card {
   background: var(--panel);
   border: 1px solid var(--line-soft);
@@ -228,7 +269,7 @@ async function submit() {
   flex-direction: column;
   gap: var(--s3);
 }
-.seg { display: flex; gap: var(--s2); }
+.seg { display: flex; gap: var(--s2); flex-wrap: wrap; }
 .seg button {
   border: 1px solid var(--line);
   background: var(--panel);
@@ -236,7 +277,8 @@ async function submit() {
   border-radius: 999px;
   padding: var(--s2) var(--s4);
 }
-.seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+.seg button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.seg button:not(.on):hover { background: var(--soft); }
 input, select, textarea {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -250,9 +292,9 @@ label.check input { width: auto; }
 .chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
 .chip { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 999px; padding: var(--s2) var(--s4); }
 .chip.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 700; }
-.chcfg { display: flex; align-items: center; gap: var(--s4); padding: var(--s3); background: var(--soft); border-radius: var(--r-md); }
-.chcfg strong { flex: 1; }
-.chcfg label { flex: 1; }
+.chcfg { display: flex; align-items: center; gap: var(--s4); padding: var(--s3); background: var(--soft); border-radius: var(--r-md); min-width: 0; }
+.chcfg strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chcfg label { flex: 1; min-width: 0; }
 .stepper { display: flex; align-items: center; gap: var(--s2); }
 .stepper button {
   width: 32px;
@@ -268,14 +310,16 @@ label.check input { width: auto; }
 .error { color: var(--warn); }
 .submitbar { display: flex; gap: var(--s3); justify-content: flex-end; position: sticky; bottom: 0; padding: var(--s3) 0; background: var(--bg); }
 .submitbar button { border-radius: var(--r-md); padding: var(--s3) var(--s5); font-weight: 700; }
-.submitbar .primary { background: var(--accent); color: #fff; border: none; }
+.submitbar .primary { background: var(--accent); color: var(--accent-ink); border: none; }
+.submitbar .primary:hover { background: var(--accent-dark); }
 .submitbar .primary:disabled { opacity: 0.6; }
 .submitbar .ghost { border: 1px solid var(--line); background: var(--panel); }
 @media (max-width: 900px) {
+  .sticky-head { top: 52px; }
   .chcfg { flex-wrap: wrap; }
 }
 @media (min-width: 1150px) {
   .new { display: grid; grid-template-columns: 7fr 5fr; align-items: start; }
-  .new > h1, .new > section:first-of-type, .new > .submitbar { grid-column: 1 / -1; }
+  .new > .page-head, .new > section:first-of-type, .new > .submitbar { grid-column: 1 / -1; }
 }
 </style>

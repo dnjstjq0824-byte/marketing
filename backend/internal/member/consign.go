@@ -420,6 +420,17 @@ func (s *Service) Overview() map[string]any {
 	}
 }
 
+// PublicStats counts the anonymous landing numbers: recruiting
+// listings, approved promoters, and registered post URLs.
+func (s *Service) PublicStats() map[string]any {
+	recruiting, _ := s.store.CountConsignmentProducts(store.ConsignRecruiting)
+	promoters, _ := s.store.CountApprovedPromoters()
+	posts, _ := s.store.CountConsignmentPosts()
+	return map[string]any{
+		"recruiting": recruiting, "promoters": promoters, "posts": posts,
+	}
+}
+
 // WorkItem is one approved application with its materials, posts, and count.
 type WorkItem struct {
 	ApplicationView

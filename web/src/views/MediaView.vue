@@ -1,7 +1,8 @@
 <template>
   <div class="media">
-    <div class="head">
+    <div class="head sticky-head">
       <h1 class="page-title">미디어 보관함</h1>
+      <span class="muted small ctx"><b class="num">{{ items.length }}</b>개<span v-if="selected.size"> · 선택 <b class="num">{{ selected.size }}</b></span></span>
       <div class="btnrow">
         <button v-if="!selectMode" class="ghost" @click="showDrop = !showDrop">올리기</button>
         <button v-if="!selectMode" class="ghost" @click="selectMode = true">선택</button>
@@ -16,17 +17,19 @@
       <button v-for="t in tabs" :key="t.key" role="tab" :aria-selected="kind === t.key" :class="{ on: kind === t.key }" @click="setKind(t.key)">{{ t.label }}</button>
     </div>
     <div class="filters">
-      <label>작업 <input v-model="product" class="narrow" inputmode="numeric" placeholder="번호" @change="load(false)" /></label>
-      <label>부터 <input v-model="from" type="date" @change="load(false)" /></label>
-      <label>까지 <input v-model="to" type="date" @change="load(false)" /></label>
-      <button v-if="product || from || to" class="ghost" @click="product = ''; from = ''; to = ''; load(false)">지우기</button>
+      <label>작업 <input v-model="product" class="narrow" inputmode="numeric" placeholder="번호" @change="applyFilters" /></label>
+      <label>부터 <input v-model="from" type="date" @change="applyFilters" /></label>
+      <label>까지 <input v-model="to" type="date" @change="applyFilters" /></label>
+      <button v-if="product || from || to" class="ghost" @click="clearDates">지우기</button>
     </div>
+    <FieldError :message="filterMsg" :hint="filterHint" />
     <Skeleton v-if="loading && !items.length" :rows="3" />
-    <div v-else-if="loadError" class="card center">
-      <p>불러오지 못했습니다.</p>
-      <button @click="load">다시 시도</button>
+    <ErrorRetry v-else-if="loadError" hint="필터를 확인하고 다시 시도하세요. 계속되면 새로고침하세요." @retry="reload" />
+    <div v-else-if="!items.length" class="emptywrap">
+      <EmptyState title="아직 없습니다" :hint="hasFilter ? '조건에 맞는 파일이 없습니다' : '올리기로 첫 파일을 올리세요'" />
+      <button v-if="!hasFilter" @click="showDrop = true">올리기</button>
+      <button v-else class="ghost" @click="clearFilters">필터 지우기</button>
     </div>
-    <EmptyState v-else-if="!items.length" title="아직 없습니다" :hint="kind === '' ? '올리기로 첫 파일을 올리세요' : '이 종류는 아직 비어 있습니다'" />
     <div v-else class="tiles">
       <MediaTile v-for="m in items" :key="m.id" :item="tileOf(m)" :badge="badgeOf(m)" action="open" :selectMode="selectMode" :selected="selected.has(m.id)" @open="openBox(m.id)" @toggle="toggle" />
     </div>
@@ -46,6 +49,8 @@ import EmptyState from '../components/EmptyState.vue'
 import Lightbox from '../components/Lightbox.vue'
 import MediaTile from '../components/MediaTile.vue'
 import Skeleton from '../components/Skeleton.vue'
+import ErrorRetry from '../components/console/ErrorRetry.vue'
+import FieldError from '../components/console/FieldError.vue'
 
 const tabs = [
   { key: '', label: '전체' },
@@ -68,8 +73,11 @@ const selectMode = ref(false)
 const selected = ref(new Set())
 const boxId = ref(null)
 const blobs = ref({})
+const filterMsg = ref('')
+const filterHint = ref('')
 const boxIdx = computed(() => items.value.findIndex((m) => m.id === boxId.value))
 const current = computed(() => items.value[boxIdx.value] || null)
+const hasFilter = computed(() => kind.value !== '' || product.value !== '' || from.value !== '' || to.value !== '')
 
 function tileOf(m) {
   return { id: m.id, kind: m.kind, thumb: `/api/media/${m.id}/thumb`, url: blobs.value[m.id] || '' }
@@ -135,6 +143,41 @@ function setKind(key) {
   if (kind.value === key) return
   kind.value = key
   selected.value.clear()
+  load(false)
+}
+
+function applyFilters() {
+  filterMsg.value = ''
+  filterHint.value = ''
+  if (product.value !== '' && !/^\d+$/.test(product.value.trim())) {
+    filterMsg.value = '작업 번호는 숫자로 입력하세요'
+    filterHint.value = '작업 화면 주소의 번호를 쓰세요'
+    return
+  }
+  if (from.value && to.value && from.value > to.value) {
+    filterMsg.value = '시작일이 종료일보다 늦습니다'
+    filterHint.value = '부터·까지를 바꿔 보세요'
+    return
+  }
+  load(false)
+}
+
+function clearDates() {
+  product.value = ''
+  from.value = ''
+  to.value = ''
+  filterMsg.value = ''
+  filterHint.value = ''
+  load(false)
+}
+
+function clearFilters() {
+  kind.value = ''
+  selected.value.clear()
+  clearDates()
+}
+
+function reload() {
   load(false)
 }
 
@@ -213,10 +256,30 @@ onUnmounted(revokeBlobs)
 </script>
 
 <style scoped>
-.media { display: flex; flex-direction: column; gap: var(--s4); }
-.head { display: flex; align-items: center; gap: var(--s3); }
-.head h1 { flex: 1; }
-.btnrow { display: flex; gap: var(--s2); }
+.media { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+.head { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.sticky-head {
+  position: sticky;
+  top: 60px;
+  z-index: 30;
+  background: var(--bg);
+  padding: var(--s2) 0;
+}
+.head h1 { white-space: nowrap; }
+.ctx { flex: 1; min-width: 0; }
+.btnrow { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.emptywrap { display: flex; flex-direction: column; align-items: center; }
+.emptywrap button {
+  border-radius: var(--r-md);
+  padding: var(--s2) var(--s4);
+  font-weight: 700;
+  border: 1px solid var(--accent-dark);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.emptywrap button:hover { background: var(--accent-dark); }
+.emptywrap button.ghost { border-color: var(--line); background: var(--panel); color: var(--ink); font-weight: 500; }
+.emptywrap button.ghost:hover { background: var(--soft); }
 .card {
   background: var(--panel);
   border: 1px solid var(--line-soft);
@@ -243,12 +306,15 @@ onUnmounted(revokeBlobs)
   border-radius: 999px;
   padding: var(--s2) var(--s4);
 }
-.seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+.seg button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.seg button:not(.on):hover { background: var(--soft); }
 .filters { display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; color: var(--muted); }
-.filters input { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s1) var(--s2); background: var(--panel); color: var(--ink); }
+.filters label { min-width: 0; }
+.filters input { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s1) var(--s2); background: var(--panel); color: var(--ink); max-width: 100%; }
 .filters input.narrow { width: 90px; }
-.tiles { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--s2); }
+.tiles { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--s2); min-width: 0; }
 @media (max-width: 900px) {
+  .sticky-head { top: 52px; }
   .tiles { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 700px) {

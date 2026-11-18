@@ -145,6 +145,75 @@ func validEmail(email string) bool {
 	return at > 0 && at < len(email)-1 && strings.Index(email[at+1:], "@") < 0
 }
 
+// CheckInvite reports whether a code can currently be used.
+func (s *Service) CheckInvite(code string) error {
+	v, err := s.store.GetInvite(code)
+	if err != nil {
+		return err
+	}
+	if v.Revoked {
+		return store.ErrInviteRevoked
+	}
+	if v.Used >= v.MaxUses {
+		return store.ErrInviteSpent
+	}
+	return nil
+}
+
+// ConsumeInvite spends one use of a code.
+func (s *Service) ConsumeInvite(code string) error {
+	return s.store.ConsumeInvite(code)
+}
+
+const inviteAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+// MintInvites creates count fresh codes (operator only).
+func (s *Service) MintInvites(count, maxUses int, by string) ([]*store.Invite, error) {
+	if count < 1 {
+		count = 1
+	}
+	if count > 100 {
+		count = 100
+	}
+	if maxUses < 1 {
+		maxUses = 1
+	}
+	if maxUses > 1000 {
+		maxUses = 1000
+	}
+	out := make([]*store.Invite, 0, count)
+	for i := 0; i < count; i++ {
+		buf := make([]byte, 8)
+		if _, err := rand.Read(buf); err != nil {
+			return nil, err
+		}
+		var sb strings.Builder
+		sb.WriteString("SOMUN-")
+		for j, b := range buf {
+			if j == 4 {
+				sb.WriteByte('-')
+			}
+			sb.WriteByte(inviteAlphabet[int(b)%len(inviteAlphabet)])
+		}
+		v, err := s.store.CreateInvite(sb.String(), maxUses, by)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// ListInvites returns codes newest first (operator only).
+func (s *Service) ListInvites() ([]*store.Invite, error) {
+	return s.store.ListInvites()
+}
+
+// RevokeInvite disables one code (operator only).
+func (s *Service) RevokeInvite(id int64) error {
+	return s.store.RevokeInvite(id)
+}
+
 // Signup registers a member and logs them in immediately.
 func (s *Service) Signup(email, password, nickname string) (string, *MemberView, error) {
 	email = strings.TrimSpace(email)

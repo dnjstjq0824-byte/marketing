@@ -2,7 +2,7 @@
 // /api/ is network-only: no operating data stays in the browser cache,
 // and offline shows an error instead of stale data.
 // Bump CACHE on each release that changes cached assets.
-const CACHE = 'somun-v4';
+const CACHE = 'somun-v5';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

@@ -14,7 +14,7 @@ import (
 )
 
 // SchemaVersion is the current DDL version recorded in app_meta.
-const SchemaVersion = "32"
+const SchemaVersion = "33"
 
 // schema is the whole Tranche-1 data model: 9 entities (§6).
 // No order/payment/delivery/personal-data tables: this system never takes orders.
@@ -274,6 +274,9 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateToV32(db); err != nil {
+		return err
+	}
+	if err := migrateToV33(db); err != nil {
 		return err
 	}
 	if _, err := db.Exec(
@@ -1211,6 +1214,22 @@ func migrateToV32(db *sql.DB) error {
 				return fmt.Errorf("migrate v32: %w", err)
 			}
 		}
+	}
+	return nil
+}
+
+// migrateToV33 adds the beta invite-code registry.
+func migrateToV33(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS invite_codes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		code TEXT NOT NULL UNIQUE,
+		max_uses INTEGER NOT NULL DEFAULT 1,
+		used INTEGER NOT NULL DEFAULT 0,
+		created_by TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		revoked INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		return fmt.Errorf("migrate v33: %w", err)
 	}
 	return nil
 }

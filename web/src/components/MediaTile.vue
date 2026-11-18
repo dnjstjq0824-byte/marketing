@@ -38,14 +38,19 @@ function onClick() {
   aspect-ratio: 1;
   border-radius: var(--r-md);
   overflow: hidden;
-  background: var(--soft);
+  background: var(--surface-2);
   border: 1px solid var(--line-soft);
   padding: 0;
   position: relative;
   width: 100%;
+  min-width: 0;
+  transition: border-color var(--t), box-shadow var(--t);
 }
 button.tile { cursor: pointer; color: var(--ink); }
+button.tile:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+button.tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button.tile.selected { outline: 3px solid var(--accent); }
+a.tile:hover { border-color: var(--accent); }
 .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .box {
   position: absolute;
@@ -61,7 +66,7 @@ button.tile.selected { outline: 3px solid var(--accent); }
   justify-content: center;
   font-size: 14px;
 }
-.box.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.box.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .badge {
   position: absolute;
   bottom: var(--s1);
@@ -71,5 +76,9 @@ button.tile.selected { outline: 3px solid var(--accent); }
   font-size: 11px;
   border-radius: 4px;
   padding: 0 6px;
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

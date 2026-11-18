@@ -11,17 +11,24 @@ param(
   [string]$TaskName = "SOMUN Marketing Core",
   [string]$Env = "production",
   [string]$Port = "8080",
+  [string]$WorkerToken = "",
   [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
 $startScript = Join-Path $Root "scripts\start.ps1"
-$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$startScript`" -Env $Env -Port $Port"
+if ($WorkerToken -ne "") {
+  $action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& { `$env:WORKER_TOKEN='$WorkerToken'; & '$startScript' -Env $Env -Port $Port }`""
+} else {
+  $action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$startScript`" -Env $Env -Port $Port"
+}
 $cmd = "schtasks /Create /TN `"$TaskName`" /TR `"$action`" /SC ONLOGON /RL LIMITED /F"
 Write-Output $cmd
 if ($DryRun) {
   Write-Output "DRYRUN_OK (not registered)"
   return
 }
-Invoke-Expression $cmd
+$taskArgs = @("/Create", "/TN", $TaskName, "/TR", $action, "/SC", "ONLOGON", "/RL", "LIMITED", "/F")
+& schtasks @taskArgs
+if ($LASTEXITCODE -ne 0) { throw "schtasks failed with exit $LASTEXITCODE" }
 Write-Output "TASK_OK"

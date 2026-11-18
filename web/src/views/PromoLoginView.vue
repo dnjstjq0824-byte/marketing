@@ -9,36 +9,40 @@
           <li>주문 1건당 고정 수수료 적립</li>
         </ul>
       </div>
-      <div class="pu-authform">
-        <div class="pu-modebtns">
-          <button class="pu-btn small" :class="{ 'pu-btn-primary': mode === 'login' }" @click="mode = 'login'">로그인</button>
-          <button class="pu-btn small" :class="{ 'pu-btn-primary': mode === 'signup' }" @click="mode = 'signup'">회원가입</button>
-        </div>
-        <div class="pu-form">
-          <label>이메일 <input v-model="form.email" type="email" autocomplete="email" /></label>
-          <label>비밀번호 (8자 이상) <input v-model="form.password" type="password" autocomplete="current-password" @keyup.enter="submit" /></label>
-          <label v-if="mode === 'signup'">닉네임 <input v-model="form.nickname" @keyup.enter="submit" /></label>
-        </div>
-        <p v-if="msg" class="pu-error">{{ msg }}</p>
-        <p style="margin-top: 16px; margin-bottom: 0">
-          <button class="pu-btn pu-btn-primary block" @click="submit">{{ mode === 'login' ? '로그인' : '가입하기' }}</button>
+      <form class="pu-authform pu-form" novalidate @submit.prevent="submit">
+        <label>이메일 <input v-model="email" type="email" autocomplete="email" autofocus @input="dirty.email = true" /></label>
+        <p v-if="(dirty.email || tried) && emailMsg" class="pu-error">{{ emailMsg }}</p>
+        <label>비밀번호 <span class="pwrow"><input v-model="password" :type="show ? 'text' : 'password'" autocomplete="current-password" @input="dirty.pw = true" /><button type="button" class="pu-btn small" @click="show = !show">{{ show ? '숨기기' : '보기' }}</button></span></label>
+        <p v-if="(dirty.pw || tried) && pwMsg" class="pu-error">{{ pwMsg }}</p>
+        <p v-if="msg" class="pu-error" role="alert">{{ msg }}</p>
+        <p style="margin-top: 8px; margin-bottom: 0">
+          <button class="pu-btn pu-btn-primary block" type="submit" :disabled="busy">{{ busy ? '로그인 중…' : '로그인' }}</button>
         </p>
-      </div>
+        <p class="pu-small pu-muted go-signup">아직 회원이 아니세요? <RouterLink to="/promo/signup">가입하기</RouterLink></p>
+      </form>
     </div>
   </PublicShell>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PublicShell from '../components/PublicShell.vue'
-import { memberLogin, memberSignup } from '../stores/member.js'
+import { memberLogin } from '../stores/member.js'
+import { emailError } from '../lib/signupValidate.js'
 
 const route = useRoute()
 const router = useRouter()
-const mode = ref('login')
-const form = ref({ email: '', password: '', nickname: '' })
+const email = ref('')
+const password = ref('')
+const show = ref(false)
+const busy = ref(false)
+const tried = ref(false)
 const msg = ref('')
+const dirty = ref({ email: false, pw: false })
+
+const emailMsg = computed(() => emailError(email.value))
+const pwMsg = computed(() => (!password.value ? '비밀번호를 입력하세요' : ''))
 
 function backTo() {
   const next = route.query.next
@@ -46,16 +50,25 @@ function backTo() {
 }
 
 async function submit() {
+  tried.value = true
+  if (busy.value || emailMsg.value || pwMsg.value) return
+  busy.value = true
   msg.value = ''
   try {
-    if (mode.value === 'login') {
-      await memberLogin(form.value.email, form.value.password)
-    } else {
-      await memberSignup(form.value.email, form.value.password, form.value.nickname)
-    }
+    await memberLogin(email.value.trim(), password.value)
     router.replace(backTo())
-  } catch (e) {
-    msg.value = e.message || '실패했습니다'
+  } catch {
+    msg.value = '이메일 또는 비밀번호가 틀렸습니다'
+  } finally {
+    busy.value = false
   }
 }
 </script>
+
+<style scoped>
+.pwrow { display: flex; gap: 8px; }
+.pwrow input { flex: 1; min-width: 0; }
+.pwrow button { flex: none; }
+.pu-error { margin: 0; font-size: 13px; }
+.go-signup { margin: 0; text-align: center; }
+</style>

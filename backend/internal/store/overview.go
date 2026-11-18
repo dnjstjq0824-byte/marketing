@@ -7,6 +7,7 @@ package store
 import (
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // OverviewToday is the S1 stat row.
@@ -283,6 +284,55 @@ func (s *Store) OverviewUnassignedQueued() (int, error) {
 	err := s.ro.QueryRow(`SELECT COUNT(*) FROM contents
 		WHERE status IN ('queued','approved') AND (target_account IS NULL OR target_account='')`).Scan(&n)
 	return n, err
+}
+
+// PublishTrendDay is one console chart bucket (UTC date).
+type PublishTrendDay struct {
+	Date      string `json:"date"`
+	Published int    `json:"published"`
+	Failed    int    `json:"failed"`
+}
+
+// PublishTrend buckets publish_logs by UTC day, oldest first, filling
+// empty days with zeros. Done logs count as published, failed as failed;
+// executed_at wins, created_at fills when empty.
+func (s *Store) PublishTrend(days int) ([]*PublishTrendDay, error) {
+	if days < 1 {
+		days = 1
+	}
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	out := make([]*PublishTrendDay, 0, days)
+	byDate := map[string]*PublishTrendDay{}
+	for i := days - 1; i >= 0; i-- {
+		d := &PublishTrendDay{Date: today.AddDate(0, 0, -i).Format("2006-01-02")}
+		out = append(out, d)
+		byDate[d.Date] = d
+	}
+	rows, err := s.ro.Query(`SELECT substr(COALESCE(NULLIF(executed_at,''),created_at),1,10), status, COUNT(*)
+		FROM publish_logs WHERE substr(COALESCE(NULLIF(executed_at,''),created_at),1,10)>=?
+		GROUP BY 1,2`, out[0].Date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var day, status string
+		var n int
+		if err := rows.Scan(&day, &status, &n); err != nil {
+			return nil, err
+		}
+		d, ok := byDate[day]
+		if !ok {
+			continue
+		}
+		switch status {
+		case "done":
+			d.Published += n
+		case "failed":
+			d.Failed += n
+		}
+	}
+	return out, rows.Err()
 }
 
 // OverviewFirstRun reports the S1 checklist inputs.

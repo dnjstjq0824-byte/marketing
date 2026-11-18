@@ -11,12 +11,17 @@ import TeamDetailView from '../views/TeamDetailView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import PromoHomeView from '../views/PromoHomeView.vue'
 import PromoLoginView from '../views/PromoLoginView.vue'
+import SignupView from '../views/SignupView.vue'
 import PromoProductsView from '../views/PromoProductsView.vue'
 import PromoProductDetailView from '../views/PromoProductDetailView.vue'
 import PromoGuideView from '../views/PromoGuideView.vue'
 import PromoMeView from '../views/PromoMeView.vue'
 import PromoWorkView from '../views/PromoWorkView.vue'
 import PromoAdminView from '../views/PromoAdminView.vue'
+import PromoTermsView from '../views/PromoTermsView.vue'
+import PromoPrivacyView from '../views/PromoPrivacyView.vue'
+import NotFoundView from '../views/NotFoundView.vue'
+import BrandView from '../views/BrandView.vue'
 import { auth, refreshMe } from '../stores/auth.js'
 import { member, memberRefresh } from '../stores/member.js'
 
@@ -49,13 +54,18 @@ const routes = [
   // W24 public consignment surface (no operator login needed).
   { path: '/promo', name: 'promo-home', component: PromoHomeView },
   { path: '/promo/login', name: 'promo-login', component: PromoLoginView },
+  { path: '/promo/signup', name: 'promo-signup', component: SignupView },
   { path: '/promo/products', name: 'promo-products', component: PromoProductsView },
   { path: '/promo/products/:id', name: 'promo-product-detail', component: PromoProductDetailView },
   { path: '/promo/guide', name: 'promo-guide', component: PromoGuideView },
   { path: '/promo/me', name: 'promo-me', component: PromoMeView },
+  { path: '/promo/terms', name: 'promo-terms', component: PromoTermsView },
+  { path: '/promo/privacy', name: 'promo-privacy', component: PromoPrivacyView },
   { path: '/promo/work', name: 'promo-work', component: PromoWorkView },
   { path: '/promo/admin', name: 'promo-admin', component: PromoAdminView },
-  { path: '/:pathMatch(.*)*', redirect: '/' },
+  // Brand homepage: public, no login needed.
+  { path: '/brand', name: 'brand', component: BrandView },
+  { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView },
 ]
 
 const router = createRouter({
@@ -65,7 +75,7 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   if (to.path.startsWith('/promo')) {
-    if (to.path === '/promo/login') {
+    if (to.path === '/promo/login' || to.path === '/promo/signup') {
       if (!member.token) return true
       const me = member.user || (await memberRefresh())
       return me ? (typeof to.query.next === 'string' && to.query.next.startsWith('/promo') ? to.query.next : '/promo') : true
@@ -86,6 +96,7 @@ router.beforeEach(async (to) => {
     }
     return true
   }
+  if (to.path === '/brand') return true
   if (to.path === '/login') {
     if (!auth.token) return true
     const user = auth.user || (await refreshMe())

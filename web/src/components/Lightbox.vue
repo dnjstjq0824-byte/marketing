@@ -155,7 +155,7 @@ async function download() {
 }
 .stage img, .stage video { max-width: 100%; max-height: 70vh; }
 .doc { text-align: center; padding: var(--s6); }
-.doc .art { font-size: 56px; color: #445; }
+.doc .art { font-size: 56px; color: var(--ink-soft); }
 .nav, .x {
   position: absolute;
   background: rgba(255, 255, 255, 0.9);

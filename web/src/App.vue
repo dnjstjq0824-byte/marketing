@@ -32,7 +32,7 @@ router.isReady().then(() => {
   ready.value = true
 })
 
-const shellOn = computed(() => route.path !== '/login' && !route.path.startsWith('/promo'))
+const shellOn = computed(() => route.path !== '/login' && route.path !== '/brand' && !route.path.startsWith('/promo') && route.name !== 'not-found')
 const title = computed(() => {
   if (route.path.startsWith('/works/')) return '작업 상세'
   if (route.path.startsWith('/teams/')) return '팀 상세'
