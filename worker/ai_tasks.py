@@ -329,9 +329,17 @@ def _extract_json(text):
     end = text.rfind("}")
     if start < 0 or end <= start:
         raise ValueError("no JSON object in reply")
+    raw = text[start:end + 1]
     try:
-        return json.loads(text[start:end + 1])
+        return json.loads(raw)
     except ValueError as exc:
+        # Web chat UIs (e.g. Claude) sometimes emit typographic smart quotes.
+        cleaned = raw.replace("\u201c", '"').replace("\u201d", '"')
+        if cleaned != raw:
+            try:
+                return json.loads(cleaned)
+            except ValueError:
+                pass
         raise ValueError("bad JSON in reply: %s" % exc)
 
 
@@ -339,7 +347,11 @@ def _string_fields(data, fields):
     out = {}
     for key in fields:
         value = data.get(key, "")
-        if not isinstance(value, str):
+        if value is None:
+            value = ""
+        elif isinstance(value, list) and all(isinstance(x, (str, int, float)) for x in value):
+            value = "\n".join(str(x).strip() for x in value if str(x).strip())
+        elif not isinstance(value, str):
             raise ValueError("field %s must be a string" % key)
         out[key] = value
     return out

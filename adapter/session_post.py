@@ -1,6 +1,7 @@
 """Session posting flow: login check -> compose -> submit -> capture (D9)."""
 import datetime
 import os
+import time
 
 from . import browser, config, platforms
 
@@ -62,6 +63,67 @@ def _frames(page):
             seen.add(id(frame))
             out.append(frame)
     return out
+
+
+def wait_any(page, selector, timeout_sec=20):
+    """Wait until `selector` appears in any frame (for async JS editors like SmartEditor ONE)."""
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        for frame in _frames(page):
+            try:
+                if frame.query_selector(selector) is not None:
+                    return frame
+            except Exception:
+                continue
+        time.sleep(0.3)
+    return None
+
+
+def _canonical_posted_url(url):
+    """Normalize Naver iframe PostView URLs into canonical https://blog.naver.com/<id>/<logNo>."""
+    if not url:
+        return ""
+    if "blog.naver.com" in url and "logNo=" in url:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        blog_id = (qs.get("blogId") or [""])[0]
+        log_no = (qs.get("logNo") or [""])[0]
+        if blog_id and log_no:
+            return "https://blog.naver.com/%s/%s" % (blog_id, log_no)
+    return url
+
+
+def _wait_posted_url(page, hint, before_url, timeout_sec=20):
+    """Poll top-level and child frame URLs after publish click.
+
+    Handles both full-page redirects and iframe editors (Naver SmartEditor ONE)
+    that update #mainFrame without firing top-level page.expect_navigation.
+    """
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        candidates = []
+        try:
+            if page.url:
+                candidates.append(page.url)
+        except Exception:
+            pass
+        for frame in _frames(page):
+            try:
+                if frame.url:
+                    candidates.append(frame.url)
+            except Exception:
+                continue
+        for raw in candidates:
+            canon = _canonical_posted_url(raw)
+            if raw == before_url and canon == before_url:
+                continue
+            if "GoBlogWrite" in raw or "Redirect=Write" in raw or "postwrite" in raw.lower():
+                continue
+            if not hint or hint in canon or hint in raw:
+                return canon
+        time.sleep(0.4)
+    return _canonical_posted_url(page.url)
 
 
 def fill_any(page, selector, text):
@@ -231,8 +293,10 @@ def post(account, platform_name, title, body, base_url="", headless=None,
             require_login(page, platform, account)
             page.goto(base + platform.compose_path if base else platform.compose_path)
             page.wait_for_load_state("domcontentloaded")
+            wait_any(page, platform.title_selector, timeout_sec=20)
             if platform.dismiss_selector:
                 dismiss_any(page, platform.dismiss_selector)
+            dismiss_any(page, ".se-popup-button-cancel")
             fill_any(page, platform.title_selector, title or "")
             fill_any(page, platform.body_selector, body or "")
             if labels:
@@ -251,17 +315,20 @@ def post(account, platform_name, title, body, base_url="", headless=None,
                     page.on("dialog", lambda dialog: dialog.accept())
                 except Exception:
                     pass
+                before_url = page.url
                 click_any(page, platform.submit_selector)
-                with page.expect_navigation(timeout=config.NAV_TIMEOUT_SEC * 1000):
-                    click_any(page, platform.submit_confirm_selector)
-                    submitted = True
+                wait_any(page, platform.submit_confirm_selector, timeout_sec=10)
+                click_any(page, platform.submit_confirm_selector)
+                submitted = True
+                url = _wait_posted_url(page, platform.posted_url_hint,
+                                       before_url, timeout_sec=min(25, config.NAV_TIMEOUT_SEC))
             else:
                 with page.expect_navigation(timeout=config.NAV_TIMEOUT_SEC * 1000):
                     click_any(page, platform.submit_selector)
                     # The click landed: from here the post may exist even
                     # when the wait below times out (W9-5 uncertain).
                     submitted = True
-            url = page.url
+                url = _canonical_posted_url(page.url)
             if platform.posted_url_hint not in url:
                 raise UncertainPostFailed(
                     "%s landing %s lacks %s" % (UNCERTAIN_POST, url, platform.posted_url_hint))

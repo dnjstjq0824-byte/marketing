@@ -1,27 +1,32 @@
 <template>
-  <div class="row">
-    <div class="who">
-      <strong>{{ account.name }}</strong>
-      <StatusChip :kind="stateKind">{{ stateText }}</StatusChip>
-      <RouterLink v-if="team" :to="'/teams/' + team.id" class="teamchip">{{ team.name }}</RouterLink>
-      <span v-else class="muted small">무소속</span>
-      <span v-if="team && team.leader" class="leader">팀장</span>
-      <span v-if="held > 0" class="muted small">대기 {{ held }}건</span>
+  <div class="arow">
+    <div class="ava" :class="ai ? 'ai' : 'ch'" aria-hidden="true">{{ initial }}</div>
+    <div class="info">
+      <div class="who">
+        <strong>{{ account.name }}</strong>
+        <StatusChip :kind="stateKind">{{ stateText }}</StatusChip>
+        <RouterLink v-if="team" :to="'/teams/' + team.id" class="teamchip">{{ team.name }}</RouterLink>
+        <span v-else class="muted micro">무소속</span>
+        <span v-if="team && team.leader" class="leader">팀장</span>
+        <span v-if="held > 0" class="held-pill">보류 {{ held }}건</span>
+      </div>
+      <p v-if="metaLine" class="muted small">{{ metaLine }}</p>
+      <p v-if="ai && aiMetaLine" class="muted micro">{{ aiMetaLine }}</p>
     </div>
-    <p class="muted small">{{ metaLine }}</p>
-    <p v-if="ai && (account.planTier || capsText || account.chatStatus)" class="muted small">{{ aiMetaLine }}</p>
     <div class="btns">
-      <button v-if="ai" class="ghost small" @click="$emit('chat')">대화</button>
-      <button v-if="account.sessionState !== 'connected'" class="small primary" @click="$emit('login')">로그인</button>
-      <button v-if="!ai" class="ghost small" @click="$emit('mode')">{{ account.postingMode === 'auto' ? '수동으로' : '자동으로' }}</button>
-      <button class="ghost small" @click="menu = !menu" aria-label="더보기">⋯</button>
-    </div>
-    <div v-if="menu" class="menu" role="menu">
-      <button v-if="account.sessionState === 'connected'" role="menuitem" @click="act('login')">로그인 다시</button>
-      <button v-if="ai && account.sessionState === 'connected'" role="menuitem" @click="act('probe')">대화 연결 테스트</button>
-      <button v-if="ai" role="menuitem" @click="act('plan')">요금제·기능</button>
-      <button v-if="!ai" role="menuitem" @click="act('backend')">실행 방식</button>
-      <button role="menuitem" class="danger" @click="act('unregister')">해제</button>
+      <button v-if="ai" class="ghost small" :disabled="account.sessionState !== 'connected'" @click="$emit('chat')">대화</button>
+      <button v-if="account.sessionState !== 'connected'" class="small" @click="$emit('login')">로그인</button>
+      <button v-if="!ai" class="ghost small" @click="$emit('mode')">{{ account.postingMode === 'auto' ? '자동' : '수동' }}</button>
+      <div class="menuwrap">
+        <button class="ghost small" @click="menu = !menu" aria-label="더보기">⋯</button>
+        <div v-if="menu" class="menu" role="menu">
+          <button v-if="account.sessionState === 'connected'" role="menuitem" @click="act('login')">다시 로그인</button>
+          <button v-if="ai && account.sessionState === 'connected'" role="menuitem" @click="act('probe')">대화 연결 테스트</button>
+          <button v-if="ai" role="menuitem" @click="act('plan')">요금제·기능</button>
+          <button v-if="!ai" role="menuitem" @click="act('backend')">실행 방식</button>
+          <button role="menuitem" class="danger-item" @click="act('unregister')">연결 해제</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -39,6 +44,8 @@ const props = defineProps({
 })
 const emit = defineEmits(['chat', 'login', 'unregister', 'mode', 'probe', 'plan', 'backend'])
 const menu = ref(false)
+
+const initial = computed(() => (props.account.platform || props.account.name || '?').slice(0, 1).toUpperCase())
 
 const stateKey = computed(() => {
   switch (props.account.sessionState) {
@@ -72,17 +79,16 @@ const metaLine = computed(() => {
   if (props.account.owner) parts.push(props.account.owner)
   if (props.account.role && props.ai) parts.push(props.account.role === 'chief' ? '총괄' : '작업자')
   if (!props.ai) parts.push(backendText.value)
-  if (props.account.lastJobAt) parts.push(`마지막 작업 ${props.account.lastJobAt.slice(5, 16).replace('T', ' ')}`)
+  if (props.account.lastJobAt) parts.push(`최근 ${props.account.lastJobAt.slice(5, 16).replace('T', ' ')}`)
   return parts.join(' · ')
 })
 
 const CAP_LABEL = { text: '텍스트', image: '이미지', video: '영상', file: '파일' }
-
 const capsText = computed(() => {
   try {
     const arr = JSON.parse(props.account.capabilities || '[]')
     if (!Array.isArray(arr) || !arr.length) return ''
-    return arr.map((c) => CAP_LABEL[c] || c).join('·')
+    return arr.map((c) => CAP_LABEL[c] || c).join(' · ')
   } catch {
     return ''
   }
@@ -92,7 +98,7 @@ const aiMetaLine = computed(() => {
   const parts = []
   if (props.account.planTier) parts.push(props.account.planTier)
   if (capsText.value) parts.push(capsText.value)
-  if (props.account.chatStatus === 'ok') parts.push('대화 연결됨')
+  if (props.account.chatStatus === 'ok') parts.push('대화 가능')
   else if (props.account.chatStatus === 'unlinked') parts.push('대화 미연결')
   return parts.join(' · ')
 })
@@ -104,57 +110,85 @@ function act(which) {
 </script>
 
 <style scoped>
-.row {
+.arow {
   border-top: 1px solid var(--line-soft);
-  padding: var(--s3) 0;
+  padding: 12px 0;
   display: flex;
-  flex-direction: column;
-  gap: var(--s1);
-  position: relative;
+  align-items: center;
+  gap: 12px;
   min-width: 0;
 }
-.who { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; min-width: 0; }
-.who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.row > p { overflow-wrap: anywhere; min-width: 0; }
+.ava {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.ava.ai { background: var(--accent-soft); color: var(--accent-dark); }
+.ava.ch { background: var(--info-soft); color: var(--info); }
+.info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.who { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.who strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .teamchip {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 700;
-  background: var(--accent-soft);
-  color: var(--accent-dark);
+  padding: 1px 8px;
   border-radius: 999px;
-  padding: 1px 10px;
+  background: var(--soft);
+  color: var(--ink-soft);
   text-decoration: none;
-  white-space: nowrap;
 }
-.teamchip:hover { text-decoration: underline; }
-.leader { font-size: 12px; font-weight: 800; color: var(--hold); white-space: nowrap; }
-.btns { display: flex; gap: var(--s2); flex-wrap: wrap; }
-.btns button, .ghost {
-  border-radius: var(--r-md);
-  padding: var(--s1) var(--s3);
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--ink);
-  font-size: 13px;
-  transition: background var(--t), border-color var(--t);
+.teamchip:hover { background: var(--accent-soft); color: var(--accent-dark); }
+.leader {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--gold-soft);
+  color: var(--gold);
 }
-.btns button.ghost:hover { background: var(--soft); }
-.btns button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
-.btns button.primary:hover { background: var(--accent-dark); }
+.held-pill {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--hold);
+}
+.btns { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.menuwrap { position: relative; }
 .menu {
   position: absolute;
   right: 0;
-  top: 100%;
+  top: calc(100% + 4px);
+  min-width: 156px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-lg);
+  padding: 6px;
+  z-index: 40;
   display: flex;
   flex-direction: column;
-  z-index: 20;
-  min-width: 140px;
+  gap: 2px;
 }
-.menu button { background: none; border: none; color: var(--ink); text-align: left; padding: var(--s2) var(--s3); transition: background var(--t); }
+.menu button {
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  justify-content: flex-start;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 7px;
+}
 .menu button:hover { background: var(--soft); }
-.menu button.danger { color: var(--warn); }
+.menu .danger-item { color: var(--warn); }
+@media (max-width: 680px) {
+  .arow { flex-wrap: wrap; align-items: flex-start; }
+  .btns { width: 100%; justify-content: flex-end; margin-top: 4px; }
+}
 </style>

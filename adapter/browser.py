@@ -248,8 +248,6 @@ class BrowserSession:
                 extra_args = []
             kwargs = self._launch_kwargs()
             kwargs["args"] = list(kwargs.get("args", [])) + extra_args
-            if has_session(self.account) and not real:
-                kwargs["storage_state"] = state_path(self.account)
             if self.headless:
                 ua = headed_user_agent()
                 if ua:

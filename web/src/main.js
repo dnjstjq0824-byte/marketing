@@ -4,7 +4,9 @@ import './styles/base.css'
 import './styles/public.css'
 import App from './App.vue'
 import router from './router/index.js'
+import { applyTheme } from './stores/theme.js'
 
+applyTheme()
 const app = createApp(App)
 app.use(router)
 app.mount('#app')

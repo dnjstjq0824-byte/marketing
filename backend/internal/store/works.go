@@ -33,6 +33,8 @@ func (s *Store) ListWorks(tab, q, business string, page, size int) ([]*WorkItem,
 	var ids []int64
 	var err error
 	switch tab {
+	case "all":
+		ids, err = s.workIDsByState("1=1", business, like, page, size)
 	case "", "running":
 		ids, err = s.workIDsByState(runningProductCond, business, like, page, size)
 	case "queued":
@@ -105,6 +107,8 @@ type WorkDetail struct {
 	Product  *Product       `json:"product"`
 	Brief    map[string]any `json:"brief"`
 	Stage    string         `json:"stage"`
+	Reading  *Reading       `json:"reading,omitempty"`
+	Strategy *Strategy      `json:"strategy,omitempty"`
 	Contents []*WorkPost    `json:"contents"`
 	Images   []*WorkImage   `json:"images"`
 }
@@ -169,7 +173,7 @@ func (s *Store) WorkDetailByID(id int64) (*WorkDetail, error) {
 	sum, err := s.OverviewWorkSummary(id)
 	if err != nil {
 		return nil, err
-	 }
+	}
 	contents, err := s.WorkPosts(id)
 	if err != nil {
 		return nil, err
@@ -178,7 +182,9 @@ func (s *Store) WorkDetailByID(id int64) (*WorkDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &WorkDetail{Product: p, Brief: brief, Stage: sum.Stage, Contents: contents, Images: images}, nil
+	reading, _ := s.GetReadingByProduct(id)
+	strategy, _ := s.GetStrategyByProduct(id)
+	return &WorkDetail{Product: p, Brief: brief, Stage: sum.Stage, Reading: reading, Strategy: strategy, Contents: contents, Images: images}, nil
 }
 
 // WorkPosts lists one product's posts newest first with live stats.

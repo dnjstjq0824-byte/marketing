@@ -4,10 +4,10 @@
       <h1 class="page-title">미디어 보관함</h1>
       <span class="muted small ctx"><b class="num">{{ items.length }}</b>개<span v-if="selected.size"> · 선택 <b class="num">{{ selected.size }}</b></span></span>
       <div class="btnrow">
-        <button v-if="!selectMode" class="ghost" @click="showDrop = !showDrop">올리기</button>
+        <button v-if="!selectMode" @click="showDrop = !showDrop">{{ showDrop ? '닫기' : '＋ 파일 올리기' }}</button>
         <button v-if="!selectMode" class="ghost" @click="selectMode = true">선택</button>
         <template v-else>
-          <button class="ghost" :disabled="!selected.size" @click="zipSel">묶어 받기 ({{ selected.size }})</button>
+          <button :disabled="!selected.size" @click="zipSel">ZIP 내려받기 ({{ selected.size }})</button>
           <button class="ghost" @click="selectMode = false; selected.clear()">취소</button>
         </template>
       </div>

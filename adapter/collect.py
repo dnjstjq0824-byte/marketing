@@ -125,6 +125,10 @@ def collect(account, platform_name, url, headless=None):
         try:
             page.goto(url)
             page.wait_for_load_state("domcontentloaded")
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
             out = {}
             for field in FIGURE_FIELDS:
                 out[field] = read_figure(page, selectors[field])

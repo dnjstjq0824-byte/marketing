@@ -9,7 +9,7 @@
       <button @click="startQueue">이어서 로그인</button>
     </div>
     <div v-if="!loading && !loadError" class="filterbar" role="search">
-      <input v-model="fq" placeholder="이름·주인 검색" aria-label="계정 검색" />
+      <input v-model="fq" type="search" placeholder="계정 이름·주인 검색 (단축키 /)" aria-label="계정 검색" />
       <select v-model="fteam" aria-label="팀">
         <option value="">전체 팀</option>
         <option value="__none__">무소속</option>

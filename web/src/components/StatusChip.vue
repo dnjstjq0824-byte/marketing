@@ -8,14 +8,18 @@ defineProps({ kind: { type: String, default: 'neutral' } })
 
 <style scoped>
 .chip {
-  display: inline-block;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 700;
   line-height: 20px;
-  padding: 0 10px;
+  padding: 1px 9px;
   border-radius: 999px;
   background: var(--soft);
   color: var(--ink-soft);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .chip.c-ok { background: var(--ok-soft); color: var(--ok); }
 .chip.c-warn { background: var(--warn-soft); color: var(--warn); }

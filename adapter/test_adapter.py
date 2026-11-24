@@ -1285,10 +1285,10 @@ class CollectUnitTest(unittest.TestCase):
         from adapter import collect as collect_mod
         stub = platforms.with_overlay(platforms.get_platform("stubboard"))
         self.assertTrue(platforms.is_collectable(stub))
-        naver = platforms.with_overlay(platforms.get_platform("naver_blog"))
-        self.assertFalse(platforms.is_collectable(naver))
+        unpinned = platforms.with_overlay(platforms.get_platform("tistory"))
+        self.assertFalse(platforms.is_collectable(unpinned))
         with self.assertRaises(collect_mod.CollectRefused):
-            collect_mod.resolve_collect_platform("naver_blog")
+            collect_mod.resolve_collect_platform("tistory")
         with self.assertRaises(collect_mod.CollectRefused):
             collect_mod.resolve_collect_platform("nope")
         # An overlay can pin a real platform without a code deploy.

@@ -1,28 +1,28 @@
 /* Public consignment surface (UI_DESIGN P0-P4/W0).
-   Bright storefront: Pretendard, pink accent, round cards, flat pastels. */
+   Harmonized with SOMUN commercial Deep Teal design system. */
 .pu-page {
-  --pu-bg: #ffffff;
+  --pu-bg: #f5f7fa;
   --pu-card: #ffffff;
-  --pu-panel: #f8f9fa;
-  --pu-ink: #212529;
-  --pu-soft: #495057;
-  --pu-muted: #868e96;
-  --pu-line: #e9ecef;
-  --pu-line-soft: #f1f3f5;
-  --pu-accent: #ff6f0f;
-  --pu-accent-dark: #e05f00;
-  --pu-accent-soft: #fff1e6;
-  --pu-ok: #067647;
-  --pu-ok-soft: #dcf0e5;
-  --pu-warn: #b42318;
-  --pu-warn-soft: #fbe4e0;
-  --pu-hold: #8a5a00;
-  --pu-hold-soft: #fdf3dd;
+  --pu-panel: #f1f5f9;
+  --pu-ink: #0f172a;
+  --pu-soft: #334155;
+  --pu-muted: #64748b;
+  --pu-line: #e2e8f0;
+  --pu-line-soft: #edf2f7;
+  --pu-accent: #0e7490;
+  --pu-accent-dark: #0b5d74;
+  --pu-accent-soft: #e6f4f8;
+  --pu-ok: #059669;
+  --pu-ok-soft: #ecfdf5;
+  --pu-warn: #dc2626;
+  --pu-warn-soft: #fef2f2;
+  --pu-hold: #d97706;
+  --pu-hold-soft: #fffbeb;
   --pu-r: 16px;
   --pu-r-sm: 12px;
   --pu-max: 1120px;
-  --pu-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
-  --pu-t: 150ms ease-out;
+  --pu-shadow: 0 2px 10px -2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --pu-t: 150ms cubic-bezier(0.2, 0, 0, 1);
   background: var(--pu-bg);
   color: var(--pu-ink);
   min-height: 100vh;
@@ -33,20 +33,34 @@
   font-family: var(--font, 'Pretendard Variable', Pretendard, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif);
 }
 @media (prefers-color-scheme: dark) {
-  .pu-page {
-    --pu-bg: #10161c;
-    --pu-card: #172029;
-    --pu-panel: #1e2833;
-    --pu-ink: #e8edf1;
-    --pu-soft: #b9c4cc;
-    --pu-muted: #8b98a3;
-    --pu-line: #2a3540;
-    --pu-line-soft: #222c36;
-    --pu-accent: #ff8a3d;
-    --pu-accent-dark: #ff6f0f;
-    --pu-accent-soft: #3a2210;
-    --pu-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  :root:not([data-theme="light"]) .pu-page {
+    --pu-bg: #0b1118;
+    --pu-card: #121a24;
+    --pu-panel: #192330;
+    --pu-ink: #f1f5f9;
+    --pu-soft: #cbd5e1;
+    --pu-muted: #94a3b8;
+    --pu-line: #233040;
+    --pu-line-soft: #1b2634;
+    --pu-accent: #22b8cf;
+    --pu-accent-dark: #0e94ac;
+    --pu-accent-soft: rgba(34, 184, 207, 0.14);
+    --pu-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
   }
+}
+:root[data-theme="dark"] .pu-page {
+  --pu-bg: #0b1118;
+  --pu-card: #121a24;
+  --pu-panel: #192330;
+  --pu-ink: #f1f5f9;
+  --pu-soft: #cbd5e1;
+  --pu-muted: #94a3b8;
+  --pu-line: #233040;
+  --pu-line-soft: #1b2634;
+  --pu-accent: #22b8cf;
+  --pu-accent-dark: #0e94ac;
+  --pu-accent-soft: rgba(34, 184, 207, 0.14);
+  --pu-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 .pu-num, .pu-fee { font-variant-numeric: tabular-nums; }
 .pu-wrap { width: 100%; max-width: var(--pu-max); margin: 0 auto; padding: 28px 20px 72px; flex: 1; }

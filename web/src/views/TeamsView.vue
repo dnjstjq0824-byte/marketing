@@ -20,7 +20,7 @@
       <span class="h-bad">위험 <b class="num">{{ healthCounts.bad }}</b></span>
     </p>
     <div class="filterbar" role="search">
-      <input v-model="teamQuery" placeholder="팀·사업 검색" aria-label="팀 검색" />
+      <input v-model="teamQuery" type="search" placeholder="팀·사업 검색 (단축키 /)" aria-label="팀 검색" />
       <select v-model="healthFilter" aria-label="상태">
         <option value="">전체 상태</option>
         <option value="ok">정상</option>

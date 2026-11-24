@@ -84,12 +84,12 @@
 
       <section class="card" aria-label="고급">
         <button class="advhead" :aria-expanded="advOpen" @click="advOpen = !advOpen">
-          <span class="section-title">고급</span><span aria-hidden="true">{{ advOpen ? '▾' : '▸' }}</span>
+          <span class="section-title">시스템 · 백업 · 고급</span><span aria-hidden="true">{{ advOpen ? '▾' : '▸' }}</span>
         </button>
         <template v-if="advOpen">
-          <div class="frow">
-            <span>상태</span>
-            <span class="muted small" :class="{ warnline: healthLow }">{{ healthLine }}</span>
+          <div class="health-box" :class="{ low: healthLow }">
+            <span class="micro muted">엔진 상태 진단</span>
+            <strong class="small">{{ healthLine }}</strong>
           </div>
           <div class="frow">
             <span>백업</span>
@@ -387,6 +387,16 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .frow > span, .frow .muted { min-width: 0; overflow-wrap: anywhere; }
 .frow button:last-child, .frow .muted { margin-left: auto; }
 .warnline { color: var(--warn); font-weight: 700; }
+.health-box {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.health-box.low { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
 .frow.wrap { flex-wrap: wrap; }
 .grid { display: grid; grid-template-columns: 1fr; gap: var(--s3); }
 .grid > label { min-width: 0; }
